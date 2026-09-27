@@ -1,0 +1,20 @@
+[Unit]
+Description=VPS-Commander Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vps-commander
+EnvironmentFile=-/etc/vps-commander/agent.env
+ExecStart=/opt/vps-commander/vps-commander-agent -hub ${VPS_COMMANDER_HUB_WS_URL} -name ${VPS_COMMANDER_AGENT_NAME}
+Restart=always
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+LimitNOFILE=65536
+Environment=GOGC=50
+
+[Install]
+WantedBy=multi-user.target

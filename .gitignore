@@ -1,0 +1,29 @@
+# Binaries and build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vps-commander-hub
+vps-commander-agent
+vps-commander-mcp-stdio
+
+# Runtime data & sqlite
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+hub.log
+
+# Environments and secrets
+*.env
+.env*
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/

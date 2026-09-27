@@ -1,0 +1,21 @@
+[Unit]
+Description=VPS-Commander Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vps-commander
+EnvironmentFile=-/etc/vps-commander/hub.env
+ExecStart=/opt/vps-commander/vps-commander-hub -addr 127.0.0.1:9521 -db /opt/vps-commander/data/commander.db
+Restart=on-failure
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+LimitNOFILE=65536
+Environment=GOGC=50
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPS-Commander</title><link rel="stylesheet" href="/static/app.css"></head>
+<body>
+<header><div><strong>VPS-Commander</strong><span>Private Infrastructure Console</span></div><button id="logout">退出</button></header>
+<main>
+<section class="grid">
+<article class="card wide"><div class="cardhead"><h2>设备看板</h2><button id="refresh">刷新</button></div><div id="devices" class="devices"></div></article>
+<article class="card"><h2>Actions 向导</h2><p>当前 Hub 的 OpenAPI Schema：</p><button id="copySchema">复制 Schema 地址</button><button id="copyPrompt">复制 System Prompt</button><button id="rotateKey">轮换 API Key</button><pre id="schemaHint">/openapi.json</pre><pre id="newKey"></pre></article>
+<article class="card wide"><div class="cardhead"><h2>快速控制台</h2><select id="device"></select></div><textarea id="command" placeholder="输入 Shell 命令，例如 uname -a"></textarea><div><button id="run">执行</button></div><pre id="output"></pre></article>
+<article class="card wide"><div class="cardhead"><h2>审计日志</h2><button id="auditRefresh">刷新</button></div><div class="tablewrap"><table><thead><tr><th>时间</th><th>设备</th><th>动作</th><th>命令/路径</th><th>退出码</th><th>耗时</th><th>来源</th></tr></thead><tbody id="audits"></tbody></table></div></article>
+</section>
+</main><script src="/static/app.js"></script></body></html>
