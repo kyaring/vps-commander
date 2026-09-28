@@ -1,14 +1,12 @@
 #!/bin/bash
 set -e
 
-# VPS-Commander Agent 一键平滑安全升级脚本
-# 支持 GitHub Release 与 Gitea 多源智能下载及自动故障切换
+# VPS-Commander Agent 一键安全升级脚本
+# Repo: https://github.com/kyaring/vps-commander
 
-GITHUB_REPO="kyaring/vps-commander"
-GITEA_HOST="gitea.king.nyc.mn"
-GITEA_REPO="openclaw/vps-commander"
-
+REPO="kyaring/vps-commander"
 INSTALL_DIR="/opt/vps-commander"
+GITHUB_URL="https://github.com"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -39,26 +37,20 @@ case "$ARCH" in
 esac
 
 info "正在获取最新 Release 版本信息..."
-LATEST_TAG=$(curl -fsSL -k --connect-timeout 4 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL -k "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-    warn "无法通过 GitHub API 获取 Tag，回退至稳定版本 v1.1.5"
+    warn "无法通过 GitHub API 自动获取 Tag，回退至 v1.1.5"
     LATEST_TAG="v1.1.5"
 fi
 info "目标升级版本: ${LATEST_TAG} (${TARGET_ARCH})"
 
 BIN_NAME="vps-commander-agent-linux-${TARGET_ARCH}"
+DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 TMP_BIN="${INSTALL_DIR}/vps-commander-agent.tmp"
 BAK_BIN="${INSTALL_DIR}/vps-commander-agent.bak"
 
-GITHUB_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
-GITEA_URL="https://${GITEA_HOST}/${GITEA_REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
-
 info "正在下载新版本二进制文件..."
-# 优先尝试 GitHub，失败自动切换 Gitea
-if ! curl -fsSL -k --connect-timeout 8 -o "${TMP_BIN}" "${GITHUB_URL}"; then
-    warn "GitHub 下载失败或超时，自动切换至 Gitea 私有镜像下载..."
-    curl -fsSL -k -o "${TMP_BIN}" "${GITEA_URL}" || error "所有源下载均失败，请检查网络"
-fi
+curl -fsSL -k -o "${TMP_BIN}" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
 
 # 完整性校验：文件大小不能小于 1MB
 FILE_SIZE=$(stat -c%s "${TMP_BIN}" 2>/dev/null || stat -f%z "${TMP_BIN}" 2>/dev/null || echo 0)
