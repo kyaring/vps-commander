@@ -20,13 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
-            - name: Determine Version Tag & Generate Notes
+      - name: Determine Version Tag & Generate Notes
         id: versioning
         run: |
           PREV_TAG=$(git tag -l "v*" --sort=-v:refname | head -n1)
-          if [ -z "$PREV_TAG" ]; then
-            PREV_TAG=""
-          fi
+          echo "Previous tag: $PREV_TAG"
 
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
@@ -48,17 +46,23 @@ jobs:
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-          # 生成有意义的变更日志内容
-          echo "### 🚀 What's Changed in ${TAG}" > release_notes.md
-          echo "" >> release_notes.md
+          # 生成详细的 Release Changelog 正文
+          cat << NOTES > release_notes.md
+          ### 🚀 What's Changed in ${TAG}
+
+          NOTES
+
           if [ -n "$PREV_TAG" ]; then
             git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h by @%an)" >> release_notes.md
           else
             git log -n 10 --pretty=format:"- %s (%h by @%an)" >> release_notes.md
           fi
+
           echo "" >> release_notes.md
           echo "" >> release_notes.md
-          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> release_notes.md
+          if [ -n "$PREV_TAG" ]; then
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> release_notes.md
+          fi
           cat release_notes.md
 
       - name: Set up Go
@@ -82,7 +86,7 @@ jobs:
           sha256sum * > checksums.txt
           cd ..
 
-            - name: Create GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.versioning.outputs.tag }}
