@@ -12,13 +12,14 @@ import (
 )
 
 type Profile struct {
-	Role            string  `json:"role"`
+	Role            string  `json:"role,omitempty"`
 	CPUCores        int     `json:"cpu_cores"`
 	CPUUsagePercent int     `json:"cpu_usage_percent"`
+	Load1M          float64 `json:"load_1m"`
 	MemPercent      int     `json:"mem_percent"`
 	MemAvailable    string  `json:"mem_available"`
-	SwapPercent     int     `json:"swap_percent"`
 	DiskPercent     int     `json:"disk_percent"`
+	DiskFree        string  `json:"disk_free"`
 	IOPSI           float64 `json:"io_psi"`
 	Docker          bool    `json:"docker"`
 	UpdatedAt       int64   `json:"updated_at"`
@@ -35,8 +36,9 @@ func Collect(defaultRole string) Profile {
 
 	cores := runtime.NumCPU()
 	cpuPercent := getCPUUsage()
-	memPct, memAvl, swapPct := getMemAndSwap()
-	diskPct := getDiskPercent()
+	load1m := getLoad1M()
+	memPct, memAvl := getMemInfo()
+	diskPct, diskFree := getDiskInfo()
 	psi := getIOPSI()
 	docker := hasDocker()
 
@@ -44,23 +46,34 @@ func Collect(defaultRole string) Profile {
 		Role:            role,
 		CPUCores:        cores,
 		CPUUsagePercent: cpuPercent,
+		Load1M:          load1m,
 		MemPercent:      memPct,
 		MemAvailable:    memAvl,
-		SwapPercent:     swapPct,
 		DiskPercent:     diskPct,
+		DiskFree:        diskFree,
 		IOPSI:           psi,
 		Docker:          docker,
 		UpdatedAt:       time.Now().Unix(),
 	}
 }
 
+func getLoad1M() float64 {
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		fields := strings.Fields(string(data))
+		if len(fields) > 0 {
+			if val, err := strconv.ParseFloat(fields[0], 64); err == nil {
+				return val
+			}
+		}
+	}
+	return 0.0
+}
+
 func getCPUUsage() int {
-	// 尝试从 /proc/stat 快速采样或 /proc/loadavg
 	pct := sampleCPUStat()
 	if pct >= 0 {
 		return pct
 	}
-	// 回退到 loadavg / cores * 100
 	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
 		fields := strings.Fields(string(data))
 		if len(fields) > 0 {
@@ -127,14 +140,14 @@ func sampleCPUStat() int {
 	return int(busy)
 }
 
-func getMemAndSwap() (memPct int, memAvl string, swapPct int) {
+func getMemInfo() (memPct int, memAvl string) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, "N/A", 0
+		return 0, "N/A"
 	}
 	defer f.Close()
 
-	var total, free, avail, buffers, cached, swapTotal, swapFree uint64
+	var total, free, avail, buffers, cached uint64
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -159,10 +172,6 @@ func getMemAndSwap() (memPct int, memAvl string, swapPct int) {
 			buffers = v
 		case "Cached":
 			cached = v
-		case "SwapTotal":
-			swapTotal = v
-		case "SwapFree":
-			swapFree = v
 		}
 	}
 
@@ -182,34 +191,35 @@ func getMemAndSwap() (memPct int, memAvl string, swapPct int) {
 		memAvl = "N/A"
 	}
 
-	if swapTotal > 0 {
-		swapUsed := swapTotal - swapFree
-		swapPct = int(float64(swapUsed) / float64(swapTotal) * 100)
-	}
-
-	return memPct, memAvl, swapPct
+	return memPct, memAvl
 }
 
-func getDiskPercent() int {
+func getDiskInfo() (diskPct int, diskFree string) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs("/", &stat); err != nil {
-		return 0
+		return 0, "N/A"
 	}
 	total := stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
+	free := stat.Bavail * uint64(stat.Bsize)
 	if total == 0 {
-		return 0
+		return 0, "N/A"
 	}
 	used := total - free
-	pct := int(float64(used) / float64(total) * 100)
-	if pct > 100 {
-		pct = 100
+	diskPct = int(float64(used) / float64(total) * 100)
+	if diskPct > 100 {
+		diskPct = 100
 	}
-	return pct
+
+	if free >= 1024*1024*1024 {
+		diskFree = fmt.Sprintf("%.1fG", float64(free)/(1024*1024*1024))
+	} else {
+		diskFree = fmt.Sprintf("%dM", free/(1024*1024))
+	}
+
+	return diskPct, diskFree
 }
 
 func getIOPSI() float64 {
-	// 读取 /proc/pressure/io
 	data, err := os.ReadFile("/proc/pressure/io")
 	if err == nil {
 		lines := strings.Split(string(data), "\n")
@@ -227,7 +237,6 @@ func getIOPSI() float64 {
 			}
 		}
 	}
-	// 回退：/proc/loadavg 的 1min load
 	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
 		fields := strings.Fields(string(data))
 		if len(fields) > 0 {

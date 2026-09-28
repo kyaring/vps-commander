@@ -39,15 +39,12 @@ async function loadDevices(){
     const role = p.role || "APPLICATION";
     const isOnline = d.status === "online";
     const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
-    const memStr = p.mem_percent !== undefined ? `${p.mem_percent}%` + (p.mem_available ? ` (${p.mem_available})` : '') : '-';
-    const swapStr = (p.swap_percent !== undefined && p.swap_percent !== null) ? `${p.swap_percent}%` : '-';
-    const diskStr = p.disk_percent !== undefined ? `${p.disk_percent}%` : '-';
+    const loadStr = p.load_1m !== undefined ? p.load_1m.toFixed(2) : '-';
+    const memStr = p.mem_available ? `${p.mem_available} (${p.mem_percent}%)` : (p.mem_percent !== undefined ? `${p.mem_percent}%` : '-');
+    const diskStr = p.disk_free ? `${p.disk_free} (${p.disk_percent}%)` : (p.disk_percent !== undefined ? `${p.disk_percent}%` : '-');
     const psiStr = p.io_psi !== undefined ? p.io_psi.toFixed(2) : '-';
     const dockerVal = p.docker ? 'YES' : 'NO';
     const dockerClass = p.docker ? 'yes' : 'no';
-
-    const statusText = isOnline ? "在线" : "离线";
-    const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
 
     return `
       <div class="device-card ${isOnline ? "online" : "offline"}">
@@ -63,9 +60,9 @@ async function loadDevices(){
         </div>
         <div class="profile-grid">
           <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
+          <div class="p-item"><span class="p-label">LOAD</span><span class="p-val">${loadStr}</span></div>
           <div class="p-item"><span class="p-label">MEM</span><span class="p-val">${memStr}</span></div>
           <div class="p-item"><span class="p-label">DISK</span><span class="p-val">${diskStr}</span></div>
-          <div class="p-item"><span class="p-label">SWAP</span><span class="p-val">${swapStr}</span></div>
           <div class="p-item"><span class="p-label">IO PSI</span><span class="p-val">${psiStr}</span></div>
           <div class="p-item"><span class="p-label">DOCKER</span><span class="p-val badge-docker-text ${dockerClass}">${dockerVal}</span></div>
         </div>
