@@ -20,32 +20,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine Version Tag
+            - name: Determine Version Tag & Generate Notes
         id: versioning
         run: |
+          PREV_TAG=$(git tag -l "v*" --sort=-v:refname | head -n1)
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG=""
+          fi
+
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            # 获取最新语义化版本 tag (例如 v1.1.0)
-            LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n1)
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="v1.0.0"
+            if [ -z "$PREV_TAG" ]; then
+              TAG="v1.0.0"
+            else
+              VER_NUM="${PREV_TAG#v}"
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$VER_NUM"
+              PATCH=$((PATCH + 1))
+              TAG="v${MAJOR}.${MINOR}.${PATCH}"
             fi
-            # 去除前缀 v
-            VER_NUM="${LATEST_TAG#v}"
-            # 拆解 MAJOR.MINOR.PATCH
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VER_NUM"
-            PATCH=$((PATCH + 1))
-            TAG="v${MAJOR}.${MINOR}.${PATCH}"
             echo "Auto incremented patch version to $TAG"
             
-            # 打上本地 tag 并推送到远程
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git tag "$TAG"
             git push origin "$TAG"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+          # 生成有意义的变更日志内容
+          echo "### 🚀 What's Changed in ${TAG}" > release_notes.md
+          echo "" >> release_notes.md
+          if [ -n "$PREV_TAG" ]; then
+            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h by @%an)" >> release_notes.md
+          else
+            git log -n 10 --pretty=format:"- %s (%h by @%an)" >> release_notes.md
+          fi
+          echo "" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> release_notes.md
+          cat release_notes.md
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -68,11 +82,11 @@ jobs:
           sha256sum * > checksums.txt
           cd ..
 
-      - name: Create GitHub Release
+            - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.versioning.outputs.tag }}
           name: Release ${{ steps.versioning.outputs.tag }}
+          body_path: release_notes.md
           files: |
             dist/*
-          generate_release_notes: true
