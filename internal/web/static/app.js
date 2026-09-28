@@ -46,21 +46,20 @@ async function loadDevices(){
     const dockerVal = p.docker ? 'YES' : 'NO';
     const dockerClass = p.docker ? 'yes' : 'no';
 
+    const statusText = isOnline ? "在线" : "离线";
+    const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
+
     return `
       <div class="device-card ${isOnline ? "online" : "offline"}">
-        <div class="device-topbar">
-          <div class="device-status-wrap">
-            <span class="dot"></span>
-            <span class="role-badge role-${role.toLowerCase()}">${esc(role)}</span>
+        <div class="v1-head">
+          <div class="v1-row1">
+            <div class="v1-title">
+              <span class="dot"></span>
+              <strong class="v1-name" title="${esc(d.name)}">${esc(d.name)}</strong>
+            </div>
+            <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
           </div>
-          <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
-        </div>
-        <div class="device-name-row">
-          <strong class="device-name" title="${esc(d.name)}">${esc(d.name)}</strong>
-        </div>
-        <div class="device-meta">
-          <span>${esc(d.status)}</span> ·
-          <span>${esc(d.arch||"")}/${esc(d.os||"")}</span>
+          <div class="v1-row2">${archOs}${statusText}</div>
         </div>
         <div class="profile-grid">
           <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
