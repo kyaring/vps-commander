@@ -12,20 +12,24 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wjyhk/vps-commander/internal/storage"
+	"github.com/wjyhk/vps-commander/internal/sysinfo"
 )
 
 type Manager struct {
 	Secret string
+	Store  *storage.Store
 	mu     sync.RWMutex
 	nodes  map[string]*Node
 }
 
 type Node struct {
-	Name     string
-	Conn     *websocket.Conn
-	WriteMu  sync.Mutex
-	Pending  sync.Map
-	LastSeen atomic.Int64
+	Name        string
+	Conn        *websocket.Conn
+	WriteMu     sync.Mutex
+	Pending     sync.Map
+	LastSeen    atomic.Int64
+	LastProfile *sysinfo.Profile
 }
 
 type Result struct {
@@ -46,6 +50,11 @@ type FileResult struct {
 func NewManager(secret string) *Manager {
 	return &Manager{Secret: secret, nodes: make(map[string]*Node)}
 }
+
+func (m *Manager) SetStore(s *storage.Store) {
+	m.Store = s
+}
+
 func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	auth := r.Header.Get("Authorization")
 	provided := ""
@@ -61,6 +70,14 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device_name required", 400)
 		return
 	}
+
+	if m.Store != nil {
+		if revoked, _ := m.Store.IsRevoked(name); revoked {
+			http.Error(w, "device has been revoked by admin", 403)
+			return
+		}
+	}
+
 	up := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	c, err := up.Upgrade(w, r, nil)
 	if err != nil {
@@ -115,7 +132,10 @@ func (m *Manager) readLoop(n *Node) {
 		}
 		n.LastSeen.Store(time.Now().UnixNano())
 		_ = n.Conn.SetReadDeadline(time.Now().Add(75 * time.Second))
-		if msg.Event == "pong" || msg.Event == "ping" {
+		if msg.Profile != nil {
+			n.LastProfile = msg.Profile
+		}
+		if msg.Event == "pong" || msg.Event == "ping" || msg.Event == "hello" || msg.Event == "profile" {
 			continue
 		}
 		if msg.ID != "" {
@@ -130,11 +150,28 @@ func (m *Manager) readLoop(n *Node) {
 		}
 	}
 }
+
 func (m *Manager) Online(name string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	n := m.nodes[name]
 	return n != nil && time.Since(time.Unix(0, n.LastSeen.Load())) < 70*time.Second
+}
+
+func (m *Manager) RevokeDevice(name, reason string) error {
+	m.mu.Lock()
+	n, exists := m.nodes[name]
+	if exists {
+		delete(m.nodes, name)
+		_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})
+		_ = n.Conn.Close()
+	}
+	m.mu.Unlock()
+
+	if m.Store != nil {
+		return m.Store.RevokeDevice(name, reason)
+	}
+	return nil
 }
 
 func (m *Manager) Devices() []map[string]any {
@@ -147,7 +184,16 @@ func (m *Manager) Devices() []map[string]any {
 		if time.Since(lastSeen) >= 70*time.Second {
 			status = "offline"
 		}
-		out = append(out, map[string]any{"name": name, "status": status, "is_local": false, "last_heartbeat": lastSeen.Unix()})
+		item := map[string]any{
+			"name":           name,
+			"status":         status,
+			"is_local":       false,
+			"last_heartbeat": lastSeen.Unix(),
+		}
+		if n.LastProfile != nil {
+			item["profile"] = n.LastProfile
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -180,6 +226,7 @@ func (m *Manager) call(ctx context.Context, name, action string, payload any) (M
 		return Message{}, ctx.Err()
 	}
 }
+
 func (m *Manager) Exec(ctx context.Context, name string, p ExecPayload) (Result, error) {
 	msg, err := m.call(ctx, name, "exec", p)
 	if err != nil {

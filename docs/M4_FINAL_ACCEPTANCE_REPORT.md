@@ -1,7 +1,7 @@
 # VPS-Commander M4 最终验收报告（待人工签收）
 
 日期：2026-09-28
-状态：🟡 技术收尾完成，等待 Custom GPT Actions 人工签收
+状态：🟡 技术收尾完成；管理面板 UI 已人工验收并上线，M4 总体验收仍等待 Custom GPT Actions 人工签收
 
 ## 已完成
 
@@ -25,3 +25,5 @@
 4. 完成后由用户人工确认 M4 通过。
 
 在此之前，本报告不得视为 Release Ready / M4 Passed。
+
+- 管理面板 UI 已完成手机端多 Agent 适配与深/浅双态主题；用户人工验收通过后已重新构建 Hub 并重启 systemd，线上 embed 静态资源已立即生效。

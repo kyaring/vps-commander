@@ -9,24 +9,76 @@ const $=s=>document.querySelector(s);
     localStorage.setItem("vpc_theme",next);
   };
 })();
+
 async function api(path,opt={}){
   let r=await fetch("/panel/api"+path,opt);
   if(r.status===401){location.href="/panel/login";throw Error("unauthorized")}
   if(!r.ok)throw Error(await r.text());
   return r.json()
 }
+
 function esc(v){
   return String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))
 }
+
+async function removeDevice(name){
+  if(!confirm(`确认注销并踢出节点 [${name}] 吗？\n注销后该节点将被断开并禁止再次连入。`)) return;
+  try{
+    await api("/devices?name="+encodeURIComponent(name), {method: "DELETE"});
+    await loadDevices();
+  }catch(e){
+    alert("注销失败: "+e.message);
+  }
+}
+
 async function loadDevices(){
   let ds=await api("/devices");
-  $("#devices").innerHTML=ds.map(d=>'<div class="device '+(d.status==="online"?"":"offline")+'"><b><i class="dot"></i>'+esc(d.name)+'</b><div class="status">'+esc(d.status)+' · '+(d.is_local?"local":"remote")+' · '+esc(d.arch||"")+'/'+esc(d.os||"")+'</div></div>').join("");
-  $("#device").innerHTML=ds.map(d=>'<option>'+esc(d.name)+'</option>').join("")
+  $("#devices").innerHTML=ds.map(d=>{
+    const p = d.profile || {};
+    const role = p.role || (d.is_local ? "CONTROL" : "APPLICATION");
+    const isOnline = d.status === "online";
+    const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
+    const memStr = p.mem_percent !== undefined ? `${p.mem_percent}%` + (p.mem_available ? ` (${p.mem_available})` : '') : '-';
+    const swapStr = p.swap_percent !== undefined ? `${p.swap_percent}%` : '-';
+    const diskStr = p.disk_percent !== undefined ? `${p.disk_percent}%` : '-';
+    const psiStr = p.io_psi !== undefined ? p.io_psi.toFixed(2) : '-';
+    const dockerBadge = p.docker ? '<span class="badge-docker yes">Docker YES</span>' : '<span class="badge-docker no">Docker NO</span>';
+
+    return `
+      <div class="device-card ${isOnline ? "online" : "offline"}">
+        <div class="device-head">
+          <div class="device-title">
+            <span class="dot"></span>
+            <strong class="device-name">${esc(d.name)}</strong>
+            <span class="role-badge role-${role.toLowerCase()}">${esc(role)}</span>
+          </div>
+          ${d.is_local ? '' : `<button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>`}
+        </div>
+        <div class="device-meta">
+          <span>${esc(d.status)}</span> ·
+          <span>${d.is_local ? "local" : "remote"}</span> ·
+          <span>${esc(d.arch||"")}/${esc(d.os||"")}</span>
+        </div>
+        <div class="profile-grid">
+          <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
+          <div class="p-item"><span class="p-label">Mem</span><span class="p-val">${memStr}</span></div>
+          <div class="p-item"><span class="p-label">Swap</span><span class="p-val">${swapStr}</span></div>
+          <div class="p-item"><span class="p-label">Disk</span><span class="p-val">${diskStr}</span></div>
+          <div class="p-item"><span class="p-label">IO PSI</span><span class="p-val">${psiStr}</span></div>
+          <div class="p-item p-docker">${dockerBadge}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  $("#device").innerHTML=ds.map(d=>'<option>'+esc(d.name)+'</option>').join("");
 }
+
 async function loadAudits(){
   let a=await api("/audits?limit=100");
   $("#audits").innerHTML=a.map(x=>'<tr><td>'+new Date(x.timestamp*1000).toLocaleString()+'</td><td>'+esc(x.device)+'</td><td>'+esc(x.action)+'</td><td><code>'+esc(x.command)+'</code></td><td>'+x.exit_code+'</td><td>'+x.duration_ms+'ms</td><td>'+esc(x.caller_ip)+'</td></tr>').join("")
 }
+
 $("#refresh").onclick=loadDevices;
 $("#auditRefresh").onclick=loadAudits;
 $("#run").onclick=async()=>{

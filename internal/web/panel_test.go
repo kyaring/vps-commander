@@ -13,6 +13,7 @@ func (testRunner) DevicesJSON(w http.ResponseWriter, r *http.Request)  {}
 func (testRunner) AuditsJSON(w http.ResponseWriter, r *http.Request)   {}
 func (testRunner) PanelExec(w http.ResponseWriter, r *http.Request)    {}
 func (testRunner) RotateAPIKey(w http.ResponseWriter, r *http.Request) {}
+func (testRunner) DeleteDevice(w http.ResponseWriter, r *http.Request) {}
 
 func TestStaticCSSContentType(t *testing.T) {
 	p := New("test-password", testRunner{})

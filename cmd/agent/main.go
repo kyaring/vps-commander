@@ -16,6 +16,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
+	"github.com/wjyhk/vps-commander/internal/sysinfo"
 )
 
 func main() {
@@ -68,23 +69,29 @@ func run(hub, name, token string, insecure bool) error {
 		return err
 	}
 	exec := executor.Local{MaxOutput: 1024 * 1024}
-	if err := writeJSON(cluster.Message{Event: "hello", Device: name, TS: time.Now().Unix()}); err != nil {
+
+	// 初始握手附带画像
+	initProf := sysinfo.Collect("APPLICATION")
+	if err := writeJSON(cluster.Message{Event: "hello", Device: name, Profile: &initProf, TS: time.Now().Unix()}); err != nil {
 		return err
 	}
+
 	stopPing := make(chan struct{})
 	defer close(stopPing)
 	go func() {
-		t := time.NewTicker(30 * time.Second)
+		t := time.NewTicker(15 * time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
-				_ = writeJSON(cluster.Message{Event: "ping", Device: name, TS: time.Now().Unix()})
+				prof := sysinfo.Collect("APPLICATION")
+				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Profile: &prof, TS: time.Now().Unix()})
 			case <-stopPing:
 				return
 			}
 		}
 	}()
+
 	for {
 		var msg cluster.Message
 		if err := c.ReadJSON(&msg); err != nil {
@@ -94,8 +101,13 @@ func run(hub, name, token string, insecure bool) error {
 		if msg.Event == "registered" {
 			continue
 		}
+		if msg.Event == "revoked" {
+			log.Printf("device revoked by admin: %s", msg.Error)
+			return errors.New("revoked by admin")
+		}
 		if msg.Event == "ping" {
-			if err := writeJSON(cluster.Message{Event: "pong", Device: name, TS: msg.TS}); err != nil {
+			prof := sysinfo.Collect("APPLICATION")
+			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Profile: &prof, TS: msg.TS}); err != nil {
 				return err
 			}
 			continue
@@ -185,6 +197,7 @@ func decodePayload(v any, out any) error {
 	}
 	return json.Unmarshal(b, out)
 }
+
 func sendError(writeJSON func(cluster.Message) error, id string, err error) error {
 	return writeJSON(cluster.Message{ID: id, Status: "error", Error: err.Error()})
 }

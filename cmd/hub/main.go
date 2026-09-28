@@ -55,7 +55,7 @@ func main() {
 	s := &api.Server{
 		Auth:      authManager,
 		Exec:      executor.Local{MaxOutput: 1024 * 1024},
-		Cluster:   cluster.NewManager(clusterSecret),
+		Cluster:   func() *cluster.Manager { m := cluster.NewManager(clusterSecret); m.SetStore(store); return m }(),
 		Store:     store,
 		LocalName: local,
 	}

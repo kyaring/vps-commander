@@ -1,5 +1,7 @@
 package model
 
+import "github.com/wjyhk/vps-commander/internal/sysinfo"
+
 type ExecRequest struct {
 	Device  string `json:"device,omitempty"`
 	Command string `json:"command"`
@@ -16,11 +18,12 @@ type ExecResponse struct {
 }
 
 type Device struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Local  bool   `json:"is_local"`
-	Arch   string `json:"arch,omitempty"`
-	OS     string `json:"os,omitempty"`
+	Name    string           `json:"name"`
+	Status  string           `json:"status"`
+	Local   bool             `json:"is_local"`
+	Arch    string           `json:"arch,omitempty"`
+	OS      string           `json:"os,omitempty"`
+	Profile *sysinfo.Profile `json:"profile,omitempty"`
 }
 
 type FileReadRequest struct {

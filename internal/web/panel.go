@@ -20,6 +20,7 @@ type Runner interface {
 	AuditsJSON(http.ResponseWriter, *http.Request)
 	PanelExec(http.ResponseWriter, *http.Request)
 	RotateAPIKey(http.ResponseWriter, *http.Request)
+	DeleteDevice(http.ResponseWriter, *http.Request)
 }
 
 type Panel struct {
@@ -38,12 +39,20 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/login", p.login)
 	mux.HandleFunc("/panel/logout", p.logout)
 	mux.HandleFunc("/static/", p.static)
-	mux.HandleFunc("/panel/api/devices", p.protected(p.Runner.DevicesJSON))
+	mux.HandleFunc("/panel/api/devices", p.protected(p.handleDevices))
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
 	mux.HandleFunc("/", p.index)
 	return mux
+}
+
+func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		p.Runner.DeleteDevice(w, r)
+		return
+	}
+	p.Runner.DevicesJSON(w, r)
 }
 
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +149,9 @@ func (p *Panel) static(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(path) >= 3 && path[len(path)-3:] == ".js" {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	}
+	if strings.HasSuffix(path, ".png") {
+		w.Header().Set("Content-Type", "image/png")
 	}
 	_, _ = w.Write(data)
 }

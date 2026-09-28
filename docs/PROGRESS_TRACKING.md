@@ -107,6 +107,14 @@
 - [x] 临时凭据文件 `/tmp/m4-prod.env` 已删除；`/etc/vps-commander/{hub,agent}.env` 权限均为 `0600`。
 - [ ] Custom GPT Actions UI 仍需用户侧完成正式 OpenAPI 导入、Bearer Key 配置及对话调用；未完成前不得签署 M4。
 
+### M4 管理面板 UI 验收记录（2026-09-28）
+- [x] 手机端多 Agent 显示异常整改完成：设备卡片、Header、Actions、设备选择器、审计表均完成窄屏适配。
+- [x] 面板颜色体系改为 CSS Variables 双态主题，支持深色/浅色切换。
+- [x] 主题选择持久化到 localStorage，登录页与主面板统一。
+- [x] UI 静态资源与 Go embed 资源保持同步，并完成 Node JS 语法、go test ./...、release build 验证。
+- [x] 用户已于 2026-09-28 人工验收通过；已重新构建 Hub 二进制并重启 systemd 服务，正式线上 UI 已立即生效。
+- [ ] M4 总体验收仍保留 Custom GPT Actions 正式联调、Key 轮换及最终人工签收门禁。
+
 ### M4 终验签收记录（2026-09-28）
 - [x] 安全清理：已彻底清除 `openapi.json` 中冗余残留的 `apiKey` 定义，统一收敛为标准 `bearerAuth`。
 - [x] 二次回归验证通过：全链路 API 鉴权、受控节点列表获取及本地命令执行均现场实测 100% PASS。

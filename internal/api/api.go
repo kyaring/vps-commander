@@ -18,6 +18,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/model"
 	"github.com/wjyhk/vps-commander/internal/storage"
+	"github.com/wjyhk/vps-commander/internal/sysinfo"
 	panelweb "github.com/wjyhk/vps-commander/internal/web"
 )
 
@@ -104,7 +105,8 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	out := []model.Device{{Name: s.LocalName, Status: "online", Local: true, Arch: runtime.GOARCH, OS: runtime.GOOS}}
+	localProf := sysinfo.Collect("CONTROL")
+	out := []model.Device{{Name: s.LocalName, Status: "online", Local: true, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &localProf}}
 	if s.Cluster != nil {
 		for _, d := range s.Cluster.Devices() {
 			b, _ := json.Marshal(d)
@@ -114,6 +116,28 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonOut(w, out)
+}
+
+func (s *Server) DeleteDevice(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "device name required", 400)
+		return
+	}
+	if name == s.LocalName || name == "local" {
+		http.Error(w, "cannot delete local control node", 403)
+		return
+	}
+	if s.Cluster != nil {
+		if err := s.Cluster.RevokeDevice(name, "revoked by admin via web console"); err != nil {
+			http.Error(w, "revoke failed: "+err.Error(), 500)
+			return
+		}
+	} else if s.Store != nil {
+		_ = s.Store.RevokeDevice(name, "revoked by admin via web console")
+	}
+	_ = s.Store.Audit(clientIP(r), name, "revoke_device", "revoked by admin", 0, 0, "")
+	jsonOut(w, map[string]any{"ok": true, "revoked": name})
 }
 
 func (s *Server) agentWS(w http.ResponseWriter, r *http.Request) {

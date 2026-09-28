@@ -97,3 +97,30 @@ func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) InitRevocationTable() error {
+	_, err := s.DB.Exec(`CREATE TABLE IF NOT EXISTS revoked_devices (
+		name TEXT PRIMARY KEY,
+		revoked_at INTEGER NOT NULL,
+		reason TEXT
+	);`)
+	return err
+}
+
+func (s *Store) RevokeDevice(name, reason string) error {
+	_, err := s.DB.Exec(`INSERT INTO revoked_devices(name, revoked_at, reason)
+		VALUES(?, ?, ?) ON CONFLICT(name) DO UPDATE SET revoked_at=excluded.revoked_at, reason=excluded.reason`,
+		name, time.Now().Unix(), reason)
+	return err
+}
+
+func (s *Store) UnrevokeDevice(name string) error {
+	_, err := s.DB.Exec(`DELETE FROM revoked_devices WHERE name = ?`, name)
+	return err
+}
+
+func (s *Store) IsRevoked(name string) (bool, error) {
+	var count int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM revoked_devices WHERE name = ?`, name).Scan(&count)
+	return count > 0, err
+}
