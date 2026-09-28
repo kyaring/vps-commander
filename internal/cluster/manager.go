@@ -407,6 +407,25 @@ func (m *Manager) CallMCP(ctx context.Context, name, server, tool string, args a
 	return out, nil
 }
 
+func (m *Manager) TestMCP(ctx context.Context, name string, service MCPService) ([]map[string]any, error) {
+	m.mu.RLock()
+	n := m.nodes[name]
+	m.mu.RUnlock()
+	if n == nil || !m.Online(name) {
+		return nil, fmt.Errorf("device %s is offline", name)
+	}
+	msg, err := m.call(ctx, name, "mcp_test", service)
+	if err != nil {
+		return nil, err
+	}
+	var out []map[string]any
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (m *Manager) heartbeat(n *Node) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()

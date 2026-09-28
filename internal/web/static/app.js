@@ -111,20 +111,80 @@ $("#logout").onclick=async()=>{
 loadDevices().then(loadAudits).catch(console.error);
 
 let mcpEditingId="";
+function mcpFieldError(id,message){
+  const el=$("#"+id); el.classList.add("mcp-field-error"); el.title=message;
+  const status=$("#mcpStatus"); status.textContent=message; status.style.color="#e05252";
+  el.focus();
+}
+function mcpClearErrors(){
+  ["mcpId","mcpName","mcpCommand","mcpUrl","mcpArgs","mcpHeaders","mcpEnv"].forEach(id=>{const el=$("#"+id);if(el){el.classList.remove("mcp-field-error");el.removeAttribute("title")}});
+  $("#mcpStatus").textContent=""; $("#mcpStatus").style.color="";
+}
+function parseMCPField(id,label,kind){
+  const el=$("#"+id); let value;
+  try{value=JSON.parse(el.value||"");}catch(e){mcpFieldError(id,label+" 必须是合法的 JSON "+kind+"，请检查格式。");throw e}
+  if(kind==="数组" && !Array.isArray(value)){mcpFieldError(id,label+" 必须是合法的 JSON 数组，如 []。");throw Error("invalid "+id)}
+  if(kind==="对象" && (value===null||Array.isArray(value)||typeof value!=="object")){mcpFieldError(id,label+" 必须是合法的 JSON 对象，如 {}。");throw Error("invalid "+id)}
+  return value;
+}
+function showMCPToast(message){
+  let t=$("#mcpToast"); if(!t){t=document.createElement("div");t.id="mcpToast";t.style.cssText="position:fixed;right:18px;top:18px;z-index:9999;padding:10px 14px;border:1px solid var(--line,#30343b);border-radius:8px;background:var(--card,#11151a);box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t)}
+  t.textContent=message; t.hidden=false; clearTimeout(t._timer); t._timer=setTimeout(()=>t.hidden=true,2600);
+}
 async function loadMCPServices(){
   const services=await api("/mcp/services");
-  const devices=(await api("/devices")).filter(d=>!d.is_local);
+  const allDevices=await api("/devices");
+  const devices=allDevices.filter(d=>!d.is_local);
+  $("#mcpTestNode").innerHTML='<option value="local">Hub 本机</option>'+devices.filter(d=>d.status==="online").map(d=>'<option value="'+esc(d.name)+'">'+esc(d.name)+'（在线）</option>').join("");
   $("#mcpNodes").innerHTML=devices.map(d=>`<label><input type="checkbox" value="${esc(d.name)}">${esc(d.name)}</label>`).join("");
   $("#mcpList").innerHTML=services.map(s=>`<div class="mcp-item"><h3>${esc(s.name)} <small>${esc(s.id)}</small></h3><div class="mcp-meta">${esc(s.transport)} · ${s.scope==='custom'?'指定节点':'全部节点'} · ${s.enabled?'启用':'停用'}${s.url?' · '+esc(s.url):s.command?' · '+esc(s.command):''}</div><div class="mcp-actions"><button type="button" onclick="editMCP('${esc(s.id)}')">编辑</button><button type="button" onclick="deleteMCP('${esc(s.id)}')">删除</button></div></div>`).join("")||'<div class="mcp-meta">暂无 MCP 服务配置。</div>';
 }
 function resetMCPForm(){
-  mcpEditingId=""; $("#mcpEditor").hidden=false; $("#mcpId").disabled=false; ["mcpId","mcpName","mcpCommand","mcpUrl"].forEach(id=>$("#"+id).value=""); $("#mcpTransport").value="stdio"; $("#mcpEnabled").value="1"; $("#mcpArgs").value="[]"; $("#mcpHeaders").value="{}"; $("#mcpEnv").value="{}"; $("#mcpScope").value="all"; $("#mcpStatus").textContent=""; $("#mcpNodes").querySelectorAll("input").forEach(x=>x.checked=false);
+  mcpEditingId=""; $("#mcpEditor").hidden=false; $("#mcpId").disabled=false; ["mcpId","mcpName","mcpCommand","mcpUrl"].forEach(id=>$("#"+id).value=""); $("#mcpTransport").value="stdio"; $("#mcpEnabled").value="1"; $("#mcpArgs").value="[]"; $("#mcpHeaders").value="{}"; $("#mcpEnv").value="{}"; $("#mcpScope").value="all"; $("#mcpStatus").textContent=""; $("#mcpTestResult").hidden=true; $("#mcpTestResult").textContent=""; $("#mcpNodes").querySelectorAll("input").forEach(x=>x.checked=false);
 }
 async function editMCP(id){
   const services=await api("/mcp/services"); const s=services.find(x=>x.id===id); if(!s)return; resetMCPForm(); mcpEditingId=id; $("#mcpId").value=s.id; $("#mcpId").disabled=true; $("#mcpName").value=s.name||""; $("#mcpTransport").value=s.transport; $("#mcpEnabled").value=s.enabled?"1":"0"; $("#mcpCommand").value=s.command||""; $("#mcpUrl").value=s.url||""; $("#mcpArgs").value=s.args_json||"[]"; $("#mcpHeaders").value=s.headers_json||"{}"; $("#mcpEnv").value=s.env_json||"{}"; $("#mcpScope").value=s.scope||"all"; let nodes=[];try{nodes=JSON.parse(s.target_nodes_json||"[]")}catch(e){};$("#mcpNodes").querySelectorAll("input").forEach(x=>x.checked=nodes.includes(x.value));
 }
 async function deleteMCP(id){if(!confirm(`确认删除 MCP 服务 [${id}]？`))return;try{await api("/mcp/service?id="+encodeURIComponent(id),{method:"DELETE"});await loadMCPServices()}catch(e){alert("删除失败: "+e.message)}}
 $("#mcpNew").onclick=resetMCPForm; $("#mcpCancel").onclick=()=>$("#mcpEditor").hidden=true;
-$("#mcpSave").onclick=async()=>{try{const scope=$("#mcpScope").value;const body={id:$("#mcpId").value.trim(),name:$("#mcpName").value.trim(),transport:$("#mcpTransport").value,command:$("#mcpCommand").value.trim(),url:$("#mcpUrl").value.trim(),scope,enabled:$("#mcpEnabled").value==="1",args:JSON.parse($("#mcpArgs").value||"[]"),headers:JSON.parse($("#mcpHeaders").value||"{}"),env:JSON.parse($("#mcpEnv").value||"{}"),target_nodes:[...$("#mcpNodes").querySelectorAll("input:checked")].map(x=>x.value)};if(!body.id||!body.name)throw Error("服务标识和显示名称不能为空");await api("/mcp/services",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#mcpStatus").textContent="已保存并向在线节点同步。";await loadMCPServices()}catch(e){$("#mcpStatus").textContent="保存失败: "+e.message}};
+$("#mcpSave").onclick=async()=>{
+  mcpClearErrors();
+  try{
+    const transport=$("#mcpTransport").value;
+    const body={id:$("#mcpId").value.trim(),name:$("#mcpName").value.trim(),transport,command:$("#mcpCommand").value.trim(),url:$("#mcpUrl").value.trim(),scope:$("#mcpScope").value,enabled:$("#mcpEnabled").value==="1",args:parseMCPField("mcpArgs","Arguments","数组"),headers:parseMCPField("mcpHeaders","Headers","对象"),env:parseMCPField("mcpEnv","环境变量","对象"),target_nodes:[...$("#mcpNodes").querySelectorAll("input:checked")].map(x=>x.value)};
+    if(!body.id){mcpFieldError("mcpId","服务标识不能为空。");return}
+    if(!body.name){mcpFieldError("mcpName","显示名称不能为空。");return}
+    if(transport==="stdio"&&!body.command){mcpFieldError("mcpCommand","stdio 模式必须填写 Command。");return}
+    if(transport!=="stdio"&&!body.url){mcpFieldError("mcpUrl","HTTP/SSE 模式必须填写 URL。");return}
+    await api("/mcp/services",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    showMCPToast("MCP ["+body.id+"] 已保存并同步到在线节点");
+    $("#mcpEditor").hidden=true;
+    await loadMCPServices();
+  }catch(e){if(!$("#mcpStatus").textContent)$("#mcpStatus").textContent="保存失败: "+e.message}
+};
+$("#mcpTest").onclick=async()=>{
+  mcpClearErrors();
+  const result=$("#mcpTestResult"); result.hidden=false; result.className="mcp-test-result"; result.textContent="正在测试连通性…";
+  try{
+    const transport=$("#mcpTransport").value;
+    const service={id:$("#mcpId").value.trim(),name:$("#mcpName").value.trim(),transport,command:$("#mcpCommand").value.trim(),url:$("#mcpUrl").value.trim(),args:parseMCPField("mcpArgs","Arguments","数组"),headers:parseMCPField("mcpHeaders","Headers","对象"),env:parseMCPField("mcpEnv","环境变量","对象")};
+    if(transport==="stdio"&&!service.command){mcpFieldError("mcpCommand","stdio 模式必须填写 Command。");result.hidden=true;return}
+    if(transport!=="stdio"&&!service.url){mcpFieldError("mcpUrl","HTTP/SSE 模式必须填写 URL。");result.hidden=true;return}
+    let node=$("#mcpTestNode").value;
+    if(node==="auto"||!node){const ds=(await api("/devices")).filter(d=>d.status==="online");node=ds.find(d=>!d.is_local)?.name||"local"}
+    const x=await api("/mcp/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device:node,service})});
+    if(!x.success)throw Error((x.error&&x.error.message)||"连通失败");
+    result.className="mcp-test-result ok";
+    result.innerHTML="<strong>✓ 连通成功！</strong> "+esc(x.device)+" · "+esc(x.transport)+" · "+x.duration_ms+"ms · 检测到 "+x.tool_count+" 个可用工具";
+    if(x.tool_count){result.innerHTML+='<ul class="mcp-test-tools">'+x.tools.map(t=>"<li><code>"+esc(t.name||"")+"</code>"+(t.description?" — "+esc(t.description):"")+"</li>").join("")+"</ul>"}
+  }catch(e){
+    result.className="mcp-test-result fail";
+    result.innerHTML='<strong>✗ 连通失败</strong><div class="mcp-test-detail">'+esc(e.message)+"</div>";
+  }
+};
 $("#mcpTransport").onchange=()=>{const stdio=$("#mcpTransport").value==="stdio";$("#mcpCommand").parentElement.style.display=stdio?"":"none";$("#mcpArgs").parentElement.style.display=stdio?"":"none";$("#mcpUrl").parentElement.style.display=stdio?"none":""};
 loadMCPServices().catch(console.error);
+
+async function loadSecuritySettings(){const x=await api("/security/settings"),nodes=x.nodes||[],effective=x.effective||{},configured=new Map(nodes.map(n=>[n.node,n.mode])),devices=await api("/devices");$("#globalSecurity").value=x.global||"medium";$("#securityNodes").innerHTML=devices.map(d=>{const mode=configured.get(d.name)||"inherit",eff=effective[d.name]||x.global||"medium";return `<tr><td>${esc(d.name)}</td><td><select data-security-node="${esc(d.name)}"><option value="inherit" ${mode==='inherit'?'selected':''}>跟随全局</option><option value="low" ${mode==='low'?'selected':''}>低 · Low</option><option value="medium" ${mode==='medium'?'selected':''}>中 · Medium</option><option value="high" ${mode==='high'?'selected':''}>高 · High</option></select></td><td>${esc(eff)}</td><td><button type="button" onclick="saveNodeSecurity('${esc(d.name)}')">保存</button></td></tr>`}).join("")}
+async function saveNodeSecurity(node){const el=document.querySelector(`[data-security-node="${CSS.escape(node)}"]`);if(!el)return;try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node,mode:el.value})});$("#securityStatus").textContent=`${node} 策略已保存。`;await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}}
+$("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);loadSecuritySettings().catch(console.error);

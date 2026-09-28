@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -36,6 +37,113 @@ type Server struct {
 	Cluster   *cluster.Manager
 	Store     *storage.Store
 	LocalName string
+}
+
+const (
+	SecurityLow     = "low"
+	SecurityMedium  = "medium"
+	SecurityHigh    = "high"
+	SecurityInherit = "inherit"
+)
+
+func (s *Server) GetEffectiveSecurityMode(node string) string {
+	if s.Store == nil {
+		return SecurityMedium
+	}
+	if mode, ok := s.Store.GetNodeSecurityMode(node); ok && mode != "" && mode != SecurityInherit {
+		return mode
+	}
+	return s.Store.GetGlobalSecurityMode()
+}
+
+func securityAllows(mode, action string) bool {
+	switch action {
+	case "read", "probe":
+		return true
+	case "write", "mcp":
+		return mode == SecurityMedium || mode == SecurityHigh
+	case "exec":
+		return mode == SecurityHigh
+	default:
+		return false
+	}
+}
+
+func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device, action, detail string) bool {
+	mode := s.GetEffectiveSecurityMode(device)
+	if securityAllows(mode, action) {
+		return true
+	}
+	reason := fmt.Sprintf("security mode %s denies %s", mode, action)
+	if detail != "" {
+		reason += ": " + detail
+	}
+	_ = s.Store.Audit(clientIP(r), device, "security_denied", action, http.StatusForbidden, 0, reason)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"forbidden","device":%q,"mode":%q,"reason":%q}`, device, mode, reason)))
+	return false
+}
+
+func (s *Server) SecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	nodes, err := s.Store.ListNodeSecurityModes()
+	if err != nil {
+		http.Error(w, "settings query failed", 500)
+		return
+	}
+	jsonOut(w, map[string]any{"global": s.Store.GetGlobalSecurityMode(), "nodes": nodes, "effective": func() map[string]string {
+		out := map[string]string{}
+		for _, d := range s.clusterDeviceNames() {
+			out[d] = s.GetEffectiveSecurityMode(d)
+		}
+		return out
+	}()})
+}
+
+func (s *Server) UpdateSecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var q struct {
+		Global string `json:"global"`
+		Node   string `json:"node"`
+		Mode   string `json:"mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if q.Global != "" {
+		if err := s.Store.SetGlobalSecurityMode(q.Global); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		_ = s.Store.Audit(clientIP(r), "", "security_setting", "global="+q.Global, 0, 0, "")
+	}
+	if q.Node != "" {
+		if err := s.Store.SetNodeSecurityMode(q.Node, q.Mode); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		_ = s.Store.Audit(clientIP(r), q.Node, "security_setting", "mode="+q.Mode, 0, 0, "")
+	}
+	jsonOut(w, map[string]any{"ok": true, "global": s.Store.GetGlobalSecurityMode(), "node": q.Node, "mode": q.Mode})
+}
+
+func (s *Server) clusterDeviceNames() []string {
+	out := []string{s.LocalName}
+	if s.Cluster == nil {
+		return out
+	}
+	for _, d := range s.Cluster.Devices() {
+		out = append(out, d["name"].(string))
+	}
+	return out
 }
 
 func (s *Server) Panel(password string) http.Handler {
@@ -97,6 +205,68 @@ type MCPCallRequest struct {
 	Arguments any    `json:"arguments"`
 }
 
+type MCPTestRequest struct {
+	Device  string            `json:"device"`
+	Service MCPServiceRequest `json:"service"`
+}
+
+func (s *Server) TestMCPJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var q MCPTestRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if q.Device == "" {
+		q.Device = s.LocalName
+	}
+	q.Service.Transport = strings.ToLower(strings.TrimSpace(q.Service.Transport))
+	if q.Service.Transport == "" {
+		http.Error(w, "transport required", 400)
+		return
+	}
+	if q.Service.Transport == "stdio" {
+		if strings.TrimSpace(q.Service.Command) == "" {
+			http.Error(w, "stdio command required", 400)
+			return
+		}
+	} else if q.Service.Transport == "http" || q.Service.Transport == "sse" {
+		if strings.TrimSpace(q.Service.URL) == "" {
+			http.Error(w, "HTTP/SSE URL required", 400)
+			return
+		}
+	} else {
+		http.Error(w, "unsupported transport", 400)
+		return
+	}
+	service := cluster.MCPService{ID: q.Service.ID, Name: q.Service.Name, Description: q.Service.Description, Transport: q.Service.Transport, Command: q.Service.Command, Args: q.Service.Args, Env: q.Service.Env, URL: q.Service.URL, Headers: q.Service.Headers}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	var tools []map[string]any
+	var err error
+	if s.isRemote(q.Device) {
+		if s.Cluster == nil || !s.Cluster.Online(q.Device) {
+			err = fmt.Errorf("device %s is offline", q.Device)
+		} else {
+			tools, err = s.Cluster.TestMCP(ctx, q.Device, service)
+		}
+	} else {
+		tools, err = cluster.ProbeMCP(ctx, service)
+	}
+	ms := time.Since(start).Milliseconds()
+	if err != nil {
+		_ = s.Store.Audit(clientIP(r), q.Device, "mcp_test", service.Name, 1, ms, err.Error())
+		jsonOut(w, map[string]any{"success": false, "device": q.Device, "transport": service.Transport, "duration_ms": ms, "tool_count": 0, "tools": []any{}, "error": map[string]any{"code": "MCP_TEST_FAILED", "message": err.Error()}})
+		return
+	}
+	_ = s.Store.Audit(clientIP(r), q.Device, "mcp_test", service.Name, 0, ms, "")
+	jsonOut(w, map[string]any{"success": true, "device": q.Device, "transport": service.Transport, "duration_ms": ms, "tool_count": len(tools), "tools": tools, "error": nil})
+}
+
 func (s *Server) MCPServicesJSON(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		http.Error(w, "storage unavailable", 500)
@@ -139,7 +309,7 @@ func (s *Server) MCPServicesJSON(w http.ResponseWriter, r *http.Request) {
 		if s.Cluster != nil {
 			s.Cluster.SyncMCPServices()
 		}
-		_ = s.Store.Audit(clientIP(r), "", "mcp_service_save", q.ID, 0, 0, "")
+		_ = s.Store.Audit(clientIP(r), s.LocalName, "mcp_service_save", q.ID, 0, 0, "")
 		jsonOut(w, v)
 	default:
 		http.Error(w, "method not allowed", 405)
@@ -162,7 +332,7 @@ func (s *Server) DeleteMCPService(w http.ResponseWriter, r *http.Request) {
 	if s.Cluster != nil {
 		s.Cluster.SyncMCPServices()
 	}
-	_ = s.Store.Audit(clientIP(r), "", "mcp_service_delete", id, 0, 0, "")
+	_ = s.Store.Audit(clientIP(r), s.LocalName, "mcp_service_delete", id, 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true})
 }
 func (s *Server) ListAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +374,9 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device, server and tool required", 400)
 		return
 	}
+	if !s.requireSecurity(w, r, q.Device, "mcp", q.Server+"/"+q.Tool) {
+		return
+	}
 	if s.isRemote(q.Device) && (s.Cluster == nil || !s.Cluster.Online(q.Device)) {
 		if s.Store != nil {
 			_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, 0, "device offline")
@@ -238,6 +411,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/mcp/service", s.DeleteMCPService)
 	mux.HandleFunc("/api/v1/mcp/list", s.ListAgentMCPJSON)
 	mux.HandleFunc("/api/v1/mcp/call", s.CallAgentMCPJSON)
+	mux.HandleFunc("/api/v1/mcp/test", s.TestMCPJSON)
+	mux.HandleFunc("/api/v1/security/settings", s.SecuritySettingsJSON)
+	mux.HandleFunc("/api/v1/security/settings/update", s.UpdateSecuritySettingsJSON)
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
 	return mux
@@ -323,6 +499,9 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if req.Device == "" {
 		req.Device = s.LocalName
 	}
+	if !s.requireSecurity(w, r, req.Device, "exec", req.Command) {
+		return
+	}
 	if req.Timeout <= 0 {
 		req.Timeout = 30
 	}
@@ -364,6 +543,9 @@ func (s *Server) fileRead(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Device == "" {
 		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "read", req.Path) {
+		return
 	}
 	if req.Path == "" || !validPath(req.Path) || req.Offset < 0 {
 		http.Error(w, "invalid path or offset", 400)
@@ -436,6 +618,9 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Device == "" {
 		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "write", req.Path) {
+		return
 	}
 	if req.Path == "" || !validPath(req.Path) {
 		http.Error(w, "path required", 400)

@@ -140,6 +140,20 @@ func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRunti
 	switch msg.Action {
 	case "mcp_list":
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: mcpRuntime.List()})
+	case "mcp_test":
+		var p cluster.MCPService
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		start := time.Now()
+		tools, err := cluster.ProbeMCP(ctx, p)
+		duration := time.Since(start).Milliseconds()
+		if err != nil {
+			return writeJSON(cluster.Message{ID: msg.ID, Status: "error", Error: err.Error(), Payload: map[string]any{"duration_ms": duration}})
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: tools})
 	case "mcp_call":
 		var p struct {
 			Server string `json:"server"`

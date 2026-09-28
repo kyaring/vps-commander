@@ -473,6 +473,58 @@
           }
         }
       }
+    },
+    "/api/v1/security/settings": {
+      "get": {
+        "summary": "Get security policy",
+        "responses": {
+          "200": {
+            "description": "Current global and per-node security policy"
+          }
+        }
+      }
+    },
+    "/api/v1/security/settings/update": {
+      "post": {
+        "summary": "Update security policy",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "global": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high"
+                    ]
+                  },
+                  "node": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "inherit",
+                      "low",
+                      "medium",
+                      "high"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated"
+          }
+        }
+      }
     }
   }
 }

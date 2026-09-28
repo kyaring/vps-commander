@@ -38,6 +38,9 @@ func (p *Panel) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/panel/login", p.login)
 	mux.HandleFunc("/panel/logout", p.logout)
+	mux.HandleFunc("/panel", p.index)
+	mux.HandleFunc("/panel/", p.index)
+	mux.HandleFunc("/probe/summary", p.probeSummary)
 	mux.HandleFunc("/static/", p.static)
 	mux.HandleFunc("/panel/api/devices", p.protected(p.handleDevices))
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
@@ -47,8 +50,16 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/mcp/service", p.protected(p.deleteMCPService))
 	mux.HandleFunc("/panel/api/mcp/list", p.protected(p.listAgentMCP))
 	mux.HandleFunc("/panel/api/mcp/call", p.protected(p.callAgentMCP))
-	mux.HandleFunc("/", p.index)
+	mux.HandleFunc("/panel/api/mcp/test", p.protected(p.testMCP))
+	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
+	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
+	mux.HandleFunc("/", p.probe)
 	return mux
+}
+
+type securityPanelRunner interface {
+	SecuritySettingsJSON(http.ResponseWriter, *http.Request)
+	UpdateSecuritySettingsJSON(http.ResponseWriter, *http.Request)
 }
 
 type mcpPanelRunner interface {
@@ -56,6 +67,7 @@ type mcpPanelRunner interface {
 	DeleteMCPService(http.ResponseWriter, *http.Request)
 	ListAgentMCPJSON(http.ResponseWriter, *http.Request)
 	CallAgentMCPJSON(http.ResponseWriter, *http.Request)
+	TestMCPJSON(http.ResponseWriter, *http.Request)
 }
 
 func (p *Panel) mcpServices(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +98,28 @@ func (p *Panel) callAgentMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "MCP API unavailable", 501)
 }
+func (p *Panel) securitySettings(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(securityPanelRunner); ok {
+		v.SecuritySettingsJSON(w, r)
+		return
+	}
+	http.Error(w, "security API unavailable", 501)
+}
+func (p *Panel) updateSecuritySettings(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(securityPanelRunner); ok {
+		v.UpdateSecuritySettingsJSON(w, r)
+		return
+	}
+	http.Error(w, "security API unavailable", 501)
+}
+
+func (p *Panel) testMCP(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(mcpPanelRunner); ok {
+		v.TestMCPJSON(w, r)
+		return
+	}
+	http.Error(w, "MCP API unavailable", 501)
+}
 
 func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
@@ -93,6 +127,24 @@ func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Runner.DevicesJSON(w, r)
+}
+
+func (p *Panel) probeSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	p.Runner.DevicesJSON(w, r)
+}
+
+func (p *Panel) probe(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	data, _ := staticFS.ReadFile("static/probe.html")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
 }
 
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {

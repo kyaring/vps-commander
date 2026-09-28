@@ -7,6 +7,7 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -44,7 +45,7 @@ func (s *Store) init() error {
 		"CREATE TABLE IF NOT EXISTS audit_logs (" +
 		"id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, caller_ip TEXT, device TEXT, action TEXT, command TEXT, " +
 		"exit_code INTEGER, duration_ms INTEGER, error_msg TEXT); " +
-		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT); CREATE TABLE IF NOT EXISTS mcp_services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, transport TEXT NOT NULL, command TEXT, args_json TEXT, env_json TEXT, url TEXT, headers_json TEXT, scope TEXT NOT NULL DEFAULT 'all', target_nodes_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_mcp_services_enabled ON mcp_services(enabled);")
+		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT); CREATE TABLE IF NOT EXISTS security_settings (node_name TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS mcp_services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, transport TEXT NOT NULL, command TEXT, args_json TEXT, env_json TEXT, url TEXT, headers_json TEXT, scope TEXT NOT NULL DEFAULT 'all', target_nodes_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_mcp_services_enabled ON mcp_services(enabled);")
 	if err != nil {
 		return err
 	}
@@ -329,4 +330,81 @@ func (s *Store) IsRevoked(name string) (bool, error) {
 	var count int
 	err := s.DB.QueryRow("SELECT COUNT(*) FROM revoked_devices WHERE name = ?", name).Scan(&count)
 	return count > 0, err
+}
+
+func normalizeSecurityMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "inherit", "low", "medium", "high":
+		return mode
+	}
+	return ""
+}
+
+func (s *Store) GetGlobalSecurityMode() string {
+	var mode string
+	err := s.DB.QueryRow("SELECT mode FROM security_settings WHERE node_name='' LIMIT 1").Scan(&mode)
+	if err != nil {
+		return "medium"
+	}
+	if m := normalizeSecurityMode(mode); m != "" && m != "inherit" {
+		return m
+	}
+	return "medium"
+}
+
+func (s *Store) SetGlobalSecurityMode(mode string) error {
+	mode = normalizeSecurityMode(mode)
+	if mode == "" || mode == "inherit" {
+		return errors.New("invalid global security mode")
+	}
+	_, err := s.DB.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES('',?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", mode, time.Now().Unix())
+	return err
+}
+
+func (s *Store) GetNodeSecurityMode(node string) (string, bool) {
+	var mode string
+	err := s.DB.QueryRow("SELECT mode FROM security_settings WHERE node_name=?", node).Scan(&mode)
+	if err != nil {
+		return "inherit", false
+	}
+	m := normalizeSecurityMode(mode)
+	if m == "" {
+		return "inherit", false
+	}
+	return m, true
+}
+
+func (s *Store) SetNodeSecurityMode(node, mode string) error {
+	if node == "" {
+		return errors.New("node name required")
+	}
+	mode = normalizeSecurityMode(mode)
+	if mode == "" {
+		return errors.New("invalid security mode")
+	}
+	_, err := s.DB.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES(?,?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", node, mode, time.Now().Unix())
+	return err
+}
+
+type SecuritySetting struct {
+	Node string `json:"node"`
+	Mode string `json:"mode"`
+}
+
+func (s *Store) ListNodeSecurityModes() ([]SecuritySetting, error) {
+	rows, err := s.DB.Query("SELECT node_name,mode FROM security_settings WHERE node_name<>'' ORDER BY node_name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SecuritySetting{}
+	for rows.Next() {
+		var v SecuritySetting
+		if err := rows.Scan(&v.Node, &v.Mode); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }

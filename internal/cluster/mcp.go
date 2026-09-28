@@ -105,6 +105,160 @@ func (r *MCPRuntime) Call(ctx context.Context, server, tool string, args any) (a
 	}
 }
 
+func ProbeMCP(ctx context.Context, s MCPService) ([]map[string]any, error) {
+	switch strings.ToLower(s.Transport) {
+	case "stdio":
+		return probeStdio(ctx, s)
+	case "http", "sse":
+		return probeHTTP(ctx, s)
+	default:
+		return nil, fmt.Errorf("unsupported MCP transport %q", s.Transport)
+	}
+}
+
+func probeStdio(ctx context.Context, s MCPService) ([]map[string]any, error) {
+	if s.Command == "" {
+		return nil, errors.New("MCP stdio command is empty")
+	}
+	cmd := exec.CommandContext(ctx, s.Command, s.Args...)
+	if len(s.Env) > 0 {
+		cmd.Env = append(os.Environ(), envList(s.Env)...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	enc := json.NewEncoder(stdin)
+	dec := bufio.NewReaderSize(stdout, 64*1024)
+	if err := enc.Encode(mcpRPC{JSONRPC: "2.0", ID: int64(1), Method: "initialize", Params: map[string]any{
+		"protocolVersion": "2024-11-05", "capabilities": map[string]any{},
+		"clientInfo": map[string]string{"name": "vps-commander-probe", "version": "1.0"},
+	}}); err != nil {
+		return nil, err
+	}
+	if _, err := readRPC(ctx, dec, 1); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(mcpRPC{JSONRPC: "2.0", Method: "notifications/initialized", Params: map[string]any{}}); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(mcpRPC{JSONRPC: "2.0", ID: int64(2), Method: "tools/list", Params: map[string]any{}}); err != nil {
+		return nil, err
+	}
+	out, err := readRPC(ctx, dec, 2)
+	if err != nil {
+		return nil, err
+	}
+	return extractMCPTools(out)
+}
+
+func probeHTTP(ctx context.Context, s MCPService) ([]map[string]any, error) {
+	if s.URL == "" {
+		return nil, errors.New("MCP HTTP URL is empty")
+	}
+	client := &http.Client{Timeout: 0}
+	var session string
+	post := func(req mcpRPC) (any, error) {
+		b, _ := json.Marshal(req)
+		hr, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL, bytes.NewReader(b))
+		if err != nil {
+			return nil, err
+		}
+		hr.Header.Set("Content-Type", "application/json")
+		hr.Header.Set("Accept", "application/json, text/event-stream")
+		for k, v := range s.Headers {
+			hr.Header.Set(k, v)
+		}
+		if session != "" {
+			hr.Header.Set("Mcp-Session-Id", session)
+		}
+		resp, err := client.Do(hr)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("MCP HTTP status %s", resp.Status)
+		}
+		if v := resp.Header.Get("Mcp-Session-Id"); v != "" {
+			session = v
+		}
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
+		if err != nil {
+			return nil, err
+		}
+		if len(bytes.TrimSpace(data)) == 0 {
+			return nil, nil
+		}
+		if bytes.Contains(data, []byte("event:")) {
+			data = parseSSEData(data)
+		}
+		var rr mcpRPCResponse
+		if err := json.Unmarshal(bytes.TrimSpace(data), &rr); err != nil {
+			return nil, err
+		}
+		if rr.Error != nil {
+			return nil, fmt.Errorf("MCP error %d: %s", rr.Error.Code, rr.Error.Message)
+		}
+		var out any
+		if len(rr.Result) > 0 {
+			if err := json.Unmarshal(rr.Result, &out); err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
+	}
+	if strings.EqualFold(s.Transport, "sse") {
+		endpoint, err := discoverSSEEndpoint(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		s.URL = endpoint
+	}
+	if _, err := post(mcpRPC{JSONRPC: "2.0", ID: int64(1), Method: "initialize", Params: map[string]any{
+		"protocolVersion": "2024-11-05", "capabilities": map[string]any{},
+		"clientInfo": map[string]string{"name": "vps-commander-probe", "version": "1.0"},
+	}}); err != nil {
+		return nil, err
+	}
+	if _, err := post(mcpRPC{JSONRPC: "2.0", Method: "notifications/initialized", Params: map[string]any{}}); err != nil {
+		return nil, err
+	}
+	out, err := post(mcpRPC{JSONRPC: "2.0", ID: int64(2), Method: "tools/list", Params: map[string]any{}})
+	if err != nil {
+		return nil, err
+	}
+	return extractMCPTools(out)
+}
+
+func extractMCPTools(v any) ([]map[string]any, error) {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("invalid tools/list response")
+	}
+	raw, ok := obj["tools"].([]any)
+	if !ok {
+		return []map[string]any{}, nil
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if m, ok := item.(map[string]any); ok {
+			tool := map[string]any{"name": m["name"], "description": m["description"]}
+			out = append(out, tool)
+		}
+	}
+	return out, nil
+}
+
 func callStdio(ctx context.Context, s MCPService, tool string, args any) (any, error) {
 	if s.Command == "" {
 		return nil, errors.New("MCP stdio command is empty")
