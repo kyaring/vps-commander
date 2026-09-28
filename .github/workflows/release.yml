@@ -2,6 +2,8 @@ name: Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
 
@@ -15,6 +17,35 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version Tag
+        id: versioning
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            # 获取最新语义化版本 tag (例如 v1.1.0)
+            LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n1)
+            if [ -z "$LATEST_TAG" ]; then
+              LATEST_TAG="v1.0.0"
+            fi
+            # 去除前缀 v
+            VER_NUM="${LATEST_TAG#v}"
+            # 拆解 MAJOR.MINOR.PATCH
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VER_NUM"
+            PATCH=$((PATCH + 1))
+            TAG="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Auto incremented patch version to $TAG"
+            
+            # 打上本地 tag 并推送到远程
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -40,6 +71,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.versioning.outputs.tag }}
+          name: Release ${{ steps.versioning.outputs.tag }}
           files: |
             dist/*
           generate_release_notes: true

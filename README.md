@@ -73,16 +73,26 @@
 
 ---
 
-## 🚀 极速一键部署 (推荐)
+## 🚀 极速一键部署与平滑升级
 
+### 1. 一键全自动安装 (推荐)
 无论是在受控端 VPS 还是中心端，只需一行命令即可交互式安装与启动：
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh)
 ```
-
 - **安装 Agent (受控 VPS)**：输入 Hub 的 WSS 地址与通信密钥，全自动配置开机自启并秒级连入集群。
 - **安装 Hub (中心服务端)**：自动生成安全 API Key / Web 面板密码并以 Systemd 托管常驻。
+
+### 2. 受控端 Agent 一键平滑升级 (免重输配置)
+当新版本发布后，无需重新配置通信密钥或重新安装，在任意受控机上直接运行升级脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/upgrade-agent.sh | bash
+```
+- 自动检测并拉取 GitHub 最新版本架构包（AMD64 / ARM64）；
+- 自动备份旧版本二进制（`.bak`）；
+- 升级异常（校验失败或无法启动）时**自动秒级回滚**，保证节点永不失联。
 
 ---
 
