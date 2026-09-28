@@ -38,7 +38,8 @@ async function loadDevices(){
     const p = d.profile || {};
     const role = p.role || "APPLICATION";
     const isOnline = d.status === "online";
-    const statusText = isOnline ? "在线" : "离线";\n    const lastText = d.last_heartbeat ? new Date(d.last_heartbeat*1000).toLocaleString() : "";
+    const statusText = isOnline ? "在线" : "离线";
+    const lastText = d.last_heartbeat ? new Date(d.last_heartbeat*1000).toLocaleString() : "";
     const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
     const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
     const loadStr = p.load_1m !== undefined ? p.load_1m.toFixed(2) : '-';
