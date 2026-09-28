@@ -37,7 +37,7 @@ command -v curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl ||
 
 # 获取最新版本 tag
 info "正在获取 VPS-Commander 最新版本信息..."
-LATEST_TAG=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL -k "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
     warn "无法通过 GitHub API 自动获取 Tag，将尝试使用默认版本 v1.0.0"
     LATEST_TAG="v1.0.0"
@@ -61,7 +61,7 @@ install_agent() {
     DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
     info "正在下载 Agent: ${DOWNLOAD_URL}"
-    curl -sSL -o "${INSTALL_DIR}/vps-commander-agent" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-agent" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
     chmod +x "${INSTALL_DIR}/vps-commander-agent"
 
     echo -e "\n--- 配置 Agent 参数 ---"
@@ -128,7 +128,7 @@ install_hub() {
     DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
     info "正在下载 Hub: ${DOWNLOAD_URL}"
-    curl -sSL -o "${INSTALL_DIR}/vps-commander-hub" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-hub" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
     chmod +x "${INSTALL_DIR}/vps-commander-hub"
 
     echo -e "\n--- 配置 Hub 参数 ---"
