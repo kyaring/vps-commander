@@ -150,20 +150,51 @@ Agent 启动后会通过 WSS 自动连入 Hub，在 Hub 管理面板与 `/api/v1
 
 ---
 
-## 🤖 接入 ChatGPT / AI 客户端
+## 🤖 接入 ChatGPT (新版插件 Apps & MCP 模式)
 
-### 方式 1：ChatGPT Actions (推荐)
-1. 在 ChatGPT 创建自定义 GPT（GPT Builder）-> **Actions** -> **Create new action**。
-2. **Schema 导入**：在 `Import from URL` 填入 `https://your-domain.com/openapi.json`。
-3. **Authentication (身份验证)**：
-   - Authentication Type 选择 **API Key**。
-   - Auth Type 选择 **Bearer**。
-   - 填入你配置的 `VPS_COMMANDER_API_KEY`。
+当前 ChatGPT 已升级为以 **插件 / 应用 (Apps & MCP)** 规范连接外部服务。VPS-Commander 原生内置完整的 **MCP SSE + OAuth2** 协议支持，无需部署额外适配层。
 
-### 方式 2：MCP (Model Context Protocol)
-- **SSE 端点**：`https://your-domain.com/mcp/sse`
-- **消息交互**：`https://your-domain.com/mcp/message`
-- **认证**：支持 URL 参数 `?token=...` 或标准 Header `Authorization: Bearer <TOKEN>`。
+### 接入配置步骤：
+
+1. **进入 ChatGPT 插件/应用配置页**：
+   - 打开 ChatGPT -> **Settings (设置)** -> **Apps & Integrations (应用与集成) / Plugins** -> **Create / Add App (添加应用)**。
+2. **连接方式选择 MCP**：
+   - 连接协议选择 **MCP (Model Context Protocol)** 或 **Server-Sent Events (SSE)**。
+   - **MCP Server URL**：填入 Hub 的 SSE 统一入口：
+     ```text
+     https://your-domain.com/mcp/sse
+     ```
+3. **身份认证 (Authentication)**：
+   - **方式 A (OAuth 2.0 自动授权，推荐)**：
+     - Hub 内置了标准 RFC 8414 OAuth Metadata (`/.well-known/oauth-authorization-server`)；
+     - 授权端点与 Token 端点由 ChatGPT 自动识别，一键点击「Authorize」即可完成免密安全绑定。
+   - **方式 B (Bearer API Key)**：
+     - 若选择 API Key，填入 Hub 环境变量 `VPS_COMMANDER_API_KEY` 即可。
+4. **自动发现 4 大运维工具**：
+   - 握手成功后，ChatGPT 会自动加载并列出 4 个原生运维工具：
+     - `list_devices`：列出受控节点、CPU/内存/磁盘剩余绝对值及 Docker 状态；
+     - `exec_command`：在目标机器（如 `m4-live-agent`）执行 Shell 指令；
+     - `read_file`：分页读取目标文件；
+     - `write_file`：远程编辑或创建文件。
+
+---
+
+### 传统客户端支持 (Claude Desktop / Cursor / VS Code)
+
+支持通过本地 stdio 二进制连接 Hub：
+```json
+{
+  "mcpServers": {
+    "vps-commander": {
+      "command": "/path/to/vps-commander-mcp-stdio-linux-amd64",
+      "args": [
+        "-hub", "https://your-domain.com",
+        "-key", "YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
 
 ---
 
