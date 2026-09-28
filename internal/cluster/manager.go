@@ -332,11 +332,23 @@ func (m *Manager) syncMCP(n *Node) {
 	if n == nil || n.MCP == nil || m.Store == nil {
 		return
 	}
-	services, err := m.Store.ListMCPServicesForNode(n.Name)
+	stored, err := m.Store.ListMCPServicesForNode(n.Name)
 	if err != nil {
 		return
 	}
+	services := make([]MCPService, 0, len(stored))
+	for _, v := range stored {
+		services = append(services, decodeStoredMCPService(v))
+	}
 	_ = n.write(Message{Event: "mcp_sync", Payload: services, TS: time.Now().Unix()})
+}
+
+func decodeStoredMCPService(v storage.MCPService) MCPService {
+	out := MCPService{ID: v.ID, Name: v.Name, Description: v.Description, Transport: v.Transport, Command: v.Command, URL: v.URL}
+	_ = json.Unmarshal([]byte(v.ArgsJSON), &out.Args)
+	_ = json.Unmarshal([]byte(v.EnvJSON), &out.Env)
+	_ = json.Unmarshal([]byte(v.HeadersJSON), &out.Headers)
+	return out
 }
 
 func (m *Manager) SyncMCPServices() {
@@ -357,13 +369,23 @@ func (m *Manager) ListMCP(name string) ([]MCPService, error) {
 	m.mu.RLock()
 	n := m.nodes[name]
 	m.mu.RUnlock()
-	if n == nil {
-		return nil, fmt.Errorf("device %s not found", name)
+	if n == nil || !m.Online(name) {
+		return nil, fmt.Errorf("device %s is offline", name)
+	}
+	msg, err := m.call(context.Background(), name, "mcp_list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var out []MCPService
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
 	}
 	if n.MCP == nil {
 		n.MCP = NewMCPRuntime()
 	}
-	return n.MCP.List(), nil
+	n.MCP.Sync(out)
+	return out, nil
 }
 
 func (m *Manager) CallMCP(ctx context.Context, name, server, tool string, args any) (MCPCallResult, error) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -146,4 +147,32 @@ func main() {
 		os.Stdout.Write(respBytes)
 		os.Stdout.WriteString("\n")
 	}
+}
+
+func (h *HubRemoteBackend) ListAgentMCP(ctx context.Context, device string) (any, error) {
+	var res any
+	err := h.get(ctx, "/api/v1/mcp/list?device="+url.QueryEscape(device), &res)
+	return res, err
+}
+func (h *HubRemoteBackend) CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error) {
+	payload := map[string]any{"device": device, "server": server, "tool": tool, "arguments": args}
+	var res any
+	return res, h.post("/api/v1/mcp/call", payload, &res)
+}
+func (h *HubRemoteBackend) get(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(h.BaseURL, "/")+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+h.APIKey)
+	resp, err := h.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }

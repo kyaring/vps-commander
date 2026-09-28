@@ -138,6 +138,8 @@ func run(hub, name, token string, insecure bool) error {
 
 func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, msg cluster.Message) error {
 	switch msg.Action {
+	case "mcp_list":
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: mcpRuntime.List()})
 	case "mcp_call":
 		var p struct {
 			Server string `json:"server"`
