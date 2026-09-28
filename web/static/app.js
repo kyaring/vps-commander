@@ -48,13 +48,15 @@ async function loadDevices(){
 
     return `
       <div class="device-card ${isOnline ? "online" : "offline"}">
-        <div class="device-head">
-          <div class="device-title">
+        <div class="device-topbar">
+          <div class="device-status-wrap">
             <span class="dot"></span>
-            <strong class="device-name">${esc(d.name)}</strong>
             <span class="role-badge role-${role.toLowerCase()}">${esc(role)}</span>
           </div>
           <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
+        </div>
+        <div class="device-name-row">
+          <strong class="device-name" title="${esc(d.name)}">${esc(d.name)}</strong>
         </div>
         <div class="device-meta">
           <span>${esc(d.status)}</span> ·

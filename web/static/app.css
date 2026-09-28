@@ -18,17 +18,19 @@ header strong{font-size:18px}header span{margin-left:12px;color:var(--text-muted
 :root[data-theme="light"] .svg-moon{display:block;color:#475569}
 
 /* 设备卡片与画像升级 */
-.device-card{min-width:0;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--bg-sub);display:flex;flex-direction:column;gap:10px}
-.device-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
-.device-title{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
-.device-name{font-size:15px;color:var(--text-main);overflow-wrap:anywhere;word-break:break-all}
-.role-badge{font-size:11px;padding:2px 6px;border-radius:5px;font-weight:600;letter-spacing:.5px;border:1px solid var(--border-strong)}
+.devices{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.device-card{min-width:0;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--bg-sub);display:flex;flex-direction:column;gap:10px;justify-content:space-between}
+.device-topbar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.device-status-wrap{display:flex;align-items:center;gap:6px;min-width:0}
+.device-name-row{min-width:0;display:flex;align-items:center}
+.device-name{font-size:15px;color:var(--text-main);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%}
+.role-badge{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;letter-spacing:.5px;border:1px solid var(--border-strong)}
 .role-control{background:rgba(59,130,246,.15);color:#60a5fa;border-color:rgba(59,130,246,.3)}
 .role-application{background:rgba(16,185,129,.15);color:#34d399;border-color:rgba(16,185,129,.3)}
 .role-database{background:rgba(245,158,11,.15);color:#fbbf24;border-color:rgba(245,158,11,.3)}
-.btn-revoke{padding:3px 8px;font-size:12px;border-radius:6px;background:transparent;border:1px solid var(--border-strong);color:var(--dot-offline);cursor:pointer}
+.btn-revoke{padding:2px 8px;font-size:11px;border-radius:5px;background:transparent;border:1px solid var(--border-strong);color:var(--dot-offline);cursor:pointer;flex-shrink:0}
 .btn-revoke:hover{background:rgba(239,68,68,.15);border-color:var(--dot-offline)}
-.device-meta{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.device-meta{font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* 资源画像 2列紧凑栅格 */
 .profile-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 12px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;font-size:12px}
