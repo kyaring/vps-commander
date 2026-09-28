@@ -70,6 +70,7 @@ func run(hub, name, token string, insecure bool) error {
 		return err
 	}
 	exec := executor.Local{MaxOutput: 1024 * 1024}
+	mcpRuntime := cluster.NewMCPRuntime()
 
 	// 初始握手附带画像
 	initProf := sysinfo.Collect("APPLICATION")
@@ -102,6 +103,16 @@ func run(hub, name, token string, insecure bool) error {
 		if msg.Event == "registered" {
 			continue
 		}
+		if msg.Event == "mcp_sync" {
+			var services []cluster.MCPService
+			if err := decodePayload(msg.Payload, &services); err != nil {
+				log.Printf("mcp sync failed: %v", err)
+			} else {
+				mcpRuntime.Sync(services)
+				log.Printf("MCP services synced: %d", len(services))
+			}
+			continue
+		}
 		if msg.Event == "revoked" {
 			log.Printf("device revoked by admin: %s", msg.Error)
 			return errors.New("revoked by admin")
@@ -117,7 +128,7 @@ func run(hub, name, token string, insecure bool) error {
 			continue
 		}
 		go func(msg cluster.Message) {
-			if err := handle(writeJSON, exec, msg); err != nil {
+			if err := handle(writeJSON, exec, mcpRuntime, msg); err != nil {
 				log.Printf("request %s failed: %v", msg.ID, err)
 				_ = c.Close()
 			}
@@ -125,8 +136,30 @@ func run(hub, name, token string, insecure bool) error {
 	}
 }
 
-func handle(writeJSON func(cluster.Message) error, exec executor.Local, msg cluster.Message) error {
+func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, msg cluster.Message) error {
 	switch msg.Action {
+	case "mcp_call":
+		var p struct {
+			Server string `json:"server"`
+			Tool   string `json:"tool"`
+			Args   any    `json:"args"`
+		}
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		if p.Server == "" || p.Tool == "" {
+			return sendError(writeJSON, msg.ID, errors.New("server and tool required"))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+		defer cancel()
+		start := time.Now()
+		result, err := mcpRuntime.Call(ctx, p.Server, p.Tool, p.Args)
+		duration := time.Since(start).Milliseconds()
+		if err != nil {
+			_ = writeJSON(cluster.Message{ID: msg.ID, Status: "error", Error: err.Error(), Payload: map[string]any{"server": p.Server, "tool": p.Tool, "duration_ms": duration}})
+			return nil
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"server": p.Server, "tool": p.Tool, "result": result, "duration_ms": duration}})
 	case "exec":
 		var p cluster.ExecPayload
 		if err := decodePayload(msg.Payload, &p); err != nil {

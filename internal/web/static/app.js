@@ -109,3 +109,22 @@ $("#logout").onclick=async()=>{
   location.href="/panel/login"
 };
 loadDevices().then(loadAudits).catch(console.error);
+
+let mcpEditingId="";
+async function loadMCPServices(){
+  const services=await api("/mcp/services");
+  const devices=(await api("/devices")).filter(d=>!d.is_local);
+  $("#mcpNodes").innerHTML=devices.map(d=>`<label><input type="checkbox" value="${esc(d.name)}">${esc(d.name)}</label>`).join("");
+  $("#mcpList").innerHTML=services.map(s=>`<div class="mcp-item"><h3>${esc(s.name)} <small>${esc(s.id)}</small></h3><div class="mcp-meta">${esc(s.transport)} · ${s.scope==='custom'?'指定节点':'全部节点'} · ${s.enabled?'启用':'停用'}${s.url?' · '+esc(s.url):s.command?' · '+esc(s.command):''}</div><div class="mcp-actions"><button type="button" onclick="editMCP('${esc(s.id)}')">编辑</button><button type="button" onclick="deleteMCP('${esc(s.id)}')">删除</button></div></div>`).join("")||'<div class="mcp-meta">暂无 MCP 服务配置。</div>';
+}
+function resetMCPForm(){
+  mcpEditingId=""; $("#mcpEditor").hidden=false; $("#mcpId").disabled=false; ["mcpId","mcpName","mcpCommand","mcpUrl"].forEach(id=>$("#"+id).value=""); $("#mcpTransport").value="stdio"; $("#mcpEnabled").value="1"; $("#mcpArgs").value="[]"; $("#mcpHeaders").value="{}"; $("#mcpEnv").value="{}"; $("#mcpScope").value="all"; $("#mcpStatus").textContent=""; $("#mcpNodes").querySelectorAll("input").forEach(x=>x.checked=false);
+}
+async function editMCP(id){
+  const services=await api("/mcp/services"); const s=services.find(x=>x.id===id); if(!s)return; resetMCPForm(); mcpEditingId=id; $("#mcpId").value=s.id; $("#mcpId").disabled=true; $("#mcpName").value=s.name||""; $("#mcpTransport").value=s.transport; $("#mcpEnabled").value=s.enabled?"1":"0"; $("#mcpCommand").value=s.command||""; $("#mcpUrl").value=s.url||""; $("#mcpArgs").value=s.args_json||"[]"; $("#mcpHeaders").value=s.headers_json||"{}"; $("#mcpEnv").value=s.env_json||"{}"; $("#mcpScope").value=s.scope||"all"; let nodes=[];try{nodes=JSON.parse(s.target_nodes_json||"[]")}catch(e){};$("#mcpNodes").querySelectorAll("input").forEach(x=>x.checked=nodes.includes(x.value));
+}
+async function deleteMCP(id){if(!confirm(`确认删除 MCP 服务 [${id}]？`))return;try{await api("/mcp/service?id="+encodeURIComponent(id),{method:"DELETE"});await loadMCPServices()}catch(e){alert("删除失败: "+e.message)}}
+$("#mcpNew").onclick=resetMCPForm; $("#mcpCancel").onclick=()=>$("#mcpEditor").hidden=true;
+$("#mcpSave").onclick=async()=>{try{const scope=$("#mcpScope").value;const body={id:$("#mcpId").value.trim(),name:$("#mcpName").value.trim(),transport:$("#mcpTransport").value,command:$("#mcpCommand").value.trim(),url:$("#mcpUrl").value.trim(),scope,enabled:$("#mcpEnabled").value==="1",args:JSON.parse($("#mcpArgs").value||"[]"),headers:JSON.parse($("#mcpHeaders").value||"{}"),env:JSON.parse($("#mcpEnv").value||"{}"),target_nodes:[...$("#mcpNodes").querySelectorAll("input:checked")].map(x=>x.value)};if(!body.id||!body.name)throw Error("服务标识和显示名称不能为空");await api("/mcp/services",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#mcpStatus").textContent="已保存并向在线节点同步。";await loadMCPServices()}catch(e){$("#mcpStatus").textContent="保存失败: "+e.message}};
+$("#mcpTransport").onchange=()=>{const stdio=$("#mcpTransport").value==="stdio";$("#mcpCommand").parentElement.style.display=stdio?"":"none";$("#mcpArgs").parentElement.style.display=stdio?"":"none";$("#mcpUrl").parentElement.style.display=stdio?"none":""};
+loadMCPServices().catch(console.error);

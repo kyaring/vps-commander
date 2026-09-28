@@ -188,3 +188,38 @@ func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, cont
 		Bytes:  n,
 	}, nil
 }
+
+func (b *MCPBackend) ListAgentMCP(ctx context.Context, device string) (any, error) {
+	if device == "" {
+		return nil, errors.New("device required")
+	}
+	if b.server.isRemote(device) && (b.server.Cluster == nil || !b.server.Cluster.Online(device)) {
+		return nil, fmt.Errorf("device %s is offline", device)
+	}
+	if !b.server.isRemote(device) {
+		return map[string]any{"device": b.server.LocalName, "services": []any{}}, nil
+	}
+	return b.server.Cluster.ListMCP(device)
+}
+func (b *MCPBackend) CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error) {
+	if device == "" || server == "" || tool == "" {
+		return nil, errors.New("device, server and tool required")
+	}
+	if b.server.isRemote(device) && (b.server.Cluster == nil || !b.server.Cluster.Online(device)) {
+		return nil, fmt.Errorf("device %s is offline", device)
+	}
+	if !b.server.isRemote(device) {
+		return nil, errors.New("agent MCP requires a remote device")
+	}
+	start := time.Now()
+	v, err := b.server.Cluster.CallMCP(ctx, device, server, tool, args)
+	ms := time.Since(start).Milliseconds()
+	if b.server.Store != nil {
+		if err != nil {
+			_ = b.server.Store.Audit(clientIP, device, "mcp_call", server+"/"+tool, 1, ms, err.Error())
+		} else {
+			_ = b.server.Store.Audit(clientIP, device, "mcp_call", server+"/"+tool, 0, ms, "")
+		}
+	}
+	return v, err
+}

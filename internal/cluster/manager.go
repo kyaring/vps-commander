@@ -38,6 +38,7 @@ type Node struct {
 	Arch          string
 	OS            string
 	IsLocal       bool
+	MCP           *MCPRuntime
 }
 
 type Result struct {
@@ -63,7 +64,7 @@ func NewManager(secret string, store *storage.Store) *Manager {
 				if d.IsLocal {
 					continue
 				}
-				n := &Node{Name: d.Name, Arch: d.Arch, OS: d.OS}
+				n := &Node{Name: d.Name, Arch: d.Arch, OS: d.OS, MCP: NewMCPRuntime()}
 				n.LastSeen.Store(d.LastSeen * int64(time.Second))
 				n.LastHeartbeat.Store(d.LastHeartbeat * int64(time.Second))
 				if d.ProfileJSON != "" {
@@ -113,7 +114,7 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	n := &Node{Name: name, Conn: c, ConnectionID: fmt.Sprintf("%s-%d", name, time.Now().UnixNano())}
+	n := &Node{Name: name, Conn: c, ConnectionID: fmt.Sprintf("%s-%d", name, time.Now().UnixNano()), MCP: NewMCPRuntime()}
 	n.LastSeen.Store(time.Now().UnixNano())
 	n.LastHeartbeat.Store(time.Now().UnixNano())
 	n.Connected.Store(true)
@@ -125,6 +126,7 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 		_ = old.Conn.Close()
 	}
 	_ = n.write(Message{Event: "registered", Device: name, TS: time.Now().Unix()})
+	m.syncMCP(n)
 	go m.heartbeat(n)
 	go m.readLoop(n)
 }
@@ -324,6 +326,63 @@ func (m *Manager) WriteFile(ctx context.Context, name string, p FileWritePayload
 		return 0, err
 	}
 	return v.Bytes, nil
+}
+
+func (m *Manager) syncMCP(n *Node) {
+	if n == nil || n.MCP == nil || m.Store == nil {
+		return
+	}
+	services, err := m.Store.ListMCPServicesForNode(n.Name)
+	if err != nil {
+		return
+	}
+	_ = n.write(Message{Event: "mcp_sync", Payload: services, TS: time.Now().Unix()})
+}
+
+func (m *Manager) SyncMCPServices() {
+	m.mu.RLock()
+	nodes := make([]*Node, 0, len(m.nodes))
+	for _, n := range m.nodes {
+		nodes = append(nodes, n)
+	}
+	m.mu.RUnlock()
+	for _, n := range nodes {
+		if n.Connected.Load() {
+			m.syncMCP(n)
+		}
+	}
+}
+
+func (m *Manager) ListMCP(name string) ([]MCPService, error) {
+	m.mu.RLock()
+	n := m.nodes[name]
+	m.mu.RUnlock()
+	if n == nil {
+		return nil, fmt.Errorf("device %s not found", name)
+	}
+	if n.MCP == nil {
+		n.MCP = NewMCPRuntime()
+	}
+	return n.MCP.List(), nil
+}
+
+func (m *Manager) CallMCP(ctx context.Context, name, server, tool string, args any) (MCPCallResult, error) {
+	m.mu.RLock()
+	n := m.nodes[name]
+	m.mu.RUnlock()
+	if n == nil || !m.Online(name) {
+		return MCPCallResult{}, fmt.Errorf("device %s is offline", name)
+	}
+	msg, err := m.call(ctx, name, "mcp_call", map[string]any{"server": server, "tool": tool, "args": args})
+	if err != nil {
+		return MCPCallResult{}, err
+	}
+	var out MCPCallResult
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &out); err != nil {
+		return MCPCallResult{}, err
+	}
+	return out, nil
 }
 
 func (m *Manager) heartbeat(n *Node) {

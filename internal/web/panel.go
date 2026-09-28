@@ -43,8 +43,48 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
+	mux.HandleFunc("/panel/api/mcp/services", p.protected(p.mcpServices))
+	mux.HandleFunc("/panel/api/mcp/service", p.protected(p.deleteMCPService))
+	mux.HandleFunc("/panel/api/mcp/list", p.protected(p.listAgentMCP))
+	mux.HandleFunc("/panel/api/mcp/call", p.protected(p.callAgentMCP))
 	mux.HandleFunc("/", p.index)
 	return mux
+}
+
+type mcpPanelRunner interface {
+	MCPServicesJSON(http.ResponseWriter, *http.Request)
+	DeleteMCPService(http.ResponseWriter, *http.Request)
+	ListAgentMCPJSON(http.ResponseWriter, *http.Request)
+	CallAgentMCPJSON(http.ResponseWriter, *http.Request)
+}
+
+func (p *Panel) mcpServices(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(mcpPanelRunner); ok {
+		v.MCPServicesJSON(w, r)
+		return
+	}
+	http.Error(w, "MCP API unavailable", 501)
+}
+func (p *Panel) deleteMCPService(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(mcpPanelRunner); ok {
+		v.DeleteMCPService(w, r)
+		return
+	}
+	http.Error(w, "MCP API unavailable", 501)
+}
+func (p *Panel) listAgentMCP(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(mcpPanelRunner); ok {
+		v.ListAgentMCPJSON(w, r)
+		return
+	}
+	http.Error(w, "MCP API unavailable", 501)
+}
+func (p *Panel) callAgentMCP(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(mcpPanelRunner); ok {
+		v.CallAgentMCPJSON(w, r)
+		return
+	}
+	http.Error(w, "MCP API unavailable", 501)
 }
 
 func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {

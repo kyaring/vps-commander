@@ -76,6 +76,157 @@ func (s *Server) AuditsJSON(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, logs)
 }
 
+type MCPServiceRequest struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+	URL         string            `json:"url"`
+	Headers     map[string]string `json:"headers"`
+	Scope       string            `json:"scope"`
+	TargetNodes []string          `json:"target_nodes"`
+	Enabled     bool              `json:"enabled"`
+}
+type MCPCallRequest struct {
+	Device    string `json:"device"`
+	Server    string `json:"server"`
+	Tool      string `json:"tool"`
+	Arguments any    `json:"arguments"`
+}
+
+func (s *Server) MCPServicesJSON(w http.ResponseWriter, r *http.Request) {
+	if s.Store == nil {
+		http.Error(w, "storage unavailable", 500)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		v, err := s.Store.ListMCPServices()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonOut(w, v)
+	case http.MethodPost:
+		var q MCPServiceRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&q); err != nil {
+			http.Error(w, "bad json", 400)
+			return
+		}
+		if q.ID == "" || q.Name == "" || q.Transport == "stdio" && q.Command == "" || (q.Transport != "stdio" && q.URL == "") {
+			http.Error(w, "invalid MCP service", 400)
+			return
+		}
+		args, _ := json.Marshal(q.Args)
+		env, _ := json.Marshal(q.Env)
+		headers, _ := json.Marshal(q.Headers)
+		nodes, _ := json.Marshal(q.TargetNodes)
+		if q.Scope == "" {
+			q.Scope = "all"
+		}
+		if q.Scope != "all" && q.Scope != "custom" {
+			http.Error(w, "invalid scope", 400)
+			return
+		}
+		v := storage.MCPService{ID: q.ID, Name: q.Name, Description: q.Description, Transport: q.Transport, Command: q.Command, ArgsJSON: string(args), EnvJSON: string(env), URL: q.URL, HeadersJSON: string(headers), Scope: q.Scope, TargetNodesJSON: string(nodes), Enabled: q.Enabled}
+		if err := s.Store.SaveMCPService(v); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if s.Cluster != nil {
+			s.Cluster.SyncMCPServices()
+		}
+		_ = s.Store.Audit(clientIP(r), "", "mcp_service_save", q.ID, 0, 0, "")
+		jsonOut(w, v)
+	default:
+		http.Error(w, "method not allowed", 405)
+	}
+}
+func (s *Server) DeleteMCPService(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id required", 400)
+		return
+	}
+	if err := s.Store.DeleteMCPService(id); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if s.Cluster != nil {
+		s.Cluster.SyncMCPServices()
+	}
+	_ = s.Store.Audit(clientIP(r), "", "mcp_service_delete", id, 0, 0, "")
+	jsonOut(w, map[string]any{"ok": true})
+}
+func (s *Server) ListAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	device := r.URL.Query().Get("device")
+	if device == "" {
+		http.Error(w, "device required", 400)
+		return
+	}
+	if s.isRemote(device) && (s.Cluster == nil || !s.Cluster.Online(device)) {
+		http.Error(w, "device offline", 409)
+		return
+	}
+	if s.isRemote(device) {
+		v, err := s.Cluster.ListMCP(device)
+		if err != nil {
+			http.Error(w, err.Error(), 404)
+			return
+		}
+		jsonOut(w, map[string]any{"device": device, "services": v})
+		return
+	}
+	jsonOut(w, map[string]any{"device": s.LocalName, "services": []any{}})
+}
+func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var q MCPCallRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if q.Device == "" || q.Server == "" || q.Tool == "" {
+		http.Error(w, "device, server and tool required", 400)
+		return
+	}
+	if s.isRemote(q.Device) && (s.Cluster == nil || !s.Cluster.Online(q.Device)) {
+		if s.Store != nil {
+			_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, 0, "device offline")
+		}
+		http.Error(w, "device offline", 409)
+		return
+	}
+	if !s.isRemote(q.Device) {
+		http.Error(w, "agent MCP requires a remote device", 400)
+		return
+	}
+	start := time.Now()
+	v, err := s.Cluster.CallMCP(r.Context(), q.Device, q.Server, q.Tool, q.Arguments)
+	ms := time.Since(start).Milliseconds()
+	if err != nil {
+		_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, ms, err.Error())
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 0, ms, "")
+	jsonOut(w, v)
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
@@ -83,6 +234,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/exec", s.exec)
 	mux.HandleFunc("/api/v1/file/read", s.fileRead)
 	mux.HandleFunc("/api/v1/file/write", s.fileWrite)
+	mux.HandleFunc("/api/v1/mcp/services", s.MCPServicesJSON)
+	mux.HandleFunc("/api/v1/mcp/service", s.DeleteMCPService)
+	mux.HandleFunc("/api/v1/mcp/list", s.ListAgentMCPJSON)
+	mux.HandleFunc("/api/v1/mcp/call", s.CallAgentMCPJSON)
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
 	return mux

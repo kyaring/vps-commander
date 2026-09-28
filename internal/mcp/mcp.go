@@ -76,6 +76,11 @@ type ActionBackend interface {
 	WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error)
 }
 
+type AgentMCPBackend interface {
+	ListAgentMCP(ctx context.Context, device string) (any, error)
+	CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error)
+}
+
 type Server struct {
 	Backend ActionBackend
 	Auth    *auth.Manager
@@ -272,6 +277,14 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 					Required: []string{"path", "content"},
 				},
 			},
+			{
+				Name: "list_agent_mcp", Description: "列出指定 Agent 当前通过 Hub 动态挂载的 MCP 服务及状态",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标 Agent 节点名称"}}, Required: []string{"device"}},
+			},
+			{
+				Name: "call_agent_mcp", Description: "通过 Hub 调度指定 Agent 上已挂载的 MCP 工具",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标 Agent 节点名称"}, "server": {Type: "string", Description: "MCP 服务 ID"}, "tool": {Type: "string", Description: "MCP 工具名称"}, "arguments": {Type: "object", Description: "MCP 工具参数 JSON 对象"}}, Required: []string{"device", "server", "tool"}},
+			},
 		}
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -367,6 +380,43 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 			return map[string]string{"error": "path is required"}, true
 		}
 		res, err := s.Backend.WriteFile(ctx, clientIP, args.Device, args.Path, args.Content)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+
+	case "list_agent_mcp":
+		var args struct {
+			Device string `json:"device"`
+		}
+		_ = json.Unmarshal(params.Arguments, &args)
+		b, ok := s.Backend.(AgentMCPBackend)
+		if !ok {
+			return map[string]string{"error": "agent MCP unavailable"}, true
+		}
+		res, err := b.ListAgentMCP(ctx, args.Device)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+
+	case "call_agent_mcp":
+		var args struct {
+			Device    string          `json:"device"`
+			Server    string          `json:"server"`
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		_ = json.Unmarshal(params.Arguments, &args)
+		b, ok := s.Backend.(AgentMCPBackend)
+		if !ok {
+			return map[string]string{"error": "agent MCP unavailable"}, true
+		}
+		var av any
+		if len(args.Arguments) > 0 {
+			_ = json.Unmarshal(args.Arguments, &av)
+		}
+		res, err := b.CallAgentMCP(ctx, clientIP, args.Device, args.Server, args.Tool, av)
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
 		}

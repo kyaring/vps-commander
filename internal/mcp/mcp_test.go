@@ -75,8 +75,8 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 		t.Fatalf("expected map result")
 	}
 	tools, ok := resMap["tools"].([]any)
-	if !ok || len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(tools))
+	if !ok || len(tools) != 6 {
+		t.Fatalf("expected 6 tools, got %d", len(tools))
 	}
 }
 

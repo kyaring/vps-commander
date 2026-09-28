@@ -40,3 +40,6 @@ header strong{font-size:18px}header span{margin-left:12px;color:var(--text-muted
 .badge-docker-text.no{background:rgba(148,163,184,.15);color:var(--text-muted);border:1px solid var(--border)}
 .device-card.offline{opacity:.62;filter:saturate(.45)}
 .device-card.offline .btn-revoke{opacity:1}
+
+.mcp-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}.mcp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}.mcp-item{border:1px solid var(--line,#30343b);border-radius:10px;padding:14px;background:var(--card,#11151a)}.mcp-item h3{margin:0 0 6px;font-size:15px}.mcp-meta{font-size:12px;opacity:.72;line-height:1.7}.mcp-actions{display:flex;gap:8px;margin-top:10px}.mcp-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mcp-form .full{grid-column:1/-1}.mcp-form label{display:flex;flex-direction:column;gap:5px;font-size:12px;opacity:.9}.mcp-form input,.mcp-form select,.mcp-form textarea{width:100%;box-sizing:border-box}.mcp-form textarea{min-height:72px;font-family:monospace}.mcp-nodes{display:flex;flex-wrap:wrap;gap:8px}.mcp-nodes label{flex-direction:row;align-items:center}.mcp-status{font-size:12px;margin-top:8px;min-height:18px}
+@media(max-width:700px){.mcp-form{grid-template-columns:1fr}.mcp-form .full{grid-column:auto}.mcp-toolbar{align-items:flex-start;flex-direction:column}}

@@ -2,6 +2,8 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
@@ -42,11 +44,102 @@ func (s *Store) init() error {
 		"CREATE TABLE IF NOT EXISTS audit_logs (" +
 		"id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, caller_ip TEXT, device TEXT, action TEXT, command TEXT, " +
 		"exit_code INTEGER, duration_ms INTEGER, error_msg TEXT); " +
-		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT);")
+		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT); CREATE TABLE IF NOT EXISTS mcp_services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, transport TEXT NOT NULL, command TEXT, args_json TEXT, env_json TEXT, url TEXT, headers_json TEXT, scope TEXT NOT NULL DEFAULT 'all', target_nodes_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_mcp_services_enabled ON mcp_services(enabled);")
 	if err != nil {
 		return err
 	}
 	return s.migrateDevices()
+}
+
+type MCPService struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	Transport       string `json:"transport"`
+	Command         string `json:"command,omitempty"`
+	ArgsJSON        string `json:"args_json,omitempty"`
+	EnvJSON         string `json:"env_json,omitempty"`
+	URL             string `json:"url,omitempty"`
+	HeadersJSON     string `json:"headers_json,omitempty"`
+	Scope           string `json:"scope"`
+	TargetNodesJSON string `json:"target_nodes_json,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
+func (s *Store) SaveMCPService(v MCPService) error {
+	now := time.Now().Unix()
+	if v.CreatedAt <= 0 {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	if v.Scope == "" {
+		v.Scope = "all"
+	}
+	if v.Transport == "" {
+		return errors.New("transport required")
+	}
+	_, err := s.DB.Exec(`INSERT INTO mcp_services(id,name,description,transport,command,args_json,env_json,url,headers_json,scope,target_nodes_json,enabled,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,transport=excluded.transport,command=excluded.command,args_json=excluded.args_json,env_json=excluded.env_json,url=excluded.url,headers_json=excluded.headers_json,scope=excluded.scope,target_nodes_json=excluded.target_nodes_json,enabled=excluded.enabled,updated_at=excluded.updated_at`,
+		v.ID, v.Name, v.Description, v.Transport, v.Command, v.ArgsJSON, v.EnvJSON, v.URL, v.HeadersJSON, v.Scope, v.TargetNodesJSON, boolInt(v.Enabled), v.CreatedAt, v.UpdatedAt)
+	return err
+}
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+func (s *Store) DeleteMCPService(id string) error {
+	_, err := s.DB.Exec(`DELETE FROM mcp_services WHERE id=?`, id)
+	return err
+}
+func (s *Store) ListMCPServices() ([]MCPService, error) {
+	return s.listMCP(`SELECT id,name,description,transport,COALESCE(command,''),COALESCE(args_json,''),COALESCE(env_json,''),COALESCE(url,''),COALESCE(headers_json,''),scope,COALESCE(target_nodes_json,''),enabled,created_at,updated_at FROM mcp_services ORDER BY id`)
+}
+func (s *Store) ListMCPServicesForNode(node string) ([]MCPService, error) {
+	all, err := s.listMCP(`SELECT id,name,description,transport,COALESCE(command,''),COALESCE(args_json,''),COALESCE(env_json,''),COALESCE(url,''),COALESCE(headers_json,''),scope,COALESCE(target_nodes_json,''),enabled,created_at,updated_at FROM mcp_services WHERE enabled=1 ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MCPService, 0, len(all))
+	for _, v := range all {
+		if v.Scope != "custom" || containsNode(v.TargetNodesJSON, node) {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+func containsNode(raw, node string) bool {
+	var a []string
+	if json.Unmarshal([]byte(raw), &a) != nil {
+		return false
+	}
+	for _, v := range a {
+		if v == node {
+			return true
+		}
+	}
+	return false
+}
+func (s *Store) listMCP(q string) ([]MCPService, error) {
+	rows, err := s.DB.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MCPService{}
+	for rows.Next() {
+		var v MCPService
+		var en int
+		if err := rows.Scan(&v.ID, &v.Name, &v.Description, &v.Transport, &v.Command, &v.ArgsJSON, &v.EnvJSON, &v.URL, &v.HeadersJSON, &v.Scope, &v.TargetNodesJSON, &en, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		v.Enabled = en != 0
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) migrateDevices() error {
