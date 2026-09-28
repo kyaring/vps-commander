@@ -65,7 +65,20 @@
 
 ---
 
-## 🚀 快速上手与部署
+## 🚀 极速一键部署 (推荐)
+
+无论是在受控端 VPS 还是中心端，只需一行命令即可交互式安装与启动：
+
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh)
+```
+
+- **安装 Agent (受控 VPS)**：输入 Hub 的 WSS 地址与通信密钥，全自动配置开机自启并秒级连入集群。
+- **安装 Hub (中心服务端)**：自动生成安全 API Key / Web 面板密码并以 Systemd 托管常驻。
+
+---
+
+## 🛠️ 手动编译部署
 
 ### 1. Hub 服务端部署
 
