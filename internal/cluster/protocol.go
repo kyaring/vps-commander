@@ -7,6 +7,8 @@ type Message struct {
 	Event      string           `json:"event,omitempty"`
 	Action     string           `json:"action,omitempty"`
 	Device     string           `json:"device,omitempty"`
+	Arch       string           `json:"arch,omitempty"`
+	OS         string           `json:"os,omitempty"`
 	Status     string           `json:"status,omitempty"`
 	Payload    any              `json:"payload,omitempty"`
 	Profile    *sysinfo.Profile `json:"profile,omitempty"`

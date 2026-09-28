@@ -38,7 +38,7 @@ async function loadDevices(){
     const p = d.profile || {};
     const role = p.role || "APPLICATION";
     const isOnline = d.status === "online";
-    const statusText = isOnline ? "在线" : "离线";
+    const statusText = isOnline ? "在线" : "离线";\n    const lastText = d.last_heartbeat ? new Date(d.last_heartbeat*1000).toLocaleString() : "";
     const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
     const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
     const loadStr = p.load_1m !== undefined ? p.load_1m.toFixed(2) : '-';
@@ -58,7 +58,7 @@ async function loadDevices(){
             </div>
             <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
           </div>
-          <div class="v1-row2">${archOs}${statusText}</div>
+          <div class="v1-row2">${archOs}${statusText}${isOnline ? "" : (lastText ? " · 最后活跃: "+lastText : "")}</div>
         </div>
         <div class="profile-grid">
           <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
@@ -72,7 +72,7 @@ async function loadDevices(){
     `;
   }).join("");
 
-  $("#device").innerHTML=ds.map(d=>'<option>'+esc(d.name)+'</option>').join("");
+  $("#device").innerHTML=ds.map(d=>`<option value="${esc(d.name)}" ${d.status==="offline" ? "disabled" : ""}>${esc(d.name)}${d.status==="offline" ? " [离线]" : ""}</option>`).join("");
 }
 
 async function loadAudits(){

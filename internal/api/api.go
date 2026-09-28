@@ -179,7 +179,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	var res executor.Result
 	if s.isRemote(req.Device) {
 		if s.Cluster == nil || !s.Cluster.Online(req.Device) {
-			http.Error(w, "device offline", 404)
+			http.Error(w, "device offline", 409)
 			return
 		}
 		rr, err := s.Cluster.Exec(ctx, req.Device, cluster.ExecPayload{Command: req.Command, Workdir: req.Workdir, Timeout: req.Timeout})

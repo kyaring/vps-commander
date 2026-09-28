@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -72,7 +73,7 @@ func run(hub, name, token string, insecure bool) error {
 
 	// 初始握手附带画像
 	initProf := sysinfo.Collect("APPLICATION")
-	if err := writeJSON(cluster.Message{Event: "hello", Device: name, Profile: &initProf, TS: time.Now().Unix()}); err != nil {
+	if err := writeJSON(cluster.Message{Event: "hello", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &initProf, TS: time.Now().Unix()}); err != nil {
 		return err
 	}
 
@@ -85,7 +86,7 @@ func run(hub, name, token string, insecure bool) error {
 			select {
 			case <-t.C:
 				prof := sysinfo.Collect("APPLICATION")
-				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Profile: &prof, TS: time.Now().Unix()})
+				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: time.Now().Unix()})
 			case <-stopPing:
 				return
 			}
@@ -107,7 +108,7 @@ func run(hub, name, token string, insecure bool) error {
 		}
 		if msg.Event == "ping" {
 			prof := sysinfo.Collect("APPLICATION")
-			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Profile: &prof, TS: msg.TS}); err != nil {
+			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: msg.TS}); err != nil {
 				return err
 			}
 			continue

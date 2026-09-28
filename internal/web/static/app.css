@@ -38,3 +38,5 @@ header strong{font-size:18px}header span{margin-left:12px;color:var(--text-muted
 .badge-docker-text{padding:1px 6px;border-radius:4px;font-size:11px;font-weight:700}
 .badge-docker-text.yes{background:rgba(34,197,94,.15);color:var(--dot-online);border:1px solid rgba(34,197,94,.3)}
 .badge-docker-text.no{background:rgba(148,163,184,.15);color:var(--text-muted);border:1px solid var(--border)}
+.device-card.offline{opacity:.62;filter:saturate(.45)}
+.device-card.offline .btn-revoke{opacity:1}

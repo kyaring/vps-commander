@@ -16,6 +16,8 @@ import (
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
 )
 
+const deviceOfflineAfter = 70 * time.Second
+
 type Manager struct {
 	Secret string
 	Store  *storage.Store
@@ -24,12 +26,18 @@ type Manager struct {
 }
 
 type Node struct {
-	Name        string
-	Conn        *websocket.Conn
-	WriteMu     sync.Mutex
-	Pending     sync.Map
-	LastSeen    atomic.Int64
-	LastProfile *sysinfo.Profile
+	Name          string
+	Conn          *websocket.Conn
+	ConnectionID  string
+	WriteMu       sync.Mutex
+	Pending       sync.Map
+	LastSeen      atomic.Int64
+	LastHeartbeat atomic.Int64
+	Connected     atomic.Bool
+	LastProfile   *sysinfo.Profile
+	Arch          string
+	OS            string
+	IsLocal       bool
 }
 
 type Result struct {
@@ -47,8 +55,30 @@ type FileResult struct {
 	EOF       bool   `json:"eof"`
 }
 
-func NewManager(secret string) *Manager {
-	return &Manager{Secret: secret, nodes: make(map[string]*Node)}
+func NewManager(secret string, store *storage.Store) *Manager {
+	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node)}
+	if store != nil {
+		if records, err := store.ListDevices(); err == nil {
+			for _, d := range records {
+				if d.IsLocal {
+					continue
+				}
+				n := &Node{Name: d.Name, Arch: d.Arch, OS: d.OS}
+				n.LastSeen.Store(d.LastSeen * int64(time.Second))
+				n.LastHeartbeat.Store(d.LastHeartbeat * int64(time.Second))
+				if d.ProfileJSON != "" {
+					var p sysinfo.Profile
+					if json.Unmarshal([]byte(d.ProfileJSON), &p) == nil {
+						n.LastProfile = &p
+					}
+				}
+				n.Connected.Store(false)
+				m.nodes[d.Name] = n
+				_ = store.UpdateDeviceStatus(d.Name, "offline", d.LastHeartbeat)
+			}
+		}
+	}
+	return m
 }
 
 func (m *Manager) SetStore(s *storage.Store) {
@@ -83,14 +113,17 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	n := &Node{Name: name, Conn: c}
+	n := &Node{Name: name, Conn: c, ConnectionID: fmt.Sprintf("%s-%d", name, time.Now().UnixNano())}
 	n.LastSeen.Store(time.Now().UnixNano())
+	n.LastHeartbeat.Store(time.Now().UnixNano())
+	n.Connected.Store(true)
 	m.mu.Lock()
-	if old := m.nodes[name]; old != nil {
-		_ = old.Conn.Close()
-	}
+	old := m.nodes[name]
 	m.nodes[name] = n
 	m.mu.Unlock()
+	if old != nil && old.Conn != nil {
+		_ = old.Conn.Close()
+	}
 	_ = n.write(Message{Event: "registered", Device: name, TS: time.Now().Unix()})
 	go m.heartbeat(n)
 	go m.readLoop(n)
@@ -107,33 +140,59 @@ func (n *Node) write(msg Message) error {
 
 func (m *Manager) readLoop(n *Node) {
 	defer func() {
-		m.mu.Lock()
-		if m.nodes[n.Name] == n {
-			delete(m.nodes, n.Name)
+		n.Connected.Store(false)
+		conn := n.Conn
+		m.mu.RLock()
+		current := m.nodes[n.Name] == n
+		m.mu.RUnlock()
+		if conn != nil {
+			_ = conn.Close()
 		}
-		m.mu.Unlock()
-		_ = n.Conn.Close()
 		n.Pending.Range(func(key, v any) bool {
 			if ch, ok := v.(chan Message); ok {
 				select {
 				case ch <- Message{Status: "error", Error: "device disconnected"}:
 				default:
 				}
-				n.Pending.Delete(key)
 			}
+			n.Pending.Delete(key)
 			return true
 		})
+		if current && m.Store != nil {
+			_ = m.Store.UpdateDeviceStatus(n.Name, "offline", n.LastHeartbeat.Load()/int64(time.Second))
+		}
 	}()
-	_ = n.Conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+	conn := n.Conn
+	if conn == nil {
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(75 * time.Second))
 	for {
 		var msg Message
-		if err := n.Conn.ReadJSON(&msg); err != nil {
+		if err := conn.ReadJSON(&msg); err != nil {
 			return
 		}
-		n.LastSeen.Store(time.Now().UnixNano())
-		_ = n.Conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+		now := time.Now().UnixNano()
+		n.LastSeen.Store(now)
+		_ = conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+		if msg.Arch != "" {
+			n.Arch = msg.Arch
+		}
+		if msg.OS != "" {
+			n.OS = msg.OS
+		}
 		if msg.Profile != nil {
 			n.LastProfile = msg.Profile
+			n.LastHeartbeat.Store(now)
+			if m.Store != nil {
+				b, _ := json.Marshal(msg.Profile)
+				_ = m.Store.UpsertRemote(n.Name, "online", n.Arch, n.OS, now/int64(time.Second), string(b))
+			}
+		} else {
+			n.LastHeartbeat.Store(now)
+			if m.Store != nil {
+				_ = m.Store.UpdateDeviceStatus(n.Name, "online", now/int64(time.Second))
+			}
 		}
 		if msg.Event == "pong" || msg.Event == "ping" || msg.Event == "hello" || msg.Event == "profile" {
 			continue
@@ -153,21 +212,26 @@ func (m *Manager) readLoop(n *Node) {
 
 func (m *Manager) Online(name string) bool {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	n := m.nodes[name]
-	return n != nil && time.Since(time.Unix(0, n.LastSeen.Load())) < 70*time.Second
+	m.mu.RUnlock()
+	if n == nil || !n.Connected.Load() {
+		return false
+	}
+	return time.Since(time.Unix(0, n.LastSeen.Load())) < deviceOfflineAfter
 }
 
 func (m *Manager) RevokeDevice(name, reason string) error {
 	m.mu.Lock()
-	n, exists := m.nodes[name]
-	if exists {
-		delete(m.nodes, name)
-		_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})
-		_ = n.Conn.Close()
-	}
+	n := m.nodes[name]
+	delete(m.nodes, name)
 	m.mu.Unlock()
-
+	if n != nil {
+		n.Connected.Store(false)
+		if n.Conn != nil {
+			_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})
+			_ = n.Conn.Close()
+		}
+	}
 	if m.Store != nil {
 		return m.Store.RevokeDevice(name, reason)
 	}
@@ -179,16 +243,15 @@ func (m *Manager) Devices() []map[string]any {
 	defer m.mu.RUnlock()
 	out := make([]map[string]any, 0, len(m.nodes))
 	for name, n := range m.nodes {
-		status := "online"
+		status := "offline"
 		lastSeen := time.Unix(0, n.LastSeen.Load())
-		if time.Since(lastSeen) >= 70*time.Second {
-			status = "offline"
+		if n.Connected.Load() && time.Since(lastSeen) < deviceOfflineAfter {
+			status = "online"
 		}
 		item := map[string]any{
-			"name":           name,
-			"status":         status,
-			"is_local":       false,
-			"last_heartbeat": lastSeen.Unix(),
+			"name": name, "status": status, "is_local": n.IsLocal,
+			"arch": n.Arch, "os": n.OS,
+			"last_heartbeat": n.LastHeartbeat.Load() / int64(time.Second),
 		}
 		if n.LastProfile != nil {
 			item["profile"] = n.LastProfile
