@@ -2,12 +2,14 @@
 set -e
 
 # VPS-Commander 一键安装与配置脚本 (Hub / Agent)
-# Repo: https://github.com/kyaring/vps-commander
+# 支持 GitHub Release 与 Gitea 多源智能下载及自动故障切换
 
-REPO="kyaring/vps-commander"
+GITHUB_REPO="kyaring/vps-commander"
+GITEA_HOST="gitea.king.nyc.mn"
+GITEA_REPO="openclaw/vps-commander"
+
 INSTALL_DIR="/opt/vps-commander"
 CONF_DIR="/etc/vps-commander"
-GITHUB_URL="https://github.com"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -35,17 +37,43 @@ esac
 # 检查基础依赖
 command -v curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl || yum install -y curl)
 
-# 获取最新版本 tag
-info "正在获取 VPS-Commander 最新版本信息..."
-LATEST_TAG=$(curl -fsSL -k "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+# 动态解析最新版本 Tag
+info "正在获取最新 Release 版本信息..."
+LATEST_TAG=$(curl -fsSL -k --connect-timeout 4 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST_TAG" ]; then
-    warn "无法通过 GitHub API 自动获取 Tag，将尝试使用默认版本 v1.0.0"
-    LATEST_TAG="v1.0.0"
+    warn "无法通过 GitHub API 获取 Tag，回退至稳定基线版本 v1.1.5"
+    LATEST_TAG="v1.1.5"
 fi
-info "检测到最新版本: ${LATEST_TAG}"
+info "目标安装版本: ${LATEST_TAG} (${TARGET_ARCH})"
 
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/data" "$CONF_DIR"
 chmod 750 "$INSTALL_DIR" "$CONF_DIR"
+
+# 智能多源下载函数（支持 GitHub 与 Gitea 自动容灾互备）
+download_binary() {
+    local BIN_NAME="$1"
+    local TARGET_FILE="$2"
+    
+    local GITHUB_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
+    local GITEA_URL="https://${GITEA_HOST}/${GITEA_REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
+    
+    # 判断是否优先使用 Gitea（如果脚本调用来源为 Gitea 或显式指定 USE_GITEA=1）
+    if [[ "$DOWNLOAD_SOURCE" == "gitea" ]] || [[ "$USE_GITEA" == "1" ]]; then
+        info "正在从私有源 Gitea 下载: ${GITEA_URL}"
+        if curl -fsSL -k --connect-timeout 8 -o "${TARGET_FILE}" "${GITEA_URL}"; then
+            return 0
+        fi
+        warn "Gitea 源下载失败，尝试回退至 GitHub 源..."
+    fi
+
+    info "正在从 GitHub 下载: ${GITHUB_URL}"
+    if curl -fsSL -k --connect-timeout 8 -o "${TARGET_FILE}" "${GITHUB_URL}"; then
+        return 0
+    fi
+
+    warn "GitHub 下载失败或超时，自动切换至 Gitea 备用源: ${GITEA_URL}"
+    curl -fsSL -k -o "${TARGET_FILE}" "${GITEA_URL}" || error "所有源下载均失败，请检查网络连接！"
+}
 
 select_mode() {
     echo -e "\n请选择安装模式:"
@@ -58,10 +86,8 @@ select_mode() {
 install_agent() {
     info "开始安装 VPS-Commander Agent (${TARGET_ARCH})..."
     BIN_NAME="vps-commander-agent-linux-${TARGET_ARCH}"
-    DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
-
-    info "正在下载 Agent: ${DOWNLOAD_URL}"
-    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-agent" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    
+    download_binary "${BIN_NAME}" "${INSTALL_DIR}/vps-commander-agent"
     chmod +x "${INSTALL_DIR}/vps-commander-agent"
 
     echo -e "\n--- 配置 Agent 参数 ---"
@@ -77,7 +103,6 @@ install_agent() {
         read -rp "Cluster Secret 不能为空，请重新输入: " CLUSTER_SECRET
     done
 
-    # 写入凭据文件
     cat << ENV > "${CONF_DIR}/agent.env"
 VPS_COMMANDER_HUB_WS_URL=${HUB_WS}
 VPS_COMMANDER_AGENT_NAME=${AGENT_NAME}
@@ -85,7 +110,6 @@ VPS_COMMANDER_CLUSTER_SECRET=${CLUSTER_SECRET}
 ENV
     chmod 0600 "${CONF_DIR}/agent.env"
 
-    # 配置 systemd
     cat << SVC > /etc/systemd/system/vps-commander-agent.service
 [Unit]
 Description=VPS-Commander Agent
@@ -125,17 +149,14 @@ SVC
 install_hub() {
     info "开始安装 VPS-Commander Hub (${TARGET_ARCH})..."
     BIN_NAME="vps-commander-hub-linux-${TARGET_ARCH}"
-    DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
-    info "正在下载 Hub: ${DOWNLOAD_URL}"
-    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-hub" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    download_binary "${BIN_NAME}" "${INSTALL_DIR}/vps-commander-hub"
     chmod +x "${INSTALL_DIR}/vps-commander-hub"
 
     echo -e "\n--- 配置 Hub 参数 ---"
     read -rp "请输入监听端口 (默认 9521): " HUB_PORT
     HUB_PORT=${HUB_PORT:-9521}
 
-    # 自动生成随机凭据
     GEN_API_KEY=$(head -c 24 /dev/urandom | xxd -p)
     GEN_SECRET=$(head -c 24 /dev/urandom | xxd -p)
     GEN_PASS=$(head -c 16 /dev/urandom | xxd -p)
