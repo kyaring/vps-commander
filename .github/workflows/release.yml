@@ -53,9 +53,9 @@ jobs:
           NOTES
 
           if [ -n "$PREV_TAG" ]; then
-            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h by @%an)" >> release_notes.md
+            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h by @kyaring)" >> release_notes.md
           else
-            git log -n 10 --pretty=format:"- %s (%h by @%an)" >> release_notes.md
+            git log -n 10 --pretty=format:"- %s (%h by @kyaring)" >> release_notes.md
           fi
 
           echo "" >> release_notes.md
