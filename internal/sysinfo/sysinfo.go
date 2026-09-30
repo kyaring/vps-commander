@@ -18,6 +18,13 @@ var lastNet = struct {
 	at     time.Time
 }{}
 
+var cpuMu sync.Mutex
+var lastCPU = struct {
+	idle, total uint64
+	at          time.Time
+	usage       int
+}{}
+
 type Profile struct {
 	Role            string  `json:"role,omitempty"`
 	CPUCores        int     `json:"cpu_cores"`
@@ -195,28 +202,55 @@ func sampleCPUStat() int {
 		return 0, 0, false
 	}
 
-	idle1, total1, ok1 := readStat()
-	if !ok1 {
+	idleCurr, totalCurr, ok := readStat()
+	if !ok {
 		return -1
 	}
-	time.Sleep(50 * time.Millisecond)
-	idle2, total2, ok2 := readStat()
-	if !ok2 || total2 <= total1 {
-		return -1
+	now := time.Now()
+
+	cpuMu.Lock()
+	defer cpuMu.Unlock()
+
+	if lastCPU.total > 0 && totalCurr > lastCPU.total && now.Sub(lastCPU.at) >= 500*time.Millisecond {
+		deltaTotal := totalCurr - lastCPU.total
+		deltaIdle := idleCurr - lastCPU.idle
+		if deltaTotal > 0 && deltaTotal >= deltaIdle {
+			busy := float64(deltaTotal-deltaIdle) / float64(deltaTotal) * 100
+			if busy < 0 {
+				busy = 0
+			}
+			if busy > 100 {
+				busy = 100
+			}
+			lastCPU.usage = int(busy)
+			lastCPU.idle = idleCurr
+			lastCPU.total = totalCurr
+			lastCPU.at = now
+			return lastCPU.usage
+		}
 	}
-	deltaTotal := total2 - total1
-	deltaIdle := idle2 - idle1
-	if deltaTotal == 0 {
-		return 0
+
+	if lastCPU.total == 0 {
+		// 初次初始化基线
+		lastCPU.idle = idleCurr
+		lastCPU.total = totalCurr
+		lastCPU.at = now
+		// 用 200ms 短采样作为初始值
+		time.Sleep(200 * time.Millisecond)
+		if idle2, total2, ok2 := readStat(); ok2 && total2 > totalCurr {
+			dTotal := total2 - totalCurr
+			dIdle := idle2 - idleCurr
+			if dTotal > 0 && dTotal >= dIdle {
+				busy := float64(dTotal-dIdle) / float64(dTotal) * 100
+				lastCPU.usage = int(busy)
+				lastCPU.idle = idle2
+				lastCPU.total = total2
+				lastCPU.at = time.Now()
+			}
+		}
 	}
-	busy := float64(deltaTotal-deltaIdle) / float64(deltaTotal) * 100
-	if busy < 0 {
-		busy = 0
-	}
-	if busy > 100 {
-		busy = 100
-	}
-	return int(busy)
+
+	return lastCPU.usage
 }
 
 func getMemInfo() (memPct int, memAvl string) {

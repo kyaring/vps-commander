@@ -53,6 +53,10 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/mcp/test", p.protected(p.testMCP))
 	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
 	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
+	mux.HandleFunc("/panel/api/notifications/webhooks", p.protected(p.webhookTargets))
+	mux.HandleFunc("/panel/api/notifications/webhook/update", p.protected(p.updateWebhookTarget))
+	mux.HandleFunc("/panel/api/notifications/webhook/delete", p.protected(p.deleteWebhookTarget))
+	mux.HandleFunc("/panel/api/notifications/webhook/test", p.protected(p.testWebhook))
 	mux.HandleFunc("/", p.probe)
 	return mux
 }
@@ -119,6 +123,42 @@ func (p *Panel) testMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "MCP API unavailable", 501)
+}
+
+type notificationPanelRunner interface {
+	WebhookTargetsJSON(http.ResponseWriter, *http.Request)
+	UpdateWebhookTargetJSON(http.ResponseWriter, *http.Request)
+	DeleteWebhookTargetJSON(http.ResponseWriter, *http.Request)
+	TestWebhookJSON(http.ResponseWriter, *http.Request)
+}
+
+func (p *Panel) webhookTargets(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(notificationPanelRunner); ok {
+		v.WebhookTargetsJSON(w, r)
+		return
+	}
+	http.Error(w, "notification API unavailable", 501)
+}
+func (p *Panel) updateWebhookTarget(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(notificationPanelRunner); ok {
+		v.UpdateWebhookTargetJSON(w, r)
+		return
+	}
+	http.Error(w, "notification API unavailable", 501)
+}
+func (p *Panel) deleteWebhookTarget(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(notificationPanelRunner); ok {
+		v.DeleteWebhookTargetJSON(w, r)
+		return
+	}
+	http.Error(w, "notification API unavailable", 501)
+}
+func (p *Panel) testWebhook(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(notificationPanelRunner); ok {
+		v.TestWebhookJSON(w, r)
+		return
+	}
+	http.Error(w, "notification API unavailable", 501)
 }
 
 func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {

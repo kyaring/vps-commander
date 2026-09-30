@@ -525,6 +525,97 @@
           }
         }
       }
+    },
+    "/api/v1/notifications/webhooks": {
+      "get": {
+        "summary": "List webhook targets",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/webhook/update": {
+      "post": {
+        "summary": "Create or update webhook target",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "type",
+                  "url"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "generic",
+                      "telegram",
+                      "wecom"
+                    ]
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "config_json": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/webhook/delete": {
+      "delete": {
+        "summary": "Delete webhook target",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/webhook/test": {
+      "post": {
+        "summary": "Send webhook test message",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
     }
   }
 }

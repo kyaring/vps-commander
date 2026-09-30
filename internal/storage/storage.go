@@ -38,7 +38,7 @@ func (s *Store) init() error {
 	if _, err := s.DB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
 		return err
 	}
-	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS devices (" +
+	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
 		"name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'offline', is_local INTEGER NOT NULL DEFAULT 0, " +
 		"arch TEXT, os TEXT, last_seen INTEGER NOT NULL DEFAULT 0, last_heartbeat INTEGER NOT NULL DEFAULT 0, " +
 		"offline_at INTEGER, profile_json TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); " +
@@ -280,6 +280,52 @@ func (s *Store) Audit(ip, device, action, command string, code int, ms int64, ms
 	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg) VALUES(?,?,?,?,?,?,?,?)",
 		time.Now().Unix(), ip, device, action, command, code, ms, msg)
 	return err
+}
+
+type WebhookTarget struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	URL       string `json:"url"`
+	Config    string `json:"config_json"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func (s *Store) SaveWebhookTarget(v WebhookTarget) error {
+	now := time.Now().Unix()
+	if v.ID == "" || v.Name == "" || v.Type == "" || v.URL == "" {
+		return errors.New("id, name, type and url required")
+	}
+	if v.CreatedAt <= 0 {
+		v.CreatedAt = now
+	}
+	v.UpdatedAt = now
+	_, err := s.DB.Exec(`INSERT INTO webhook_targets(id,name,type,url,config_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,type=excluded.type,url=excluded.url,config_json=excluded.config_json,enabled=excluded.enabled,updated_at=excluded.updated_at`, v.ID, v.Name, v.Type, v.URL, v.Config, boolInt(v.Enabled), v.CreatedAt, v.UpdatedAt)
+	return err
+}
+func (s *Store) DeleteWebhookTarget(id string) error {
+	_, err := s.DB.Exec(`DELETE FROM webhook_targets WHERE id=?`, id)
+	return err
+}
+func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
+	rows, err := s.DB.Query(`SELECT id,name,type,url,COALESCE(config_json,''),enabled,created_at,updated_at FROM webhook_targets ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []WebhookTarget{}
+	for rows.Next() {
+		var v WebhookTarget
+		var en int
+		if err := rows.Scan(&v.ID, &v.Name, &v.Type, &v.URL, &v.Config, &en, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		v.Enabled = en != 0
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {

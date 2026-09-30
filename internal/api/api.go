@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sort"
 	"context"
 	"embed"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/model"
+	"github.com/wjyhk/vps-commander/internal/notify"
 	"github.com/wjyhk/vps-commander/internal/storage"
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
 	panelweb "github.com/wjyhk/vps-commander/internal/web"
@@ -37,6 +39,7 @@ type Server struct {
 	Cluster   *cluster.Manager
 	Store     *storage.Store
 	LocalName string
+	Notify    *notify.Manager
 }
 
 const (
@@ -83,6 +86,79 @@ func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device,
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"forbidden","device":%q,"mode":%q,"reason":%q}`, device, mode, reason)))
 	return false
+}
+
+func (s *Server) WebhookTargetsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	items, err := s.Store.ListWebhookTargets()
+	if err != nil {
+		http.Error(w, "notification query failed", 500)
+		return
+	}
+	// 面板管理端需要查看与编辑配置，直接返回完整结构
+	jsonOut(w, items)
+}
+func maskWebhookURL(v string) string {
+	if len(v) <= 12 {
+		return "***"
+	}
+	return v[:8] + "***" + v[len(v)-4:]
+}
+func (s *Server) UpdateWebhookTargetJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var v storage.WebhookTarget
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&v); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if err := s.Store.SaveWebhookTarget(v); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	_ = s.Store.Audit(clientIP(r), "", "notification_setting", "webhook:"+v.ID, 0, 0, "")
+	jsonOut(w, map[string]any{"ok": true, "id": v.ID})
+}
+func (s *Server) DeleteWebhookTargetJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "id required", 400)
+		return
+	}
+	if err := s.Store.DeleteWebhookTarget(id); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	jsonOut(w, map[string]any{"ok": true})
+}
+func (s *Server) TestWebhookJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var v notify.Target
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&v); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if s.Notify == nil {
+		http.Error(w, "notification engine unavailable", 503)
+		return
+	}
+	if err := s.Notify.TestTarget(v); err != nil {
+		http.Error(w, err.Error(), 502)
+		return
+	}
+	jsonOut(w, map[string]any{"ok": true})
 }
 
 func (s *Server) SecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
@@ -414,6 +490,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/mcp/test", s.TestMCPJSON)
 	mux.HandleFunc("/api/v1/security/settings", s.SecuritySettingsJSON)
 	mux.HandleFunc("/api/v1/security/settings/update", s.UpdateSecuritySettingsJSON)
+	mux.HandleFunc("/api/v1/notifications/webhooks", s.WebhookTargetsJSON)
+	mux.HandleFunc("/api/v1/notifications/webhook/update", s.UpdateWebhookTargetJSON)
+	mux.HandleFunc("/api/v1/notifications/webhook/delete", s.DeleteWebhookTargetJSON)
+	mux.HandleFunc("/api/v1/notifications/webhook/test", s.TestWebhookJSON)
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
 	return mux
@@ -437,15 +517,35 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	localProf := sysinfo.Collect("CONTROL")
-	out := []model.Device{{Name: s.LocalName, Status: "online", Local: true, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &localProf}}
+	localCC, localCountry := cluster.ResolveLocalPublicIP()
+	localDev := model.Device{
+		Name:        s.LocalName,
+		Status:      "online",
+		Local:       true,
+		Arch:        runtime.GOARCH,
+		OS:          runtime.GOOS,
+		CountryCode: localCC,
+		Country:     localCountry,
+		Profile:     &localProf,
+	}
+
+	var remoteDevs []model.Device
 	if s.Cluster != nil {
 		for _, d := range s.Cluster.Devices() {
 			b, _ := json.Marshal(d)
 			var v model.Device
 			_ = json.Unmarshal(b, &v)
-			out = append(out, v)
+			remoteDevs = append(remoteDevs, v)
 		}
 	}
+
+	// 稳定排序：远程节点按名称字典序排列
+	sort.Slice(remoteDevs, func(i, j int) bool {
+		return remoteDevs[i].Name < remoteDevs[j].Name
+	})
+
+	// 本机永远钉死在第 1 位
+	out := append([]model.Device{localDev}, remoteDevs...)
 	jsonOut(w, out)
 }
 

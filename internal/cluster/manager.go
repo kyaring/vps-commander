@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"sort"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,9 @@ type Node struct {
 	Arch          string
 	OS            string
 	IsLocal       bool
+	RemoteIP      string
+	CountryCode   string
+	Country       string
 	MCP           *MCPRuntime
 }
 
@@ -114,7 +118,17 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	n := &Node{Name: name, Conn: c, ConnectionID: fmt.Sprintf("%s-%d", name, time.Now().UnixNano()), MCP: NewMCPRuntime()}
+	clientIP := ExtractIPFromRequest(r)
+	cc, countryName := ResolveIP(clientIP)
+	n := &Node{
+		Name:         name,
+		Conn:         c,
+		ConnectionID: fmt.Sprintf("%s-%d", name, time.Now().UnixNano()),
+		RemoteIP:     clientIP,
+		CountryCode:  cc,
+		Country:      countryName,
+		MCP:          NewMCPRuntime(),
+	}
 	n.LastSeen.Store(time.Now().UnixNano())
 	n.LastHeartbeat.Store(time.Now().UnixNano())
 	n.Connected.Store(true)
@@ -253,6 +267,9 @@ func (m *Manager) Devices() []map[string]any {
 		item := map[string]any{
 			"name": name, "status": status, "is_local": n.IsLocal,
 			"arch": n.Arch, "os": n.OS,
+			"remote_ip":    n.RemoteIP,
+			"country_code": n.CountryCode,
+			"country":      n.Country,
 			"last_heartbeat": n.LastHeartbeat.Load() / int64(time.Second),
 		}
 		if n.LastProfile != nil {
@@ -260,6 +277,11 @@ func (m *Manager) Devices() []map[string]any {
 		}
 		out = append(out, item)
 	}
+	sort.Slice(out, func(i, j int) bool {
+		nameI := fmt.Sprintf("%v", out[i]["name"])
+		nameJ := fmt.Sprintf("%v", out[j]["name"])
+		return nameI < nameJ
+	})
 	return out
 }
 

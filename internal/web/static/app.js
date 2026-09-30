@@ -11,7 +11,8 @@ const $=s=>document.querySelector(s);
 })();
 
 async function api(path,opt={}){
-  let r=await fetch("/panel/api"+path,opt);
+  const fetchOpt = Object.assign({ cache: "no-store" }, opt);
+  let r=await fetch("/panel/api"+path, fetchOpt);
   if(r.status===401){location.href="/panel/login";throw Error("unauthorized")}
   if(!r.ok)throw Error(await r.text());
   return r.json()
@@ -31,49 +32,76 @@ async function removeDevice(name){
   }
 }
 
-async function loadDevices(){
-  let all=await api("/devices");
-  let ds=all.filter(d=>!d.is_local);
-  $("#devices").innerHTML=ds.map(d=>{
-    const p = d.profile || {};
-    const role = p.role || "APPLICATION";
-    const isOnline = d.status === "online";
-    const statusText = isOnline ? "在线" : "离线";
-    const lastText = d.last_heartbeat ? new Date(d.last_heartbeat*1000).toLocaleString() : "";
-    const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
-    const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
-    const loadStr = p.load_1m !== undefined ? p.load_1m.toFixed(2) : '-';
-    const memStr = p.mem_available ? `${p.mem_available} (${p.mem_percent}%)` : (p.mem_percent !== undefined ? `${p.mem_percent}%` : '-');
-    const diskStr = p.disk_free ? `${p.disk_free} (${p.disk_percent}%)` : (p.disk_percent !== undefined ? `${p.disk_percent}%` : '-');
-    const psiStr = p.io_psi !== undefined ? p.io_psi.toFixed(2) : '-';
-    const dockerVal = p.docker ? 'YES' : 'NO';
-    const dockerClass = p.docker ? 'yes' : 'no';
+function renderSingleCard(d) {
+  const p = d.profile || {};
+  const isOnline = d.status === "online";
+  const statusText = isOnline ? "在线" : "离线";
+  const lastText = d.last_heartbeat ? new Date(d.last_heartbeat*1000).toLocaleString() : "";
+  const archOs = (d.arch || d.os) ? `${esc(d.arch||"")}/${esc(d.os||"")} · ` : "";
+  const cpuStr = p.cpu_cores ? `${p.cpu_cores}C · ${p.cpu_usage_percent ?? 0}%` : '-';
+  const loadStr = p.load_1m !== undefined ? p.load_1m.toFixed(2) : '-';
+  const memStr = p.mem_available ? `${p.mem_available} (${p.mem_percent}%)` : (p.mem_percent !== undefined ? `${p.mem_percent}%` : '-');
+  const diskStr = p.disk_free ? `${p.disk_free} (${p.disk_percent}%)` : (p.disk_percent !== undefined ? `${p.disk_percent}%` : '-');
+  const psiStr = p.io_psi !== undefined ? p.io_psi.toFixed(2) : '-';
+  const dockerVal = p.docker ? 'YES' : 'NO';
+  const dockerClass = p.docker ? 'yes' : 'no';
 
-    return `
-      <div class="device-card ${isOnline ? "online" : "offline"}">
-        <div class="v1-head">
-          <div class="v1-row1">
-            <div class="v1-title">
-              <span class="dot"></span>
-              <strong class="v1-name" title="${esc(d.name)}">${esc(d.name)}</strong>
-            </div>
-            <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
-          </div>
-          <div class="v1-row2">${archOs}${statusText}${isOnline ? "" : (lastText ? " · 最后活跃: "+lastText : "")}</div>
+  return `
+    <div class="v1-head">
+      <div class="v1-row1">
+        <div class="v1-title">
+          <span class="dot"></span>
+          <strong class="v1-name" title="${esc(d.name)}">${esc(d.name)}</strong>
         </div>
-        <div class="profile-grid">
-          <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
-          <div class="p-item"><span class="p-label">LOAD</span><span class="p-val">${loadStr}</span></div>
-          <div class="p-item"><span class="p-label">MEM</span><span class="p-val">${memStr}</span></div>
-          <div class="p-item"><span class="p-label">DISK</span><span class="p-val">${diskStr}</span></div>
-          <div class="p-item"><span class="p-label">IO PSI</span><span class="p-val">${psiStr}</span></div>
-          <div class="p-item"><span class="p-label">DOCKER</span><span class="p-val badge-docker-text ${dockerClass}">${dockerVal}</span></div>
-        </div>
+        <button class="btn-revoke" onclick="removeDevice('${esc(d.name)}')">注销</button>
       </div>
-    `;
-  }).join("");
+      <div class="v1-row2">${archOs}${statusText}${isOnline ? "" : (lastText ? " · 最后活跃: "+lastText : "")}</div>
+    </div>
+    <div class="profile-grid">
+      <div class="p-item"><span class="p-label">CPU</span><span class="p-val">${cpuStr}</span></div>
+      <div class="p-item"><span class="p-label">LOAD</span><span class="p-val">${loadStr}</span></div>
+      <div class="p-item"><span class="p-label">MEM</span><span class="p-val">${memStr}</span></div>
+      <div class="p-item"><span class="p-label">DISK</span><span class="p-val">${diskStr}</span></div>
+      <div class="p-item"><span class="p-label">IO PSI</span><span class="p-val">${psiStr}</span></div>
+      <div class="p-item"><span class="p-label">DOCKER</span><span class="p-val badge-docker-text ${dockerClass}">${dockerVal}</span></div>
+    </div>
+  `;
+}
 
-  $("#device").innerHTML=ds.map(d=>`<option value="${esc(d.name)}" ${d.status==="offline" ? "disabled" : ""}>${esc(d.name)}${d.status==="offline" ? " [离线]" : ""}</option>`).join("");
+async function loadDevices(){
+  let all = await api("/devices");
+  let ds = all.filter(d => !d.is_local);
+  // 严格固定名称字典序排列，杜绝乱跳
+  ds.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+
+  const container = $("#devices");
+  const currentCardElements = container.querySelectorAll(".device-card[data-node]");
+  const currentNodes = Array.from(currentCardElements).map(el => el.getAttribute("data-node"));
+  const newNodes = ds.map(d => d.name);
+
+  // 如果节点列表结构未变，采用就地局部更新，卡片物理位置丝毫不动
+  const sameOrder = currentNodes.length === newNodes.length && currentNodes.every((n, i) => n === newNodes[i]);
+  if (sameOrder) {
+    ds.forEach(d => {
+      const card = container.querySelector(`.device-card[data-node="${CSS.escape(d.name)}"]`);
+      if (card) {
+        const isOnline = d.status === "online";
+        card.className = `device-card ${isOnline ? "online" : "offline"}`;
+        card.innerHTML = renderSingleCard(d);
+      }
+    });
+  } else {
+    // 首次渲染或增删节点时渲染
+    container.innerHTML = ds.map(d => {
+      const isOnline = d.status === "online";
+      return `<div class="device-card ${isOnline ? "online" : "offline"}" data-node="${esc(d.name)}">${renderSingleCard(d)}</div>`;
+    }).join("");
+  }
+
+  // 保持控制台 select 选项
+  const select = $("#device");
+  const selectedVal = select.value;
+  select.innerHTML = ds.map(d => `<option value="${esc(d.name)}" ${d.status==="offline" ? "disabled" : ""} ${d.name===selectedVal ? "selected" : ""}>${esc(d.name)}${d.status==="offline" ? " [离线]" : ""}</option>`).join("");
 }
 
 async function loadAudits(){
@@ -128,7 +156,7 @@ function parseMCPField(id,label,kind){
   return value;
 }
 function showMCPToast(message){
-  let t=$("#mcpToast"); if(!t){t=document.createElement("div");t.id="mcpToast";t.style.cssText="position:fixed;right:18px;top:18px;z-index:9999;padding:10px 14px;border:1px solid var(--line,#30343b);border-radius:8px;background:var(--card,#11151a);box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t)}
+  let t=$("#mcpToast"); if(!t){t=document.createElement("div");t.id="mcpToast";t.style.cssText="position:fixed;right:18px;top:18px;z-index:9999;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg-sub);box-shadow:0 8px 30px rgba(0,0,0,.25)";document.body.appendChild(t)}
   t.textContent=message; t.hidden=false; clearTimeout(t._timer); t._timer=setTimeout(()=>t.hidden=true,2600);
 }
 async function loadMCPServices(){
@@ -188,3 +216,189 @@ loadMCPServices().catch(console.error);
 async function loadSecuritySettings(){const x=await api("/security/settings"),nodes=x.nodes||[],effective=x.effective||{},configured=new Map(nodes.map(n=>[n.node,n.mode])),devices=await api("/devices");$("#globalSecurity").value=x.global||"medium";$("#securityNodes").innerHTML=devices.map(d=>{const mode=configured.get(d.name)||"inherit",eff=effective[d.name]||x.global||"medium";return `<tr><td>${esc(d.name)}</td><td><select data-security-node="${esc(d.name)}"><option value="inherit" ${mode==='inherit'?'selected':''}>跟随全局</option><option value="low" ${mode==='low'?'selected':''}>低 · Low</option><option value="medium" ${mode==='medium'?'selected':''}>中 · Medium</option><option value="high" ${mode==='high'?'selected':''}>高 · High</option></select></td><td>${esc(eff)}</td><td><button type="button" onclick="saveNodeSecurity('${esc(d.name)}')">保存</button></td></tr>`}).join("")}
 async function saveNodeSecurity(node){const el=document.querySelector(`[data-security-node="${CSS.escape(node)}"]`);if(!el)return;try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node,mode:el.value})});$("#securityStatus").textContent=`${node} 策略已保存。`;await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}}
 $("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);loadSecuritySettings().catch(console.error);
+
+
+let webhookEditingId = "";
+
+async function loadWebhooks() {
+  const list = await api("/notifications/webhooks");
+  const el = $("#webhookList");
+  if (!el) return;
+  if (!list || list.length === 0) {
+    el.innerHTML = '<div class="mcp-meta">暂无 Webhook 配置。</div>';
+    return;
+  }
+  el.innerHTML = list.map(x => `
+    <div class="mcp-item">
+      <h3>${esc(x.name)} <small>${esc(x.id)}</small></h3>
+      <div class="mcp-meta">
+        ${esc(x.type)} · ${x.enabled ? '<span style="color:var(--dot-online)">启用</span>' : '<span style="color:var(--text-muted)">停用</span>'}<br>
+        <code>${esc(x.url)}</code>
+      </div>
+      <div class="mcp-actions">
+        <button type="button" onclick="editWebhook('${esc(x.id)}')">编辑</button>
+        <button type="button" onclick="deleteWebhook('${esc(x.id)}')">删除</button>
+      </div>
+    </div>
+  `).join("");
+}
+
+function resetWebhookForm() {
+  webhookEditingId = "";
+  const editor = $("#webhookEditor");
+  if (!editor) return;
+  editor.hidden = false;
+  $("#webhookId").disabled = false;
+  $("#webhookId").value = "";
+  $("#webhookName").value = "";
+  $("#webhookType").value = "wecom";
+  $("#webhookEnabled").value = "1";
+  $("#webhookUrl").value = "";
+  $("#webhookConfig").value = "{}";
+  $("#webhookStatus").textContent = "";
+}
+
+async function editWebhook(id) {
+  const list = await api("/notifications/webhooks");
+  const item = list.find(x => x.id === id);
+  if (!item) return;
+  resetWebhookForm();
+  webhookEditingId = id;
+  $("#webhookId").value = item.id;
+  $("#webhookId").disabled = true;
+  $("#webhookName").value = item.name || "";
+  $("#webhookType").value = item.type || "wecom";
+  $("#webhookEnabled").value = item.enabled ? "1" : "0";
+  $("#webhookUrl").value = item.url || "";
+  $("#webhookConfig").value = item.config_json || "{}";
+}
+
+async function deleteWebhook(id) {
+  if (!confirm(`确认删除 Webhook [${id}]？`)) return;
+  try {
+    await api("/notifications/webhook/delete?id=" + encodeURIComponent(id), { method: "DELETE" });
+    await loadWebhooks();
+  } catch (e) {
+    alert("删除失败: " + e.message);
+  }
+}
+
+if ($("#webhookNew")) $("#webhookNew").onclick = resetWebhookForm;
+if ($("#webhookCancel")) $("#webhookCancel").onclick = () => {
+  const editor = $("#webhookEditor");
+  if (editor) editor.hidden = true;
+};
+
+if ($("#webhookSave")) $("#webhookSave").onclick = async () => {
+  try {
+    const id = $("#webhookId").value.trim();
+    const name = $("#webhookName").value.trim();
+    const url = $("#webhookUrl").value.trim();
+    if (!id) throw Error("标识 (ID) 不能为空");
+    if (!name) throw Error("名称不能为空");
+    if (!url) throw Error("Webhook URL 不能为空");
+
+    let cfg = {};
+    try {
+      cfg = JSON.parse($("#webhookConfig").value || "{}");
+    } catch (e) {
+      throw Error("配置 JSON 格式不正确");
+    }
+
+    const body = {
+      id: id,
+      name: name,
+      type: $("#webhookType").value,
+      url: url,
+      config_json: JSON.stringify(cfg),
+      enabled: $("#webhookEnabled").value === "1"
+    };
+
+    await api("/notifications/webhook/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+
+    $("#webhookStatus").textContent = "Webhook [" + id + "] 已保存。";
+    const editor = $("#webhookEditor");
+    if (editor) editor.hidden = true;
+    await loadWebhooks();
+  } catch (e) {
+    $("#webhookStatus").textContent = "保存失败: " + e.message;
+  }
+};
+
+if ($("#webhookTest")) $("#webhookTest").onclick = async () => {
+  try {
+    const id = $("#webhookId").value.trim();
+    const name = $("#webhookName").value.trim();
+    const url = $("#webhookUrl").value.trim();
+    if (!url) throw Error("Webhook URL 不能为空");
+
+    let cfg = {};
+    try {
+      cfg = JSON.parse($("#webhookConfig").value || "{}");
+    } catch (e) {
+      throw Error("配置 JSON 格式不正确");
+    }
+
+    const body = {
+      id: id || "test",
+      name: name || "测试目标",
+      type: $("#webhookType").value,
+      url: url,
+      config_json: JSON.stringify(cfg),
+      enabled: true
+    };
+
+    $("#webhookStatus").textContent = "正在发送测试消息...";
+    await api("/notifications/webhook/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    $("#webhookStatus").textContent = "✓ 测试消息发送成功！";
+  } catch (e) {
+    $("#webhookStatus").textContent = "✗ 测试失败: " + e.message;
+  }
+};
+
+if ($("#notificationRefresh")) $("#notificationRefresh").onclick = () => loadWebhooks().catch(console.error);
+
+// 开启 5 秒平滑实时自动轮询
+let devicePollTimer = null;
+function startDevicePolling() {
+  if (devicePollTimer) clearInterval(devicePollTimer);
+  devicePollTimer = setInterval(() => {
+    if (!document.hidden) {
+      loadDevices().catch(console.error);
+    }
+  }, 5000);
+}
+startDevicePolling();
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadDevices().catch(console.error);
+  }
+});
+loadWebhooks().catch(console.error);
+
+// 开启 5 秒平滑实时自动轮询
+let devicePollTimer = null;
+function startDevicePolling() {
+  if (devicePollTimer) clearInterval(devicePollTimer);
+  devicePollTimer = setInterval(() => {
+    if (!document.hidden) {
+      loadDevices().catch(console.error);
+    }
+  }, 5000);
+}
+startDevicePolling();
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    loadDevices().catch(console.error);
+  }
+});

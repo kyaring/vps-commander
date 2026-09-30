@@ -18,12 +18,15 @@ type ExecResponse struct {
 }
 
 type Device struct {
-	Name    string           `json:"name"`
-	Status  string           `json:"status"`
-	Local   bool             `json:"is_local"`
-	Arch    string           `json:"arch,omitempty"`
-	OS      string           `json:"os,omitempty"`
-	Profile *sysinfo.Profile `json:"profile,omitempty"`
+	Name        string           `json:"name"`
+	Status      string           `json:"status"`
+	Local       bool             `json:"is_local"`
+	Arch        string           `json:"arch,omitempty"`
+	OS          string           `json:"os,omitempty"`
+	RemoteIP    string           `json:"remote_ip,omitempty"`
+	CountryCode string           `json:"country_code,omitempty"`
+	Country     string           `json:"country,omitempty"`
+	Profile     *sysinfo.Profile `json:"profile,omitempty"`
 }
 
 type FileReadRequest struct {

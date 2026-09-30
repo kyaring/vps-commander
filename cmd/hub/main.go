@@ -18,6 +18,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/mcp"
+	"github.com/wjyhk/vps-commander/internal/notify"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
@@ -52,12 +53,16 @@ func main() {
 	if err := store.UpsertLocal(local, runtime.GOARCH, runtime.GOOS); err != nil {
 		log.Fatal(err)
 	}
+	notificationManager := notify.New(store)
+	notificationManager.Start()
+	defer notificationManager.Stop()
 	s := &api.Server{
 		Auth:      authManager,
 		Exec:      executor.Local{MaxOutput: 1024 * 1024},
 		Cluster:   cluster.NewManager(clusterSecret, store),
 		Store:     store,
 		LocalName: local,
+		Notify:    notificationManager,
 	}
 
 	// MCP Server instance

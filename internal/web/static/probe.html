@@ -1,4 +1,46 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>VPS Probe</title><link rel="stylesheet" href="/static/probe.css"></head>
-<body><main><header><div><h1>VPS Probe</h1><p>Infrastructure status</p></div><div class="switch"><button id="cardBtn">卡片</button><button id="compactBtn">表格</button></div></header><section id="content"></section></main><script src="/static/probe.js"></script></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>VPS Probe - 节点监控探针</title>
+  <link rel="stylesheet" href="/static/probe.css?v=20260929">
+</head>
+<body>
+  <div class="layout">
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-dot"></div>
+        <div class="brand-text">
+          <h1>VPS Probe</h1>
+          <span class="sub">服务器集群实时监控</span>
+        </div>
+      </div>
+      <div class="controls">
+        <div class="summary-badge" id="clusterSummary">
+          <span class="dot-online"></span>
+          <span id="summaryText">检测中...</span>
+        </div>
+        <div class="view-switch">
+          <button id="cardBtn" class="btn active" title="卡片视图">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+            卡片
+          </button>
+          <button id="compactBtn" class="btn" title="表格视图">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+            表格
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="content" class="card-view"></main>
+
+    <footer class="footer">
+      <span>VPS-Commander Cluster Monitor</span>
+      <span id="lastUpdated" class="update-time">自动刷新中...</span>
+    </footer>
+  </div>
+  <script src="/static/probe.js?v=20260929"></script>
+</body>
+</html>
