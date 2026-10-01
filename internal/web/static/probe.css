@@ -1,23 +1,85 @@
+/**
+ * Apple Design System - VPS Probe
+ * Grounded in Apple HIG (macOS / iOS) & Liquid Glass Design Specs
+ */
+
 :root {
-  --bg-main: #0c0e14;
-  --bg-card: rgba(22, 27, 34, 0.7);
-  --bg-card-hover: rgba(28, 35, 45, 0.85);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-hover: rgba(255, 255, 255, 0.16);
-  --text-main: #f0f6fc;
-  --text-muted: #8b949e;
-  --text-dim: #6e7681;
-  --accent: #58a6ff;
-  --online: #3fb950;
-  --online-bg: rgba(63, 185, 80, 0.12);
-  --offline: #f85149;
-  --offline-bg: rgba(248, 81, 73, 0.12);
-  --warn: #d29922;
-  --warn-bg: rgba(210, 153, 34, 0.12);
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --radius-lg: 14px;
-  --radius-md: 8px;
+  /* Dynamic System Colors - Dark (Default) */
+  --system-bg: #000000;
+  --secondary-system-bg: #16181d;
+  --tertiary-system-bg: #21252d;
+  
+  /* Materials & Overlays */
+  --liquid-glass-bg: rgba(22, 24, 29, 0.72);
+  --liquid-glass-border: rgba(255, 255, 255, 0.09);
+  --hairline-border: rgba(255, 255, 255, 0.08);
+  --hairline-border-hover: rgba(255, 255, 255, 0.16);
+  --hairline-highlight: rgba(255, 255, 255, 0.04);
+  
+  /* Apple Semantic Labels */
+  --label-primary: #f5f5f7;
+  --label-secondary: #98989d;
+  --label-tertiary: #636366;
+  --label-quaternary: #48484a;
+
+  /* Apple System Accents & Status */
+  --accent: #0a84ff;
+  --accent-subtle: rgba(10, 132, 255, 0.15);
+  
+  --system-green: #30d158;
+  --system-green-subtle: rgba(48, 209, 88, 0.14);
+  --system-yellow: #ffd60a;
+  --system-yellow-subtle: rgba(255, 214, 10, 0.14);
+  --system-red: #ff453a;
+  --system-red-subtle: rgba(255, 69, 58, 0.14);
+  --system-purple: #bf5af2;
+
+  /* Typography Stacks */
+  --font-system: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+  /* Radii & Shadows */
+  --radius-lg: 16px;
+  --radius-md: 10px;
   --radius-sm: 6px;
+  --shadow-subtle: 0 4px 20px rgba(0, 0, 0, 0.35);
+  --shadow-hover: 0 8px 30px rgba(0, 0, 0, 0.5);
+
+  /* Animation */
+  --ease-apple: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Light Appearance */
+@media (prefers-color-scheme: light) {
+  :root {
+    --system-bg: #f5f5f7;
+    --secondary-system-bg: #ffffff;
+    --tertiary-system-bg: #e5e5ea;
+    
+    --liquid-glass-bg: rgba(255, 255, 255, 0.78);
+    --liquid-glass-border: rgba(0, 0, 0, 0.08);
+    --hairline-border: rgba(0, 0, 0, 0.07);
+    --hairline-border-hover: rgba(0, 0, 0, 0.14);
+    --hairline-highlight: rgba(0, 0, 0, 0.02);
+    
+    --label-primary: #1d1d1f;
+    --label-secondary: #86868b;
+    --label-tertiary: #a1a1a6;
+    --label-quaternary: #d1d1d6;
+
+    --accent: #0071e3;
+    --accent-subtle: rgba(0, 113, 227, 0.1);
+    
+    --system-green: #34c759;
+    --system-green-subtle: rgba(52, 199, 89, 0.12);
+    --system-yellow: #ff9500;
+    --system-yellow-subtle: rgba(255, 149, 0, 0.12);
+    --system-red: #ff3b30;
+    --system-red-subtle: rgba(255, 59, 48, 0.12);
+    
+    --shadow-subtle: 0 2px 14px rgba(0, 0, 0, 0.06);
+    --shadow-hover: 0 6px 20px rgba(0, 0, 0, 0.12);
+  }
 }
 
 * {
@@ -27,36 +89,44 @@
 }
 
 body {
-  background-color: var(--bg-main);
-  background-image: 
-    radial-gradient(at 15% 15%, rgba(56, 139, 253, 0.05) 0px, transparent 50%),
-    radial-gradient(at 85% 85%, rgba(63, 185, 80, 0.04) 0px, transparent 50%);
-  background-attachment: fixed;
-  color: var(--text-main);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
-  line-height: 1.5;
+  background-color: var(--system-bg);
+  color: var(--label-primary);
+  font-family: var(--font-system);
+  font-size: 13px;
+  line-height: 1.45;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .layout {
-  max-width: 1440px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 24px 20px 40px;
+  padding: 0 24px 48px;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
 }
 
-/* 导航栏 */
+/* ==========================================================================
+   Header & Liquid Glass Navbar
+   ========================================================================== */
 .navbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  margin: 0 -24px 28px;
+  padding: 14px 24px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 24px;
   flex-wrap: wrap;
   gap: 16px;
+  background: var(--liquid-glass-bg);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  border-bottom: 1px solid var(--liquid-glass-border);
+  transition: all 0.2s var(--ease-apple);
 }
 
 .brand {
@@ -66,25 +136,30 @@ body {
 }
 
 .logo-dot {
-  width: 14px;
-  height: 14px;
-  background: linear-gradient(135deg, #58a6ff, #1f6feb);
-  border-radius: 4px;
-  box-shadow: 0 0 12px rgba(88, 166, 255, 0.5);
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 3px;
+  box-shadow: 0 0 10px var(--accent-subtle);
+}
+
+.brand-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .brand-text h1 {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  color: #fff;
-  display: inline-block;
-  margin-right: 8px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--label-primary);
 }
 
 .brand-text .sub {
-  font-size: 13px;
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--label-secondary);
+  font-weight: 400;
 }
 
 .controls {
@@ -93,164 +168,181 @@ body {
   gap: 12px;
 }
 
+/* Cluster Summary Pill */
 .summary-badge {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border);
+  background: var(--hairline-highlight);
+  border: 1px solid var(--hairline-border);
   padding: 5px 12px;
-  border-radius: 20px;
+  border-radius: 980px;
   font-size: 12px;
-  color: var(--text-muted);
+  font-weight: 500;
+  color: var(--label-secondary);
 }
 
 .dot-online {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--online);
-  box-shadow: 0 0 8px rgba(63, 185, 80, 0.6);
-  animation: pulse 2.5s infinite;
+  background: var(--system-green);
+  box-shadow: 0 0 6px var(--system-green);
 }
 
-@keyframes pulse {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.7); }
-  70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
-}
-
+/* macOS-Style Segmented Control */
 .view-switch {
   display: flex;
-  background: rgba(22, 27, 34, 0.8);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 3px;
+  background: var(--tertiary-system-bg);
+  border: 1px solid var(--hairline-border);
+  border-radius: 8px;
+  padding: 2px;
   gap: 2px;
 }
 
 .view-switch .btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  background: transparent;
+  height: 26px;
+  padding: 0 12px;
   border: none;
-  color: var(--text-muted);
-  padding: 5px 12px;
-  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label-secondary);
+  font-family: var(--font-system);
   font-size: 12px;
   font-weight: 500;
+  border-radius: 6px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s ease-out;
+  user-select: none;
 }
 
 .view-switch .btn:hover {
-  color: var(--text-main);
+  color: var(--label-primary);
 }
 
 .view-switch .btn.active {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  background: var(--secondary-system-bg);
+  color: var(--label-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0.5px 1px rgba(0, 0, 0, 0.08);
 }
 
-/* 卡片视图 */
+/* ==========================================================================
+   Content Grid & Node Card (Content Layer)
+   ========================================================================== */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 18px;
 }
 
 .node-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
+  background: var(--secondary-system-bg);
+  border: 1px solid var(--hairline-border);
   border-radius: var(--radius-lg);
-  padding: 18px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-subtle);
+  transition: transform 0.25s var(--ease-apple), border-color 0.25s var(--ease-apple), box-shadow 0.25s var(--ease-apple);
 }
 
 .node-card:hover {
-  border-color: var(--border-hover);
-  background: var(--bg-card-hover);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  transform: translateY(-1.5px);
+  border-color: var(--hairline-border-hover);
+  box-shadow: var(--shadow-hover);
 }
 
 .card-top {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 8px;
 }
 
 .node-title {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .node-name-wrap {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.flag-icon {
+  font-size: 15px;
+  line-height: 1;
 }
 
 .node-name {
-  font-size: 16px;
-  font-weight: 700;
-  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
   letter-spacing: -0.01em;
+  color: var(--label-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .local-badge {
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(88, 166, 255, 0.15);
-  color: var(--accent);
-  border: 1px solid rgba(88, 166, 255, 0.25);
   font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border: 1px solid rgba(10, 132, 255, 0.25);
+  flex-shrink: 0;
 }
 
 .node-meta {
-  font-size: 12px;
-  color: var(--text-dim);
+  font-size: 11px;
+  color: var(--label-secondary);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 .meta-pill {
-  background: rgba(255, 255, 255, 0.04);
-  padding: 2px 6px;
+  background: var(--hairline-highlight);
+  border: 1px solid var(--hairline-border);
+  padding: 1px 6px;
   border-radius: 4px;
+  color: var(--label-secondary);
+  font-weight: 500;
 }
 
+/* Status Pill */
 .status-badge {
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 12px;
-  display: flex;
+  padding: 2px 8px;
+  border-radius: 980px;
+  display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex-shrink: 0;
 }
 
 .status-badge.online {
-  background: var(--online-bg);
-  color: var(--online);
-  border: 1px solid rgba(63, 185, 80, 0.2);
+  background: var(--system-green-subtle);
+  color: var(--system-green);
+  border: 1px solid rgba(48, 209, 88, 0.22);
 }
 
 .status-badge.offline {
-  background: var(--offline-bg);
-  color: var(--offline);
-  border: 1px solid rgba(248, 81, 73, 0.2);
+  background: var(--system-red-subtle);
+  color: var(--system-red);
+  border: 1px solid rgba(255, 69, 58, 0.22);
 }
 
 .status-badge .dot {
@@ -260,7 +352,9 @@ body {
   background: currentColor;
 }
 
-/* 进度条指标区域 */
+/* ==========================================================================
+   Metrics & Progress Bars (San Francisco Metrics)
+   ========================================================================== */
 .metrics-bars {
   display: flex;
   flex-direction: column;
@@ -270,61 +364,64 @@ body {
 .metric-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .metric-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 12px;
 }
 
 .metric-label {
-  color: var(--text-muted);
+  color: var(--label-secondary);
   font-weight: 500;
 }
 
 .metric-value {
-  color: var(--text-main);
+  color: var(--label-primary);
   font-family: var(--font-mono);
+  font-size: 12px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .progress-track {
-  height: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
+  height: 5px;
+  background: var(--tertiary-system-bg);
+  border-radius: 980px;
   overflow: hidden;
   position: relative;
 }
 
 .progress-fill {
   height: 100%;
-  border-radius: 3px;
-  transition: width 0.4s ease, background 0.3s ease;
+  border-radius: 980px;
+  transition: width 0.4s var(--ease-apple), background 0.3s ease;
 }
 
 .progress-fill.normal {
-  background: linear-gradient(90deg, #238636, #3fb950);
+  background: var(--system-green);
 }
 
 .progress-fill.warn {
-  background: linear-gradient(90deg, #9e6a03, #d29922);
+  background: var(--system-yellow);
 }
 
 .progress-fill.danger {
-  background: linear-gradient(90deg, #da3633, #f85149);
+  background: var(--system-red);
 }
 
-/* 统计卡片底部小部件 */
+/* Secondary Stat Widget (Inset Grouped) */
 .card-stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--hairline-highlight);
   border-radius: var(--radius-md);
-  padding: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 10px 12px;
+  border: 1px solid var(--hairline-border);
 }
 
 .stat-box {
@@ -335,34 +432,37 @@ body {
 
 .stat-title {
   font-size: 11px;
-  color: var(--text-dim);
+  font-weight: 500;
+  color: var(--label-secondary);
 }
 
 .stat-desc {
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--label-secondary);
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .stat-desc b {
-  color: var(--text-main);
-  font-weight: 500;
+  color: var(--label-primary);
+  font-weight: 600;
 }
 
-.traffic-in { color: #58a6ff !important; }
-.traffic-out { color: #bc8cff !important; }
+.traffic-in { color: var(--accent) !important; font-weight: 600; }
+.traffic-out { color: var(--system-purple) !important; font-weight: 600; }
 
-/* 表格视图 */
+/* ==========================================================================
+   Compact Table View (macOS Table Standard)
+   ========================================================================== */
 .table-wrapper {
-  background: var(--bg-card);
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
+  background: var(--secondary-system-bg);
+  border: 1px solid var(--hairline-border);
   border-radius: var(--radius-lg);
   overflow-x: auto;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-subtle);
 }
 
 .probe-table {
@@ -373,20 +473,23 @@ body {
 }
 
 .probe-table th {
-  background: rgba(0, 0, 0, 0.25);
-  padding: 12px 16px;
-  font-size: 12px;
+  background: var(--tertiary-system-bg);
+  padding: 10px 16px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
-  border-bottom: 1px solid var(--border);
+  color: var(--label-secondary);
+  border-bottom: 1px solid var(--hairline-border);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
   white-space: nowrap;
 }
 
 .probe-table td {
-  padding: 14px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  font-size: 13px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline-border);
+  font-size: 12px;
   vertical-align: middle;
+  color: var(--label-primary);
 }
 
 .probe-table tr:last-child td {
@@ -394,12 +497,12 @@ body {
 }
 
 .probe-table tr:hover td {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--hairline-highlight);
 }
 
 .col-mono {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .mini-bar-wrap {
@@ -412,14 +515,14 @@ body {
 .mini-bar {
   flex: 1;
   height: 5px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
+  background: var(--tertiary-system-bg);
+  border-radius: 980px;
   overflow: hidden;
 }
 
 .mini-bar-fill {
   height: 100%;
-  border-radius: 3px;
+  border-radius: 980px;
 }
 
 .table-node {
@@ -428,53 +531,60 @@ body {
 }
 
 .table-node .name {
+  font-size: 13px;
   font-weight: 600;
-  color: #fff;
+  color: var(--label-primary);
 }
 
 .table-node .sub {
   font-size: 11px;
-  color: var(--text-dim);
+  color: var(--label-secondary);
 }
 
-/* 页脚 */
+/* ==========================================================================
+   Footer
+   ========================================================================== */
 .footer {
   margin-top: auto;
-  padding-top: 36px;
+  padding-top: 32px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: 12px;
-  color: var(--text-dim);
-  border-top: 1px solid var(--border);
+  color: var(--label-secondary);
+  border-top: 1px solid var(--hairline-border);
 }
 
 .update-time {
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
-/* 错误提示 */
+/* Error State */
 .error-msg {
   text-align: center;
   padding: 40px;
-  color: var(--offline);
-  background: var(--bg-card);
-  border: 1px dashed rgba(248, 81, 73, 0.3);
+  color: var(--system-red);
+  background: var(--system-red-subtle);
+  border: 1px dashed rgba(255, 69, 58, 0.3);
   border-radius: var(--radius-lg);
 }
 
-/* 响应式调整 (Mobile) */
+/* ==========================================================================
+   Responsive Adaptations
+   ========================================================================== */
 @media (max-width: 768px) {
   .layout {
-    padding: 16px 12px 28px;
+    padding: 0 16px 36px;
   }
   
   .navbar {
-    margin-bottom: 16px;
+    margin: 0 -16px 20px;
+    padding: 12px 16px;
   }
   
   .brand-text h1 {
-    font-size: 18px;
+    font-size: 16px;
   }
   
   .controls {
@@ -484,12 +594,11 @@ body {
   
   .card-grid {
     grid-template-columns: 1fr;
-    gap: 12px;
+    gap: 14px;
   }
   
   .node-card {
-    padding: 14px;
-    gap: 12px;
+    padding: 16px;
   }
   
   .card-stats-grid {
