@@ -384,21 +384,3 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 loadWebhooks().catch(console.error);
-
-// 开启 5 秒平滑实时自动轮询
-let devicePollTimer = null;
-function startDevicePolling() {
-  if (devicePollTimer) clearInterval(devicePollTimer);
-  devicePollTimer = setInterval(() => {
-    if (!document.hidden) {
-      loadDevices().catch(console.error);
-    }
-  }, 5000);
-}
-startDevicePolling();
-
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
-    loadDevices().catch(console.error);
-  }
-});
