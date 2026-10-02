@@ -86,7 +86,7 @@ Hub 根据 Credential 建立 Canonical Device Identity。
 Server version：`1.2.0`。
 Protocol Version：`2024-11-05`。
 
-当前工具共 11 个：
+当前工具共 12 个：
 `list_devices`、`exec_command`、`read_file`、`read_multiple_files`、`create_directory`、`move_file`、`list_processes`、`edit_block`、`write_file`、`list_agent_mcp`、`call_agent_mcp`。
 
 远程 transport：legacy HTTP + SSE。

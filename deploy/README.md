@@ -195,7 +195,7 @@ Agent 启动后主动连接 Hub，并在设备列表中显示为 `online`。
 
 本地 stdio 使用 `vps-commander-mcp-stdio`。
 
-当前共 11 个 MCP tools，详见 `docs/MCP_INTEGRATION.md`。
+当前共 12 个 MCP tools，详见 `docs/MCP_INTEGRATION.md`。
 
 ---
 

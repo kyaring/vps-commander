@@ -88,6 +88,7 @@ Agent 返回结果后，Hub 完成审计并将结果返回 HTTP/MCP 调用方。
 | :--- | :--- |
 | Low | read_file、read_multiple_files、list_directory、file_info、search、list_processes |
 | Medium | edit_block、write_file、create_directory、move_file、mcp_call |
+| Low | diagnostic_command：严格白名单只读诊断（Docker、systemd、journal、网络监听、磁盘、内存、uptime） |
 | High | exec_command、start_process、interact_with_process、kill_process、force_terminate |
 
 ### 4.3 Policy Snapshot
@@ -121,7 +122,7 @@ kill / terminate 使用 Session 内部进程句柄，不接受客户端任意 PI
 
 ## 六、MCP 架构
 
-当前 MCP 共 11 个工具：
+当前 MCP 共 12 个工具：
 1. `list_devices`
 2. `exec_command`
 3. `read_file`
@@ -129,6 +130,8 @@ kill / terminate 使用 Session 内部进程句柄，不接受客户端任意 PI
 5. `create_directory`
 6. `move_file`
 7. `list_processes`
+8. `diagnostic_command`：严格白名单的只读系统诊断；
+
 8. `edit_block`
 9. `write_file`
 10. `list_agent_mcp`

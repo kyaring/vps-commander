@@ -111,7 +111,7 @@ Tool Registry 首先确定操作风险：
 
 ## 🤖 当前 MCP 能力
 
-目前共 **11 个 MCP Tools**：
+目前共 **12 个 MCP Tools**：
 
 | Tool | Risk | 功能 |
 | :--- | :--- | :--- |

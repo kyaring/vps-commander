@@ -20,7 +20,7 @@ VPS-Commander 当前提供两种 MCP 接入模式：
 
 ---
 
-## 二、当前支持的 11 大 MCP Tools
+## 二、当前支持的 12 大 MCP Tools
 
 | Tool 名称 | 风险等级 | 参数/功能说明 |
 | :--- | :--- | :--- |
@@ -31,6 +31,7 @@ VPS-Commander 当前提供两种 MCP 接入模式：
 | `create_directory` | Medium | 创建目录 |
 | `move_file` | Medium | 移动/重命名文件 |
 | `list_processes` | Low | 查看进程 |
+| `diagnostic_command` | Low | 严格白名单只读诊断，不接受任意 Shell |
 | `edit_block` | Medium | 唯一匹配 + 原子写回 |
 | `write_file` | Medium | 创建或覆写文件 |
 | `list_agent_mcp` | Low | 查询 Agent MCP 服务 |
@@ -144,6 +145,12 @@ API Key 不应提交到 Git 仓库。
 
 ### 6.6 list_processes
 - `device` 可选。
+
+### 6.7 diagnostic_command
+- `device`、`action` 必填。
+- `action` 仅允许：`docker_ps`、`docker_logs`、`docker_inspect`、`systemctl_status`、`journalctl`、`ss_listen`、`df`、`free`、`uptime`。
+- 这是 Low 风险只读诊断通道，不接受任意 Shell；Medium 模式可使用，但 `exec_command` 仍保持 High。
+
 
 ### 6.7 edit_block
 - `device`、`path`、`old_text`、`new_text`。

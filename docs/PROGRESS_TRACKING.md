@@ -28,7 +28,7 @@
 
 ## 二、MCP 当前能力
 
-当前共 11 个 Tools：
+当前共 12 个 Tools：
 1. `list_devices`
 2. `exec_command`
 3. `read_file`

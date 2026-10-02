@@ -40,7 +40,7 @@ VPS-Commander 是自托管、多节点、AI Agent 友好的 Linux 运维控制�
 
 ## 三、当前 MCP 基线
 
-11 个工具：
+12 个工具：
 `list_devices`、`exec_command`、`read_file`、`read_multiple_files`、`create_directory`、`move_file`、`list_processes`、`edit_block`、`write_file`、`list_agent_mcp`、`call_agent_mcp`。
 
 远程：legacy SSE。
