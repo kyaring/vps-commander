@@ -23,7 +23,7 @@ import (
 func main() {
 	hub := flag.String("hub", "", "Hub WebSocket URL")
 	name := flag.String("name", "", "device name")
-	token := flag.String("token", os.Getenv("VPS_COMMANDER_CLUSTER_SECRET"), "cluster secret")
+	token := flag.String("token", firstNonEmpty(os.Getenv("VPS_COMMANDER_AGENT_TOKEN"), os.Getenv("VPS_COMMANDER_CLUSTER_SECRET")), "agent credential")
 	insecure := flag.Bool("insecure", false, "skip TLS verification")
 	flag.Parse()
 	if *hub == "" || *name == "" || *token == "" {
@@ -74,7 +74,7 @@ func run(hub, name, token string, insecure bool) error {
 
 	// 初始握手附带画像
 	initProf := sysinfo.Collect("APPLICATION")
-	if err := writeJSON(cluster.Message{Event: "hello", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &initProf, TS: time.Now().Unix()}); err != nil {
+	if err := writeJSON(cluster.Message{Event: "hello", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &initProf, TS: time.Now().Unix(), ProtocolVersion: "2", AgentVersion: "2.0", Capabilities: []string{"read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "list_processes", "list_sessions", "read_process_output", "edit_block", "write_file", "create_directory", "move_file", "exec_command", "start_process", "interact_with_process", "kill_process", "force_terminate", "mcp_call", "mcp_list", "mcp_test"}}); err != nil {
 		return err
 	}
 
@@ -88,6 +88,20 @@ func run(hub, name, token string, insecure bool) error {
 			case <-t.C:
 				prof := sysinfo.Collect("APPLICATION")
 				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: time.Now().Unix()})
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+
+	sessions := executor.NewSessionManager(16)
+	go func() {
+		t := time.NewTicker(1 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				sessions.Cleanup()
 			case <-stopPing:
 				return
 			}
@@ -128,15 +142,15 @@ func run(hub, name, token string, insecure bool) error {
 			continue
 		}
 		go func(msg cluster.Message) {
-			if err := handle(writeJSON, exec, mcpRuntime, msg); err != nil {
+			if err := handle(writeJSON, exec, mcpRuntime, sessions, msg); err != nil {
 				log.Printf("request %s failed: %v", msg.ID, err)
-				_ = c.Close()
+				_ = sendError(writeJSON, msg.ID, err)
 			}
 		}(msg)
 	}
 }
 
-func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, msg cluster.Message) error {
+func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, sessions *executor.SessionManager, msg cluster.Message) error {
 	switch msg.Action {
 	case "mcp_list":
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: mcpRuntime.List()})
@@ -176,6 +190,134 @@ func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRunti
 			return nil
 		}
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"server": p.Server, "tool": p.Tool, "result": result, "duration_ms": duration}})
+	case "start_process":
+		var p cluster.StartProcessPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		if p.SessionID == "" || p.Command == "" {
+			return sendError(writeJSON, msg.ID, errors.New("session_id and command required"))
+		}
+		s, err := sessions.Start(context.Background(), p.SessionID, p.Command, p.Workdir, p.Owner, p.RingCapacity)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"session_id": s.ID, "started_at": s.StartedAt.Unix()}})
+	case "read_process_output":
+		var p struct {
+			SessionID string `json:"session_id"`
+			Owner     string `json:"owner"`
+		}
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		s, ok := sessions.Get(p.SessionID)
+		if !ok {
+			return sendError(writeJSON, msg.ID, errors.New("session not found"))
+		}
+		if !s.Authorized(p.Owner) {
+			return sendError(writeJSON, msg.ID, errors.New("session ownership denied"))
+		}
+		code, done, _ := s.Status()
+		out, errout := s.Output()
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: cluster.ProcessOutputPayload{SessionID: p.SessionID, Stdout: out, Stderr: errout, ExitCode: code, Running: !done}})
+	case "interact_with_process":
+		var p cluster.ProcessInputPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		s, ok := sessions.Get(p.SessionID)
+		if !ok {
+			return sendError(writeJSON, msg.ID, errors.New("session not found"))
+		}
+		if !s.Authorized(p.Owner) {
+			return sendError(writeJSON, msg.ID, errors.New("session ownership denied"))
+		}
+		if err := s.Stdin([]byte(p.Data)); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success"})
+	case "force_terminate":
+		var p struct {
+			SessionID string `json:"session_id"`
+			Owner     string `json:"owner"`
+		}
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		ss, ok := sessions.Get(p.SessionID)
+		if !ok {
+			return sendError(writeJSON, msg.ID, errors.New("session not found"))
+		}
+		if !ss.Authorized(p.Owner) {
+			return sendError(writeJSON, msg.ID, errors.New("session ownership denied"))
+		}
+		if err := sessions.Stop(p.SessionID, true); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success"})
+	case "list_sessions":
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: sessions.List()})
+	case "read_multiple_files":
+		var p cluster.ReadMultipleFilesPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: executor.ReadMultipleFiles(p.Paths, p.Limit)})
+	case "create_directory":
+		var p cluster.CreateDirectoryPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		if err := executor.CreateDirectory(p.Path); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success"})
+	case "move_file":
+		var p cluster.MoveFilePayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		if err := executor.MoveFile(p.Source, p.Destination); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success"})
+	case "list_processes":
+		v, err := executor.ListProcesses()
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: v})
+	case "list_directory":
+		var p cluster.ListDirectoryPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		v, err := executor.ListDirectory(p.Path, p.Recursive, p.MaxEntries)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: v})
+	case "get_file_info":
+		var p cluster.FileInfoPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		v, err := executor.GetFileInfo(p.Path)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: v})
+	case "start_search":
+		var p cluster.SearchPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		v, err := executor.Search(context.Background(), p.Root, p.Query, p.MaxResults)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: v})
 	case "exec":
 		var p cluster.ExecPayload
 		if err := decodePayload(msg.Payload, &p); err != nil {
@@ -223,6 +365,16 @@ func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRunti
 			return sendError(writeJSON, msg.ID, err)
 		}
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"content": string(buf[:n]), "bytes": n, "total_size": info.Size(), "has_more": p.Offset+int64(n) < info.Size(), "eof": eof}})
+	case "edit_block":
+		var p cluster.EditBlockPayload
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		res, err := executor.EditBlock(p.Path, p.OldText, p.NewText)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: res})
 	case "file_write":
 		var p cluster.FileWritePayload
 		if err := decodePayload(msg.Payload, &p); err != nil {
@@ -250,4 +402,13 @@ func decodePayload(v any, out any) error {
 
 func sendError(writeJSON func(cluster.Message) error, id string, err error) error {
 	return writeJSON(cluster.Message{ID: id, Status: "error", Error: err.Error()})
+}
+
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

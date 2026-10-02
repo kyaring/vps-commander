@@ -74,11 +74,23 @@ type ActionBackend interface {
 	ExecCommand(ctx context.Context, clientIP, device, command, workdir string, timeout int) (any, error)
 	ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error)
 	WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error)
+	EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error)
+}
+
+type ExtendedBackend interface {
+	ReadMultipleFiles(ctx context.Context, clientIP, device string, paths []string, limit int64) (any, error)
+	CreateDirectory(ctx context.Context, clientIP, device, path string) (any, error)
+	MoveFile(ctx context.Context, clientIP, device, source, destination string) (any, error)
+	ListProcesses(ctx context.Context, clientIP, device string) (any, error)
 }
 
 type AgentMCPBackend interface {
 	ListAgentMCP(ctx context.Context, device string) (any, error)
 	CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error)
+}
+
+type SecurityGate interface {
+	AuthorizeMCP(device, action, clientIP string) error
 }
 
 type Server struct {
@@ -264,8 +276,16 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 					Required: []string{"path"},
 				},
 			},
+			{Name: "read_multiple_files", Description: "一次读取多个文件", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "paths": {Type: "array", Description: "文件路径数组"}, "limit": {Type: "integer", Description: "单文件最大字节数"}}, Required: []string{"paths"}}},
+			{Name: "create_directory", Description: "创建目录", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "path": {Type: "string", Description: "目录路径"}}, Required: []string{"path"}}},
+			{Name: "move_file", Description: "移动或重命名文件", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "source": {Type: "string", Description: "源路径"}, "destination": {Type: "string", Description: "目标路径"}}, Required: []string{"source", "destination"}}},
+			{Name: "list_processes", Description: "列出受控节点当前进程", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}}}},
 			{
-				Name:        "write_file",
+				Name:        "edit_block",
+				Description: "对指定文件执行唯一文本块的原子替换；old_text 必须恰好匹配一次",
+				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标节点名称"}, "path": {Type: "string", Description: "目标文件路径"}, "old_text": {Type: "string", Description: "必须唯一匹配的原文本块"}, "new_text": {Type: "string", Description: "替换后的文本块"}}, Required: []string{"path", "old_text", "new_text"}},
+			},
+			{
 				Description: "向指定受控节点创建或覆写文件",
 				InputSchema: InputSchema{
 					Type: "object",
@@ -369,6 +389,72 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		return res, false
 
+	case "read_multiple_files":
+		var a struct {
+			Device string   `json:"device"`
+			Paths  []string `json:"paths"`
+			Limit  int64    `json:"limit"`
+		}
+		_ = json.Unmarshal(params.Arguments, &a)
+		b, ok := s.Backend.(ExtendedBackend)
+		if !ok {
+			return map[string]string{"error": "extended tools unavailable"}, true
+		}
+		res, err := b.ReadMultipleFiles(ctx, clientIP, a.Device, a.Paths, a.Limit)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+	case "create_directory":
+		var a struct{ Device, Path string }
+		_ = json.Unmarshal(params.Arguments, &a)
+		b, ok := s.Backend.(ExtendedBackend)
+		if !ok {
+			return map[string]string{"error": "extended tools unavailable"}, true
+		}
+		res, err := b.CreateDirectory(ctx, clientIP, a.Device, a.Path)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+	case "move_file":
+		var a struct{ Device, Source, Destination string }
+		_ = json.Unmarshal(params.Arguments, &a)
+		b, ok := s.Backend.(ExtendedBackend)
+		if !ok {
+			return map[string]string{"error": "extended tools unavailable"}, true
+		}
+		res, err := b.MoveFile(ctx, clientIP, a.Device, a.Source, a.Destination)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+	case "list_processes":
+		var a struct {
+			Device string `json:"device"`
+		}
+		_ = json.Unmarshal(params.Arguments, &a)
+		b, ok := s.Backend.(ExtendedBackend)
+		if !ok {
+			return map[string]string{"error": "extended tools unavailable"}, true
+		}
+		res, err := b.ListProcesses(ctx, clientIP, a.Device)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+	case "edit_block":
+		var args struct{ Device, Path, OldText, NewText string }
+		_ = json.Unmarshal(params.Arguments, &args)
+		if args.Path == "" || args.OldText == "" {
+			return map[string]string{"error": "path and old_text are required"}, true
+		}
+		res, err := s.Backend.EditBlock(ctx, clientIP, args.Device, args.Path, args.OldText, args.NewText)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+
 	case "write_file":
 		var args struct {
 			Device  string `json:"device"`
@@ -394,6 +480,11 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		if !ok {
 			return map[string]string{"error": "agent MCP unavailable"}, true
 		}
+		if gate, ok := s.Backend.(SecurityGate); ok {
+			if err := gate.AuthorizeMCP(args.Device, "read", clientIP); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
+		}
 		res, err := b.ListAgentMCP(ctx, args.Device)
 		if err != nil {
 			return map[string]string{"error": err.Error()}, true
@@ -415,6 +506,11 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		var av any
 		if len(args.Arguments) > 0 {
 			_ = json.Unmarshal(args.Arguments, &av)
+		}
+		if gate, ok := s.Backend.(SecurityGate); ok {
+			if err := gate.AuthorizeMCP(args.Device, "mcp", clientIP); err != nil {
+				return map[string]string{"error": err.Error()}, true
+			}
 		}
 		res, err := b.CallAgentMCP(ctx, clientIP, args.Device, args.Server, args.Tool, av)
 		if err != nil {

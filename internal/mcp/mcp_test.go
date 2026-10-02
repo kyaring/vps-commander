@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,9 @@ func (m *mockBackend) ReadFile(ctx context.Context, clientIP, device, path strin
 }
 func (m *mockBackend) WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error) {
 	return map[string]any{"device": device, "path": path, "bytes": len(content)}, nil
+}
+func (m *mockBackend) EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error) {
+	return map[string]any{"device": device, "path": path, "bytes_written": len(newText)}, nil
 }
 
 func TestMCPInitializeAndListTools(t *testing.T) {
@@ -75,8 +79,8 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 		t.Fatalf("expected map result")
 	}
 	tools, ok := resMap["tools"].([]any)
-	if !ok || len(tools) != 6 {
-		t.Fatalf("expected 6 tools, got %d", len(tools))
+	if !ok || len(tools) != 11 {
+		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
 }
 
@@ -108,5 +112,49 @@ func TestMCPCallTool(t *testing.T) {
 	contentStr := string(w.Body.Bytes())
 	if !strings.Contains(contentStr, "stdout") {
 		t.Fatalf("expected stdout in result, got %s", contentStr)
+	}
+}
+
+type gatedMockBackend struct {
+	mockBackend
+	deniedAction string
+}
+
+func (g *gatedMockBackend) AuthorizeMCP(device, action, clientIP string) error {
+	if action == g.deniedAction {
+		return fmt.Errorf("denied %s", action)
+	}
+	return nil
+}
+
+func (g *gatedMockBackend) ListAgentMCP(ctx context.Context, device string) (any, error) {
+	return map[string]any{"device": device}, nil
+}
+
+func (g *gatedMockBackend) CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error) {
+	return map[string]any{"device": device, "server": server, "tool": tool}, nil
+}
+
+func TestMCPAgentCallUsesSecurityGate(t *testing.T) {
+	backend := &gatedMockBackend{deniedAction: "mcp"}
+	srv := NewServer(backend, nil)
+	params := json.RawMessage("{\"name\":\"call_agent_mcp\",\"arguments\":{\"device\":\"node1\",\"server\":\"s\",\"tool\":\"t\"}}")
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 10, Method: "tools/call", Params: params}
+	resp := srv.HandleDirectRequest(context.Background(), req)
+	result, ok := resp.Result.(CallToolResult)
+	if !ok || !result.IsError || !strings.Contains(result.Content[0].Text, "denied mcp") {
+		t.Fatalf("expected MCP denial, got %#v", resp)
+	}
+}
+
+func TestMCPListAgentUsesReadGate(t *testing.T) {
+	backend := &gatedMockBackend{deniedAction: "read"}
+	srv := NewServer(backend, nil)
+	params := json.RawMessage("{\"name\":\"list_agent_mcp\",\"arguments\":{\"device\":\"node1\"}}")
+	req := JSONRPCRequest{JSONRPC: "2.0", ID: 11, Method: "tools/call", Params: params}
+	resp := srv.HandleDirectRequest(context.Background(), req)
+	result, ok := resp.Result.(CallToolResult)
+	if !ok || !result.IsError || !strings.Contains(result.Content[0].Text, "denied read") {
+		t.Fatalf("expected MCP list denial, got %#v", resp)
 	}
 }

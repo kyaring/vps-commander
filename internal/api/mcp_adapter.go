@@ -24,6 +24,20 @@ func (s *Server) NewMCPBackend() *MCPBackend {
 	return &MCPBackend{server: s}
 }
 
+func (b *MCPBackend) authorize(device, action, clientIP string) error {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	mode := b.server.GetEffectiveSecurityMode(device)
+	if !securityAllows(mode, action) {
+		if b.server.Store != nil {
+			_ = b.server.Store.Audit(clientIP, device, "security_denied", action, 403, 0, "MCP security gate")
+		}
+		return fmt.Errorf("security mode %s denies %s", mode, action)
+	}
+	return nil
+}
+
 func (b *MCPBackend) ListDevices(ctx context.Context) (any, error) {
 	out := []model.Device{{Name: b.server.LocalName, Status: "online", Local: true, Arch: runtime.GOARCH, OS: runtime.GOOS}}
 	if b.server.Cluster != nil {
@@ -43,6 +57,9 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	}
 	if device == "" {
 		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "exec", clientIP); err != nil {
+		return nil, err
 	}
 	if timeout <= 0 {
 		timeout = 30
@@ -84,6 +101,9 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error) {
 	if device == "" {
 		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "read", clientIP); err != nil {
+		return nil, err
 	}
 	if path == "" || !validPath(path) || offset < 0 {
 		return nil, errors.New("invalid path or offset")
@@ -150,9 +170,44 @@ func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string
 	}, nil
 }
 
+func (b *MCPBackend) EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "write", clientIP); err != nil {
+		return nil, err
+	}
+	if path == "" || !validPath(path) || oldText == "" {
+		return nil, errors.New("path and old_text required")
+	}
+	if len(oldText) > int(maxFileLimit) || len(newText) > int(maxFileLimit) {
+		return nil, errors.New("edit block too large")
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		res, err := b.server.Cluster.EditBlock(ctx, device, cluster.EditBlockPayload{Path: path, OldText: oldText, NewText: newText})
+		if err != nil {
+			return nil, err
+		}
+		_ = b.server.Store.Audit(clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+		return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
+	}
+	res, err := executor.EditBlock(path, oldText, newText)
+	if err != nil {
+		return nil, err
+	}
+	_ = b.server.Store.Audit(clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+	return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
+}
+
 func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error) {
 	if device == "" {
 		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "write", clientIP); err != nil {
+		return nil, err
 	}
 	if path == "" || !validPath(path) {
 		return nil, errors.New("path required")
@@ -222,4 +277,85 @@ func (b *MCPBackend) CallAgentMCP(ctx context.Context, clientIP, device, server,
 		}
 	}
 	return v, err
+}
+
+// AuthorizeMCP exposes the same Hub-side gate to the MCP transport layer.
+func (b *MCPBackend) AuthorizeMCP(device, action, clientIP string) error {
+	return b.authorize(device, action, clientIP)
+}
+
+func (b *MCPBackend) ReadMultipleFiles(ctx context.Context, clientIP, device string, paths []string, limit int64) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "read", clientIP); err != nil {
+		return nil, err
+	}
+	if len(paths) > 32 {
+		return nil, errors.New("too many paths")
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		return b.server.Cluster.ReadMultipleFiles(ctx, device, cluster.ReadMultipleFilesPayload{Paths: paths, Limit: limit})
+	}
+	return executor.ReadMultipleFiles(paths, limit), nil
+}
+func (b *MCPBackend) CreateDirectory(ctx context.Context, clientIP, device, path string) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "write", clientIP); err != nil {
+		return nil, err
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		if err := b.server.Cluster.CreateDirectory(ctx, device, cluster.CreateDirectoryPayload{Path: path}); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := executor.CreateDirectory(path); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"device": device, "path": path, "ok": true}, nil
+}
+func (b *MCPBackend) MoveFile(ctx context.Context, clientIP, device, source, destination string) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "write", clientIP); err != nil {
+		return nil, err
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		if err := b.server.Cluster.MoveFile(ctx, device, cluster.MoveFilePayload{Source: source, Destination: destination}); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := executor.MoveFile(source, destination); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"device": device, "source": source, "destination": destination, "ok": true}, nil
+}
+func (b *MCPBackend) ListProcesses(ctx context.Context, clientIP, device string) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "read", clientIP); err != nil {
+		return nil, err
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		return b.server.Cluster.ListProcesses(ctx, device)
+	}
+	return executor.ListProcesses()
 }

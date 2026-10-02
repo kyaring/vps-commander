@@ -1,9 +1,12 @@
 package api
 
 import (
-	"sort"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +24,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/model"
 	"github.com/wjyhk/vps-commander/internal/notify"
+	"github.com/wjyhk/vps-commander/internal/security"
 	"github.com/wjyhk/vps-commander/internal/storage"
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
 	panelweb "github.com/wjyhk/vps-commander/internal/web"
@@ -34,12 +39,16 @@ const (
 )
 
 type Server struct {
-	Auth      *auth.Manager
-	Exec      executor.Local
-	Cluster   *cluster.Manager
-	Store     *storage.Store
-	LocalName string
-	Notify    *notify.Manager
+	Auth          *auth.Manager
+	Exec          executor.Local
+	Cluster       *cluster.Manager
+	Store         *storage.Store
+	LocalName     string
+	Notify        *notify.Manager
+	Policy        *security.Snapshot
+	AdminToken    string
+	ExecLimiter   chan struct{}
+	SearchLimiter chan struct{}
 }
 
 const (
@@ -49,27 +58,71 @@ const (
 	SecurityInherit = "inherit"
 )
 
-func (s *Server) GetEffectiveSecurityMode(node string) string {
+func (s *Server) LoadSecurityPolicySnapshot() error {
 	if s.Store == nil {
-		return SecurityMedium
+		return fmt.Errorf("security store unavailable")
 	}
-	if mode, ok := s.Store.GetNodeSecurityMode(node); ok && mode != "" && mode != SecurityInherit {
-		return mode
+	state, err := s.Store.LoadSecurityPolicy()
+	if err != nil {
+		return err
 	}
-	return s.Store.GetGlobalSecurityMode()
+	devices := make(map[string]security.DevicePolicy, len(state.Nodes))
+	for node, mode := range state.Nodes {
+		devices[node] = security.DevicePolicy{Mode: mode}
+	}
+	global := security.ModeRisk(state.GlobalMode)
+	if global == 0 {
+		global = security.RiskMedium
+	}
+	if s.Policy == nil {
+		s.Policy = security.New(global, devices, state.Version)
+		return nil
+	}
+	return s.Policy.Publish(global, devices, state.Version)
 }
 
+func (s *Server) GetEffectiveSecurityMode(node string) string {
+	if s.Policy == nil && s.Store != nil {
+		if mode, ok := s.Store.GetNodeSecurityMode(node); ok {
+			if mode != SecurityInherit {
+				return mode
+			}
+			return s.Store.GetGlobalSecurityMode()
+		}
+		if node == s.LocalName {
+			return s.Store.GetGlobalSecurityMode()
+		}
+		return "unknown"
+	}
+	if s.Policy != nil {
+		snap := s.Policy.Current()
+		risk := s.Policy.EffectiveRisk(node)
+		if p, ok := snap.Devices[node]; ok && security.ModeRisk(p.Mode) != 0 {
+			return p.Mode
+		}
+		if node != s.LocalName && (s.Cluster == nil || !s.Cluster.Online(node)) {
+			return "unknown"
+		}
+		for mode, v := range map[string]int{"low": security.RiskLow, "medium": security.RiskMedium, "high": security.RiskHigh} {
+			if v == risk {
+				return mode
+			}
+		}
+	}
+	if node == s.LocalName && s.Store != nil {
+		return s.Store.GetGlobalSecurityMode()
+	}
+	if s.Cluster != nil && s.Cluster.Online(node) && s.Store != nil {
+		return s.Store.GetGlobalSecurityMode()
+	}
+	return "unknown"
+}
 func securityAllows(mode, action string) bool {
-	switch action {
-	case "read", "probe":
-		return true
-	case "write", "mcp":
-		return mode == SecurityMedium || mode == SecurityHigh
-	case "exec":
-		return mode == SecurityHigh
-	default:
+	required, ok := security.RequiredRiskForAction(action)
+	if !ok {
 		return false
 	}
+	return security.ModeRisk(mode) >= required
 }
 
 func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device, action, detail string) bool {
@@ -180,9 +233,51 @@ func (s *Server) SecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
 	}()})
 }
 
+func (s *Server) ProvisionDeviceCredentialJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.AdminToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Admin-Token")), []byte(s.AdminToken)) != 1 {
+		http.Error(w, "admin authorization required", 403)
+		return
+	}
+	var q struct {
+		Device string `json:"device"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&q); err != nil || strings.TrimSpace(q.Device) == "" {
+		http.Error(w, "device required", 400)
+		return
+	}
+	if q.Device == s.LocalName || q.Device == "local" {
+		http.Error(w, "local control node does not use agent credential", 400)
+		return
+	}
+	if s.Cluster == nil || !s.Cluster.Online(q.Device) {
+		http.Error(w, "device offline", 409)
+		return
+	}
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		http.Error(w, "credential generation failed", 500)
+		return
+	}
+	token := hex.EncodeToString(b)
+	if err := s.Store.SetDeviceCredential(q.Device, token); err != nil {
+		http.Error(w, "credential save failed", 500)
+		return
+	}
+	_ = s.Store.Audit(clientIP(r), q.Device, "device_credential_provision", "device="+q.Device, 0, 0, "credential provisioned")
+	jsonOut(w, map[string]any{"ok": true, "device": q.Device, "token": token})
+}
+
 func (s *Server) UpdateSecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.AdminToken == "" || r.Header.Get("X-Admin-Token") != s.AdminToken {
+		http.Error(w, "admin authorization required", http.StatusForbidden)
 		return
 	}
 	var q struct {
@@ -194,21 +289,35 @@ func (s *Server) UpdateSecuritySettingsJSON(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "bad json", 400)
 		return
 	}
+	oldGlobal := s.GetEffectiveSecurityMode(s.LocalName)
+	oldNode := ""
+	if q.Node != "" {
+		oldNode = s.GetEffectiveSecurityMode(q.Node)
+	}
 	if q.Global != "" {
 		if err := s.Store.SetGlobalSecurityMode(q.Global); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		_ = s.Store.Audit(clientIP(r), "", "security_setting", "global="+q.Global, 0, 0, "")
 	}
 	if q.Node != "" {
 		if err := s.Store.SetNodeSecurityMode(q.Node, q.Mode); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		_ = s.Store.Audit(clientIP(r), q.Node, "security_setting", "mode="+q.Mode, 0, 0, "")
 	}
-	jsonOut(w, map[string]any{"ok": true, "global": s.Store.GetGlobalSecurityMode(), "node": q.Node, "mode": q.Mode})
+	if err := s.LoadSecurityPolicySnapshot(); err != nil {
+		http.Error(w, "security snapshot publish failed", 500)
+		return
+	}
+	newGlobal := s.GetEffectiveSecurityMode(s.LocalName)
+	if q.Global != "" {
+		_ = s.Store.Audit(clientIP(r), "", "security_setting", "global="+q.Global, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldGlobal, newGlobal, s.Policy.Current().Version))
+	}
+	if q.Node != "" {
+		_ = s.Store.Audit(clientIP(r), q.Node, "security_setting", "mode="+q.Mode, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldNode, s.GetEffectiveSecurityMode(q.Node), s.Policy.Current().Version))
+	}
+	jsonOut(w, map[string]any{"ok": true, "global": s.Store.GetGlobalSecurityMode(), "node": q.Node, "mode": q.Mode, "version": s.Policy.Current().Version})
 }
 
 func (s *Server) clusterDeviceNames() []string {
@@ -482,7 +591,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/devices", s.devices)
 	mux.HandleFunc("/api/v1/exec", s.exec)
 	mux.HandleFunc("/api/v1/file/read", s.fileRead)
+	mux.HandleFunc("/api/v1/file/list", s.listDirectory)
+	mux.HandleFunc("/api/v1/file/info", s.fileInfo)
+	mux.HandleFunc("/api/v1/file/search", s.searchFiles)
+	mux.HandleFunc("/api/v1/process/session", s.processSession)
 	mux.HandleFunc("/api/v1/file/write", s.fileWrite)
+	mux.HandleFunc("/api/v1/devices/file/edit_block", s.editBlock)
 	mux.HandleFunc("/api/v1/mcp/services", s.MCPServicesJSON)
 	mux.HandleFunc("/api/v1/mcp/service", s.DeleteMCPService)
 	mux.HandleFunc("/api/v1/mcp/list", s.ListAgentMCPJSON)
@@ -490,6 +604,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/mcp/test", s.TestMCPJSON)
 	mux.HandleFunc("/api/v1/security/settings", s.SecuritySettingsJSON)
 	mux.HandleFunc("/api/v1/security/settings/update", s.UpdateSecuritySettingsJSON)
+	mux.HandleFunc("/api/v1/security/device-credentials/provision", s.ProvisionDeviceCredentialJSON)
 	mux.HandleFunc("/api/v1/notifications/webhooks", s.WebhookTargetsJSON)
 	mux.HandleFunc("/api/v1/notifications/webhook/update", s.UpdateWebhookTargetJSON)
 	mux.HandleFunc("/api/v1/notifications/webhook/delete", s.DeleteWebhookTargetJSON)
@@ -582,6 +697,21 @@ func (s *Server) agentWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) isRemote(device string) bool {
 	return device != "" && device != "local" && device != s.LocalName
 }
+func (s *Server) acquireExec() func() {
+	if s.ExecLimiter == nil {
+		return func() {}
+	}
+	s.ExecLimiter <- struct{}{}
+	return func() { <-s.ExecLimiter }
+}
+func (s *Server) acquireSearch() func() {
+	if s.SearchLimiter == nil {
+		return func() {}
+	}
+	s.SearchLimiter <- struct{}{}
+	return func() { <-s.SearchLimiter }
+}
+
 func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
@@ -602,6 +732,8 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSecurity(w, r, req.Device, "exec", req.Command) {
 		return
 	}
+	releaseExec := s.acquireExec()
+	defer releaseExec()
 	if req.Timeout <= 0 {
 		req.Timeout = 30
 	}
@@ -631,6 +763,197 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, model.ExecResponse{Device: req.Device, ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMS: res.DurationMS})
 }
+func sessionOwner(r *http.Request) string {
+	v := r.Header.Get("Authorization") + "|" + r.Header.Get("X-Operator-ID") + "|" + clientIP(r)
+	h := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(h[:])
+}
+func newSessionID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (s *Server) processSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Device, SessionID, Command, Workdir, Data string
+		Force                                     bool
+		RingCapacity                              int `json:"ring_capacity"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if req.Device == "" {
+		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "exec", req.SessionID) {
+		return
+	}
+	if s.Cluster == nil {
+		http.Error(w, "cluster unavailable", 503)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	action := r.URL.Query().Get("action")
+	var result any
+	var err error
+	switch action {
+	case "start":
+		if req.SessionID == "" {
+			req.SessionID, err = newSessionID()
+			if err != nil {
+				http.Error(w, "session id generation failed", 500)
+				return
+			}
+		}
+		result, err = s.Cluster.StartProcess(ctx, req.Device, cluster.StartProcessPayload{Command: req.Command, Workdir: req.Workdir, SessionID: req.SessionID, Owner: sessionOwner(r), RingCapacity: req.RingCapacity})
+	case "read":
+		result, err = s.Cluster.ReadProcessOutput(ctx, req.Device, req.SessionID, sessionOwner(r))
+	case "input":
+		err = s.Cluster.InteractProcess(ctx, req.Device, req.SessionID, req.Data, sessionOwner(r))
+		result = map[string]any{"ok": true}
+	case "stop":
+		err = s.Cluster.ForceTerminate(ctx, req.Device, req.SessionID, sessionOwner(r))
+		result = map[string]any{"ok": true}
+	case "list":
+		result, err = s.Cluster.ListSessions(ctx, req.Device)
+	default:
+		http.Error(w, "unknown action", 400)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 409)
+		return
+	}
+	jsonOut(w, result)
+}
+
+func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Device, Path string
+		Recursive    bool `json:"recursive"`
+		MaxEntries   int  `json:"max_entries"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if req.Device == "" {
+		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "read", req.Path) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	var v []cluster.Entry
+	var err error
+	if s.isRemote(req.Device) {
+		v, err = s.Cluster.ListDirectory(ctx, req.Device, cluster.ListDirectoryPayload{Path: req.Path, Recursive: req.Recursive, MaxEntries: req.MaxEntries})
+	} else {
+		var ev []executor.Entry
+		ev, err = executor.ListDirectory(req.Path, req.Recursive, req.MaxEntries)
+		if err == nil {
+			b, _ := json.Marshal(ev)
+			err = json.Unmarshal(b, &v)
+		}
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 409)
+		return
+	}
+	jsonOut(w, v)
+}
+func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct{ Device, Path string }
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if req.Device == "" {
+		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "read", req.Path) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	var v cluster.FileInfo
+	var err error
+	if s.isRemote(req.Device) {
+		v, err = s.Cluster.GetFileInfo(ctx, req.Device, cluster.FileInfoPayload{Path: req.Path})
+	} else {
+		var ev executor.FileInfo
+		ev, err = executor.GetFileInfo(req.Path)
+		if err == nil {
+			b, _ := json.Marshal(ev)
+			err = json.Unmarshal(b, &v)
+		}
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 404)
+		return
+	}
+	jsonOut(w, v)
+}
+func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Device, Root, Query string
+		MaxResults          int `json:"max_results"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	if req.Device == "" {
+		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "read", req.Root) {
+		return
+	}
+	releaseSearch := s.acquireSearch()
+	defer releaseSearch()
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	var v []cluster.SearchResult
+	var err error
+	if s.isRemote(req.Device) {
+		v, err = s.Cluster.Search(ctx, req.Device, cluster.SearchPayload{Root: req.Root, Query: req.Query, MaxResults: req.MaxResults})
+	} else {
+		var ev []executor.SearchResult
+		ev, err = executor.Search(ctx, req.Root, req.Query, req.MaxResults)
+		if err == nil {
+			b, _ := json.Marshal(ev)
+			err = json.Unmarshal(b, &v)
+		}
+	}
+	if err != nil {
+		http.Error(w, err.Error(), 409)
+		return
+	}
+	jsonOut(w, v)
+}
+
 func (s *Server) fileRead(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
@@ -706,6 +1029,64 @@ func (s *Server) fileRead(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonOut(w, model.FileReadResponse{Device: req.Device, Path: req.Path, Offset: req.Offset, Content: content, Bytes: n, TotalSize: totalSize, HasMore: hasMore, EOF: eof})
 }
+func (s *Server) editBlock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	var req struct {
+		Device  string `json:"device,omitempty"`
+		Path    string `json:"path"`
+		OldText string `json:"old_text"`
+		NewText string `json:"new_text"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFileLimit+64*1024)).Decode(&req); err != nil {
+		http.Error(w, "bad json or content too large", 400)
+		return
+	}
+	if req.Device == "" {
+		req.Device = s.LocalName
+	}
+	if !s.requireSecurity(w, r, req.Device, "write", req.Path) {
+		return
+	}
+	if req.Path == "" || !validPath(req.Path) || req.OldText == "" {
+		http.Error(w, "path and old_text required", 400)
+		return
+	}
+	if len(req.OldText) > int(maxFileLimit) || len(req.NewText) > int(maxFileLimit) {
+		http.Error(w, "edit block too large", 413)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	var result executor.EditBlockResult
+	if s.isRemote(req.Device) {
+		if s.Cluster == nil || !s.Cluster.Online(req.Device) {
+			http.Error(w, "device offline", 409)
+			return
+		}
+		rr, err := s.Cluster.EditBlock(ctx, req.Device, cluster.EditBlockPayload{Path: req.Path, OldText: req.OldText, NewText: req.NewText})
+		if err != nil {
+			http.Error(w, err.Error(), 409)
+			return
+		}
+		result.BytesWritten = rr.BytesWritten
+	} else {
+		var err error
+		result, err = executor.EditBlock(req.Path, req.OldText, req.NewText)
+		if err != nil {
+			http.Error(w, err.Error(), 409)
+			return
+		}
+	}
+	if err := s.Store.Audit(clientIP(r), req.Device, "edit_block", req.Path, 0, 0, fmt.Sprintf("bytes_written=%d", result.BytesWritten)); err != nil {
+		http.Error(w, "audit write failed", 500)
+		return
+	}
+	jsonOut(w, map[string]any{"device": req.Device, "path": req.Path, "bytes_written": result.BytesWritten})
+}
+
 func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)

@@ -1,12 +1,15 @@
 package storage
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -45,7 +48,7 @@ func (s *Store) init() error {
 		"CREATE TABLE IF NOT EXISTS audit_logs (" +
 		"id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL, caller_ip TEXT, device TEXT, action TEXT, command TEXT, " +
 		"exit_code INTEGER, duration_ms INTEGER, error_msg TEXT); " +
-		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT); CREATE TABLE IF NOT EXISTS security_settings (node_name TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS mcp_services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, transport TEXT NOT NULL, command TEXT, args_json TEXT, env_json TEXT, url TEXT, headers_json TEXT, scope TEXT NOT NULL DEFAULT 'all', target_nodes_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_mcp_services_enabled ON mcp_services(enabled);")
+		"CREATE TABLE IF NOT EXISTS revoked_devices (name TEXT PRIMARY KEY, revoked_at INTEGER NOT NULL, reason TEXT); CREATE TABLE IF NOT EXISTS device_credentials (name TEXT PRIMARY KEY, token_hash TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS security_settings (node_name TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS security_policy_meta (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL); INSERT OR IGNORE INTO security_policy_meta(id,version) VALUES(1,1); CREATE TABLE IF NOT EXISTS mcp_services (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, transport TEXT NOT NULL, command TEXT, args_json TEXT, env_json TEXT, url TEXT, headers_json TEXT, scope TEXT NOT NULL DEFAULT 'all', target_nodes_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_mcp_services_enabled ON mcp_services(enabled);")
 	if err != nil {
 		return err
 	}
@@ -276,9 +279,20 @@ type AuditLog struct {
 	ErrorMsg   string `json:"error_msg"`
 }
 
+var auditSecretRE = regexp.MustCompile(`(?i)(authorization|bearer|token|api[_-]?key|password|secret|cookie)(\s*[:=]\s+)([^\s,;]+)`)
+
+func redactAudit(v string) string {
+	v = auditSecretRE.ReplaceAllString(v, `$1$2[REDACTED]`)
+	v = strings.ReplaceAll(v, "\r", " ")
+	v = strings.ReplaceAll(v, "\n", " ")
+	if len(v) > 8192 {
+		v = v[:8192]
+	}
+	return v
+}
 func (s *Store) Audit(ip, device, action, command string, code int, ms int64, msg string) error {
 	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg) VALUES(?,?,?,?,?,?,?,?)",
-		time.Now().Unix(), ip, device, action, command, code, ms, msg)
+		time.Now().Unix(), ip, device, action, redactAudit(command), code, ms, redactAudit(msg))
 	return err
 }
 
@@ -387,6 +401,59 @@ func normalizeSecurityMode(mode string) string {
 	return ""
 }
 
+type SecurityPolicyState struct {
+	GlobalMode string
+	Nodes      map[string]string
+	Version    uint64
+}
+
+func (s *Store) LoadSecurityPolicy() (SecurityPolicyState, error) {
+	state := SecurityPolicyState{GlobalMode: "medium", Nodes: map[string]string{}, Version: 1}
+	if err := s.DB.QueryRow("SELECT mode FROM security_settings WHERE node_name='' LIMIT 1").Scan(&state.GlobalMode); err != nil && err != sql.ErrNoRows {
+		return state, err
+	}
+	if m := normalizeSecurityMode(state.GlobalMode); m != "" && m != "inherit" {
+		state.GlobalMode = m
+	} else {
+		state.GlobalMode = "medium"
+	}
+	var version int64
+	if err := s.DB.QueryRow("SELECT version FROM security_policy_meta WHERE id=1").Scan(&version); err != nil {
+		return state, err
+	}
+	if version > 0 {
+		state.Version = uint64(version)
+	}
+	rows, err := s.DB.Query("SELECT node_name,mode FROM security_settings WHERE node_name<>''")
+	if err != nil {
+		return state, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var node, mode string
+		if err := rows.Scan(&node, &mode); err != nil {
+			return state, err
+		}
+		if m := normalizeSecurityMode(mode); m != "" {
+			state.Nodes[node] = m
+		}
+	}
+	return state, rows.Err()
+}
+
+func (s *Store) bumpSecurityPolicyVersion(tx *sql.Tx) error {
+	_, err := tx.Exec("UPDATE security_policy_meta SET version=version+1 WHERE id=1")
+	return err
+}
+
+func (s *Store) SecurityPolicyVersion() uint64 {
+	var version int64
+	if err := s.DB.QueryRow("SELECT version FROM security_policy_meta WHERE id=1").Scan(&version); err != nil || version < 1 {
+		return 1
+	}
+	return uint64(version)
+}
+
 func (s *Store) GetGlobalSecurityMode() string {
 	var mode string
 	err := s.DB.QueryRow("SELECT mode FROM security_settings WHERE node_name='' LIMIT 1").Scan(&mode)
@@ -404,8 +471,18 @@ func (s *Store) SetGlobalSecurityMode(mode string) error {
 	if mode == "" || mode == "inherit" {
 		return errors.New("invalid global security mode")
 	}
-	_, err := s.DB.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES('',?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", mode, time.Now().Unix())
-	return err
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES('',?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", mode, time.Now().Unix()); err != nil {
+		return err
+	}
+	if err = s.bumpSecurityPolicyVersion(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetNodeSecurityMode(node string) (string, bool) {
@@ -429,8 +506,18 @@ func (s *Store) SetNodeSecurityMode(node, mode string) error {
 	if mode == "" {
 		return errors.New("invalid security mode")
 	}
-	_, err := s.DB.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES(?,?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", node, mode, time.Now().Unix())
-	return err
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("INSERT INTO security_settings(node_name,mode,updated_at) VALUES(?,?,?) ON CONFLICT(node_name) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at", node, mode, time.Now().Unix()); err != nil {
+		return err
+	}
+	if err = s.bumpSecurityPolicyVersion(tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type SecuritySetting struct {
@@ -453,4 +540,56 @@ func (s *Store) ListNodeSecurityModes() ([]SecuritySetting, error) {
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func hashDeviceToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
+// SetDeviceCredential stores only a SHA-256 hash of the per-device token.
+func (s *Store) DeviceCredentialConfigured(name string) (bool, error) {
+	return s.HasDeviceCredential(name)
+}
+
+func (s *Store) SetDeviceCredential(name, token string) error {
+	if strings.TrimSpace(name) == "" || token == "" {
+		return errors.New("device name and token required")
+	}
+	now := time.Now().Unix()
+	_, err := s.DB.Exec(`INSERT INTO device_credentials(name,token_hash,created_at,updated_at)
+VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET token_hash=excluded.token_hash,updated_at=excluded.updated_at`, name, hashDeviceToken(token), now, now)
+	return err
+}
+
+func (s *Store) VerifyDeviceCredential(name, token string) (bool, error) {
+	if name == "" || token == "" {
+		return false, nil
+	}
+	var stored string
+	err := s.DB.QueryRow("SELECT token_hash FROM device_credentials WHERE name=?", name).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return subtleConstantTimeEqual(stored, hashDeviceToken(token)), nil
+}
+
+func subtleConstantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := range a {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
+}
+
+func (s *Store) HasDeviceCredential(name string) (bool, error) {
+	var count int
+	err := s.DB.QueryRow("SELECT COUNT(*) FROM device_credentials WHERE name=?", name).Scan(&count)
+	return count > 0, err
 }

@@ -2,17 +2,18 @@ package cluster
 
 import (
 	"context"
-	"sort"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wjyhk/vps-commander/internal/security"
 	"github.com/wjyhk/vps-commander/internal/storage"
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
 )
@@ -27,22 +28,26 @@ type Manager struct {
 }
 
 type Node struct {
-	Name          string
-	Conn          *websocket.Conn
-	ConnectionID  string
-	WriteMu       sync.Mutex
-	Pending       sync.Map
-	LastSeen      atomic.Int64
-	LastHeartbeat atomic.Int64
-	Connected     atomic.Bool
-	LastProfile   *sysinfo.Profile
-	Arch          string
-	OS            string
-	IsLocal       bool
-	RemoteIP      string
-	CountryCode   string
-	Country       string
-	MCP           *MCPRuntime
+	Name            string
+	Conn            *websocket.Conn
+	ConnectionID    string
+	WriteMu         sync.Mutex
+	OpMu            sync.RWMutex
+	Pending         sync.Map
+	LastSeen        atomic.Int64
+	LastHeartbeat   atomic.Int64
+	Connected       atomic.Bool
+	LastProfile     *sysinfo.Profile
+	Arch            string
+	OS              string
+	IsLocal         bool
+	RemoteIP        string
+	CountryCode     string
+	Country         string
+	MCP             *MCPRuntime
+	ProtocolVersion string
+	AgentVersion    string
+	Capabilities    map[string]bool
 }
 
 type Result struct {
@@ -96,16 +101,31 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if len(auth) >= 7 && auth[:7] == "Bearer " {
 		provided = auth[7:]
 	}
-	if m.Secret == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(m.Secret)) != 1 {
-		http.Error(w, "unauthorized", 401)
-		return
-	}
 	name := r.URL.Query().Get("device_name")
 	if name == "" {
 		http.Error(w, "device_name required", 400)
 		return
 	}
-
+	if m.Store != nil {
+		configured, err := m.Store.HasDeviceCredential(name)
+		if err != nil {
+			http.Error(w, "credential lookup failed", 500)
+			return
+		}
+		if configured {
+			valid, err := m.Store.VerifyDeviceCredential(name, provided)
+			if err != nil || !valid {
+				http.Error(w, "unauthorized", 401)
+				return
+			}
+		} else if m.Secret == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(m.Secret)) != 1 {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+	} else if m.Secret == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(m.Secret)) != 1 {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
 	if m.Store != nil {
 		if revoked, _ := m.Store.IsRevoked(name); revoked {
 			http.Error(w, "device has been revoked by admin", 403)
@@ -128,6 +148,7 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 		CountryCode:  cc,
 		Country:      countryName,
 		MCP:          NewMCPRuntime(),
+		Capabilities: make(map[string]bool),
 	}
 	n.LastSeen.Store(time.Now().UnixNano())
 	n.LastHeartbeat.Store(time.Now().UnixNano())
@@ -196,6 +217,18 @@ func (m *Manager) readLoop(n *Node) {
 		}
 		if msg.OS != "" {
 			n.OS = msg.OS
+		}
+		if msg.ProtocolVersion != "" {
+			n.ProtocolVersion = msg.ProtocolVersion
+		}
+		if msg.AgentVersion != "" {
+			n.AgentVersion = msg.AgentVersion
+		}
+		if msg.Capabilities != nil {
+			n.Capabilities = make(map[string]bool, len(msg.Capabilities))
+			for _, c := range msg.Capabilities {
+				n.Capabilities[c] = true
+			}
 		}
 		if msg.Profile != nil {
 			n.LastProfile = msg.Profile
@@ -267,9 +300,9 @@ func (m *Manager) Devices() []map[string]any {
 		item := map[string]any{
 			"name": name, "status": status, "is_local": n.IsLocal,
 			"arch": n.Arch, "os": n.OS,
-			"remote_ip":    n.RemoteIP,
-			"country_code": n.CountryCode,
-			"country":      n.Country,
+			"remote_ip":      n.RemoteIP,
+			"country_code":   n.CountryCode,
+			"country":        n.Country,
 			"last_heartbeat": n.LastHeartbeat.Load() / int64(time.Second),
 		}
 		if n.LastProfile != nil {
@@ -285,6 +318,25 @@ func (m *Manager) Devices() []map[string]any {
 	return out
 }
 
+func operationRisk(action string) int {
+	if r, ok := security.RequiredRiskForAction(action); ok {
+		return r
+	}
+	if spec, ok := security.Lookup(action); ok {
+		return spec.RequiredRisk
+	}
+	return security.RiskHigh
+}
+
+func (n *Node) acquireOperation(action string) func() {
+	if operationRisk(action) <= security.RiskLow {
+		n.OpMu.RLock()
+		return n.OpMu.RUnlock
+	}
+	n.OpMu.Lock()
+	return n.OpMu.Unlock
+}
+
 func (m *Manager) call(ctx context.Context, name, action string, payload any) (Message, error) {
 	m.mu.RLock()
 	n := m.nodes[name]
@@ -292,6 +344,12 @@ func (m *Manager) call(ctx context.Context, name, action string, payload any) (M
 	if n == nil || !m.Online(name) {
 		return Message{}, errors.New("device offline")
 	}
+	capability := actionCapability(action)
+	if capability != "" && len(n.Capabilities) > 0 && !n.Capabilities[capability] {
+		return Message{}, fmt.Errorf("capability missing: %s", capability)
+	}
+	release := n.acquireOperation(action)
+	defer release()
 	id := fmt.Sprintf("task_%d", time.Now().UnixNano())
 	ch := make(chan Message, 1)
 	n.Pending.Store(id, ch)
@@ -312,6 +370,90 @@ func (m *Manager) call(ctx context.Context, name, action string, payload any) (M
 		n.Pending.Delete(id)
 		return Message{}, ctx.Err()
 	}
+}
+
+func actionCapability(action string) string {
+	switch action {
+	case "exec":
+		return "exec_command"
+	case "file_read":
+		return "read_file"
+	case "file_write":
+		return "write_file"
+	default:
+		return action
+	}
+}
+
+func (m *Manager) StartProcess(ctx context.Context, name string, p StartProcessPayload) (map[string]any, error) {
+	msg, err := m.call(ctx, name, "start_process", p)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+func (m *Manager) ReadProcessOutput(ctx context.Context, name, sessionID, owner string) (ProcessOutputPayload, error) {
+	msg, err := m.call(ctx, name, "read_process_output", map[string]string{"session_id": sessionID, "owner": owner})
+	if err != nil {
+		return ProcessOutputPayload{}, err
+	}
+	var out ProcessOutputPayload
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+func (m *Manager) InteractProcess(ctx context.Context, name, sessionID, data, owner string) error {
+	_, err := m.call(ctx, name, "interact_with_process", ProcessInputPayload{SessionID: sessionID, Data: data, Owner: owner})
+	return err
+}
+func (m *Manager) ForceTerminate(ctx context.Context, name, sessionID, owner string) error {
+	_, err := m.call(ctx, name, "force_terminate", map[string]string{"session_id": sessionID, "owner": owner})
+	return err
+}
+func (m *Manager) ListSessions(ctx context.Context, name string) (any, error) {
+	msg, err := m.call(ctx, name, "list_sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+	return msg.Payload, nil
+}
+
+func (m *Manager) ListDirectory(ctx context.Context, name string, p ListDirectoryPayload) ([]Entry, error) {
+	msg, err := m.call(ctx, name, "list_directory", p)
+	if err != nil {
+		return nil, err
+	}
+	var v []Entry
+	b, _ := json.Marshal(msg.Payload)
+	err = json.Unmarshal(b, &v)
+	return v, err
+}
+func (m *Manager) GetFileInfo(ctx context.Context, name string, p FileInfoPayload) (FileInfo, error) {
+	msg, err := m.call(ctx, name, "get_file_info", p)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	var v FileInfo
+	b, _ := json.Marshal(msg.Payload)
+	err = json.Unmarshal(b, &v)
+	return v, err
+}
+func (m *Manager) Search(ctx context.Context, name string, p SearchPayload) ([]SearchResult, error) {
+	msg, err := m.call(ctx, name, "start_search", p)
+	if err != nil {
+		return nil, err
+	}
+	var v []SearchResult
+	b, _ := json.Marshal(msg.Payload)
+	err = json.Unmarshal(b, &v)
+	return v, err
 }
 
 func (m *Manager) Exec(ctx context.Context, name string, p ExecPayload) (Result, error) {
@@ -335,6 +477,41 @@ func (m *Manager) ReadFile(ctx context.Context, name string, p FileReadPayload) 
 	return v, nil
 }
 
+func (m *Manager) EditBlock(ctx context.Context, name string, p EditBlockPayload) (EditBlockResult, error) {
+	msg, err := m.call(ctx, name, "edit_block", p)
+	if err != nil {
+		return EditBlockResult{}, err
+	}
+	var v EditBlockResult
+	b, _ := json.Marshal(msg.Payload)
+	if err := json.Unmarshal(b, &v); err != nil {
+		return EditBlockResult{}, err
+	}
+	return v, nil
+}
+
+func (m *Manager) ReadMultipleFiles(ctx context.Context, name string, p ReadMultipleFilesPayload) (any, error) {
+	msg, err := m.call(ctx, name, "read_multiple_files", p)
+	if err != nil {
+		return nil, err
+	}
+	return msg.Payload, nil
+}
+func (m *Manager) CreateDirectory(ctx context.Context, name string, p CreateDirectoryPayload) error {
+	_, err := m.call(ctx, name, "create_directory", p)
+	return err
+}
+func (m *Manager) MoveFile(ctx context.Context, name string, p MoveFilePayload) error {
+	_, err := m.call(ctx, name, "move_file", p)
+	return err
+}
+func (m *Manager) ListProcesses(ctx context.Context, name string) (any, error) {
+	msg, err := m.call(ctx, name, "list_processes", nil)
+	if err != nil {
+		return nil, err
+	}
+	return msg.Payload, nil
+}
 func (m *Manager) WriteFile(ctx context.Context, name string, p FileWritePayload) (int64, error) {
 	msg, err := m.call(ctx, name, "file_write", p)
 	if err != nil {

@@ -37,8 +37,12 @@ func main() {
 	apiKey := os.Getenv("VPS_COMMANDER_API_KEY")
 	clusterSecret := os.Getenv("VPS_COMMANDER_CLUSTER_SECRET")
 	webPassword := os.Getenv("VPS_COMMANDER_WEB_PASSWORD")
-	if apiKey == "" || clusterSecret == "" || webPassword == "" {
-		log.Fatal("VPS_COMMANDER_API_KEY, VPS_COMMANDER_CLUSTER_SECRET and VPS_COMMANDER_WEB_PASSWORD are required via environment")
+	adminToken := os.Getenv("VPS_COMMANDER_ADMIN_TOKEN")
+	if adminToken == "" {
+		adminToken = webPassword
+	}
+	if apiKey == "" || webPassword == "" {
+		log.Fatal("VPS_COMMANDER_API_KEY and VPS_COMMANDER_WEB_PASSWORD are required via environment")
 	}
 	authManager := auth.NewManager(apiKey)
 	store, err := storage.Open(*dbPath)
@@ -57,12 +61,18 @@ func main() {
 	notificationManager.Start()
 	defer notificationManager.Stop()
 	s := &api.Server{
-		Auth:      authManager,
-		Exec:      executor.Local{MaxOutput: 1024 * 1024},
-		Cluster:   cluster.NewManager(clusterSecret, store),
-		Store:     store,
-		LocalName: local,
-		Notify:    notificationManager,
+		Auth:          authManager,
+		Exec:          executor.Local{MaxOutput: 1024 * 1024},
+		Cluster:       cluster.NewManager(clusterSecret, store),
+		Store:         store,
+		LocalName:     local,
+		Notify:        notificationManager,
+		AdminToken:    adminToken,
+		ExecLimiter:   make(chan struct{}, 32),
+		SearchLimiter: make(chan struct{}, 8),
+	}
+	if err := s.LoadSecurityPolicySnapshot(); err != nil {
+		log.Fatalf("load security policy snapshot: %v", err)
 	}
 
 	// MCP Server instance
