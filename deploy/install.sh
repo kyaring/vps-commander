@@ -75,11 +75,25 @@ download_verified() {
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/data" "$CONF_DIR"
 chmod 750 "$INSTALL_DIR" "$CONF_DIR"
 
+read_tty() {
+    local prompt="$1"
+    local __var="$2"
+    if [ -r /dev/tty ]; then
+        local value
+        if ! IFS= read -r -p "$prompt" value < /dev/tty; then
+            error "无法读取交互输入，请在带 TTY 的终端中运行安装脚本；也可以通过环境变量提供配置。"
+        fi
+        printf -v "$__var" '%s' "$value"
+    else
+        error "检测不到可用 TTY。当前命令可能通过管道运行；请使用带终端的 shell 执行，例如: curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | bash"
+    fi
+}
+
 select_mode() {
     echo -e "\n请选择安装模式:"
     echo "1) 安装受控端 Agent (推荐：在受控 VPS 上一键连入集群)"
     echo "2) 安装中心端 Hub (管理中心)"
-    read -rp "请输入选项 [1-2] (默认 1): " MODE
+    read_tty "请输入选项 [1-2] (默认 1): " MODE
     MODE=${MODE:-1}
 }
 
@@ -92,16 +106,16 @@ install_agent() {
     chmod +x "${INSTALL_DIR}/vps-commander-agent"
 
     echo -e "\n--- 配置 Agent 参数 ---"
-    read -rp "请输入 Hub WSS 连接地址 (默认: wss://vpstool.kory.kdns.fr/agent/ws): " HUB_WS
+    read_tty "请输入 Hub WSS 连接地址 (默认: wss://vpstool.kory.kdns.fr/agent/ws): " HUB_WS
     HUB_WS=${HUB_WS:-"wss://vpstool.kory.kdns.fr/agent/ws"}
 
     DEFAULT_NAME=$(hostname)
-    read -rp "请输入本节点名称 (默认: ${DEFAULT_NAME}): " AGENT_NAME
+    read_tty "请输入本节点名称 (默认: ${DEFAULT_NAME}): " AGENT_NAME
     AGENT_NAME=${AGENT_NAME:-${DEFAULT_NAME}}
 
-    read -rp "请输入 Agent 独立凭据 Token: " AGENT_TOKEN
+    read_tty "请输入 Agent 独立凭据 Token: " AGENT_TOKEN
     while [ -z "$AGENT_TOKEN" ]; do
-        read -rp "Agent Token 不能为空，请重新输入: " AGENT_TOKEN
+        read_tty "Agent Token 不能为空，请重新输入: " AGENT_TOKEN
     done
 
     cat << ENV > "${CONF_DIR}/agent.env"
@@ -156,16 +170,16 @@ install_hub() {
     chmod +x "${INSTALL_DIR}/vps-commander-hub"
 
     echo -e "\n--- 配置 Hub 参数 ---"
-    read -rp "请输入监听端口 (默认 9521): " HUB_PORT
+    read_tty "请输入监听端口 (默认 9521): " HUB_PORT
     HUB_PORT=${HUB_PORT:-9521}
 
     GEN_API_KEY=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
     GEN_PASS=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 
-    read -rp "请输入 API Key (默认随机生成): " API_KEY
+    read_tty "请输入 API Key (默认随机生成): " API_KEY
     API_KEY=${API_KEY:-$GEN_API_KEY}
 
-    read -rp "请输入 Web 管理面板密码 (默认随机生成): " WEB_PASS
+    read_tty "请输入 Web 管理面板密码 (默认随机生成): " WEB_PASS
     WEB_PASS=${WEB_PASS:-$GEN_PASS}
 
     cat << ENV > "${CONF_DIR}/hub.env"
