@@ -32,7 +32,7 @@ var registry = map[string]ToolSpec{
 
 var actionTools = map[string]string{
 	"read": "read_file", "probe": "read_file", "write": "write_file",
-	"mcp": "mcp_call", "exec": "exec_command",
+	"mcp": "mcp_call", "exec": "exec_command", "diagnostic": "diagnostic_command",
 }
 
 func Lookup(name string) (ToolSpec, bool) {

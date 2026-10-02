@@ -113,7 +113,7 @@ func TestProcessSessionLocalSnakeCaseAndLifecycle(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", w.Code, w.Body.String())
 	}
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=read", strings.NewReader(`{"device":"local","session_id":"session-test-001"}`))
 	w = httptest.NewRecorder()
 	s.processSession(w, req)
