@@ -70,6 +70,7 @@ func main() {
 		AdminToken:    adminToken,
 		ExecLimiter:   make(chan struct{}, 32),
 		SearchLimiter: make(chan struct{}, 8),
+		LocalSessions: executor.NewSessionManager(0),
 	}
 	if err := s.LoadSecurityPolicySnapshot(); err != nil {
 		log.Fatalf("load security policy snapshot: %v", err)
@@ -121,6 +122,13 @@ func main() {
 		IdleTimeout:       90 * time.Second,
 	}
 	log.Printf("vps-commander-hub listening on %s as %s", *addr, local)
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.LocalSessions.Cleanup()
+		}
+	}()
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

@@ -49,6 +49,7 @@ type Server struct {
 	AdminToken    string
 	ExecLimiter   chan struct{}
 	SearchLimiter chan struct{}
+	LocalSessions *executor.SessionManager
 }
 
 const (
@@ -782,9 +783,13 @@ func (s *Server) processSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Device, SessionID, Command, Workdir, Data string
-		Force                                     bool
-		RingCapacity                              int `json:"ring_capacity"`
+		Device       string `json:"device"`
+		SessionID    string `json:"session_id"`
+		Command      string `json:"command"`
+		Workdir      string `json:"workdir"`
+		Data         string `json:"data"`
+		Force        bool   `json:"force"`
+		RingCapacity int    `json:"ring_capacity"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
 		http.Error(w, "bad json", 400)
@@ -796,38 +801,106 @@ func (s *Server) processSession(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSecurity(w, r, req.Device, "exec", req.SessionID) {
 		return
 	}
-	if s.Cluster == nil {
-		http.Error(w, "cluster unavailable", 503)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	action := r.URL.Query().Get("action")
+	owner := sessionOwner(r)
 	var result any
 	var err error
-	switch action {
-	case "start":
-		if req.SessionID == "" {
-			req.SessionID, err = newSessionID()
-			if err != nil {
-				http.Error(w, "session id generation failed", 500)
-				return
-			}
+	if s.isRemote(req.Device) {
+		if s.Cluster == nil || !s.Cluster.Online(req.Device) {
+			http.Error(w, "device offline", 409)
+			return
 		}
-		result, err = s.Cluster.StartProcess(ctx, req.Device, cluster.StartProcessPayload{Command: req.Command, Workdir: req.Workdir, SessionID: req.SessionID, Owner: sessionOwner(r), RingCapacity: req.RingCapacity})
-	case "read":
-		result, err = s.Cluster.ReadProcessOutput(ctx, req.Device, req.SessionID, sessionOwner(r))
-	case "input":
-		err = s.Cluster.InteractProcess(ctx, req.Device, req.SessionID, req.Data, sessionOwner(r))
-		result = map[string]any{"ok": true}
-	case "stop":
-		err = s.Cluster.ForceTerminate(ctx, req.Device, req.SessionID, sessionOwner(r))
-		result = map[string]any{"ok": true}
-	case "list":
-		result, err = s.Cluster.ListSessions(ctx, req.Device)
-	default:
-		http.Error(w, "unknown action", 400)
-		return
+		switch action {
+		case "start":
+			if req.SessionID == "" {
+				req.SessionID, err = newSessionID()
+				if err != nil {
+					http.Error(w, "session id generation failed", 500)
+					return
+				}
+			}
+			result, err = s.Cluster.StartProcess(ctx, req.Device, cluster.StartProcessPayload{Command: req.Command, Workdir: req.Workdir, SessionID: req.SessionID, Owner: owner, RingCapacity: req.RingCapacity})
+		case "read":
+			result, err = s.Cluster.ReadProcessOutput(ctx, req.Device, req.SessionID, owner)
+		case "input":
+			err = s.Cluster.InteractProcess(ctx, req.Device, req.SessionID, req.Data, owner)
+			result = map[string]any{"ok": true}
+		case "stop":
+			err = s.Cluster.ForceTerminate(ctx, req.Device, req.SessionID, owner)
+			result = map[string]any{"ok": true}
+		case "list":
+			result, err = s.Cluster.ListSessions(ctx, req.Device)
+		default:
+			http.Error(w, "unknown action", 400)
+			return
+		}
+	} else {
+		if s.LocalSessions == nil {
+			http.Error(w, "local session manager unavailable", 503)
+			return
+		}
+		switch action {
+		case "start":
+			if req.SessionID == "" {
+				req.SessionID, err = newSessionID()
+				if err != nil {
+					http.Error(w, "session id generation failed", 500)
+					return
+				}
+			}
+			var sess *executor.Session
+			sess, err = s.LocalSessions.Start(ctx, req.SessionID, req.Command, req.Workdir, owner, req.RingCapacity)
+			if err == nil {
+				result = map[string]any{"session_id": sess.ID, "started_at": sess.StartedAt.Unix()}
+			}
+		case "read":
+			var sess *executor.Session
+			sess, ok := s.LocalSessions.Get(req.SessionID)
+			if !ok {
+				err = fmt.Errorf("session not found")
+				break
+			}
+			if !sess.Authorized(owner) {
+				err = fmt.Errorf("session ownership denied")
+				break
+			}
+			code, done, _ := sess.Status()
+			stdout, stderr := sess.Output()
+			result = cluster.ProcessOutputPayload{SessionID: req.SessionID, Stdout: stdout, Stderr: stderr, ExitCode: code, Running: !done}
+		case "input":
+			var sess *executor.Session
+			sess, ok := s.LocalSessions.Get(req.SessionID)
+			if !ok {
+				err = fmt.Errorf("session not found")
+				break
+			}
+			if !sess.Authorized(owner) {
+				err = fmt.Errorf("session ownership denied")
+				break
+			}
+			err = sess.Stdin([]byte(req.Data))
+			result = map[string]any{"ok": true}
+		case "stop":
+			var sess *executor.Session
+			sess, ok := s.LocalSessions.Get(req.SessionID)
+			if !ok {
+				err = fmt.Errorf("session not found")
+				break
+			}
+			if !sess.Authorized(owner) {
+				err = fmt.Errorf("session ownership denied")
+				break
+			}
+			err = s.LocalSessions.Stop(req.SessionID, true)
+			result = map[string]any{"ok": true}
+		case "list":
+			result = s.LocalSessions.List()
+		default:
+			http.Error(w, "unknown action", 400)
+			return
+		}
 	}
 	if err != nil {
 		http.Error(w, err.Error(), 409)
