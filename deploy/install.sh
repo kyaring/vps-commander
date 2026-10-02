@@ -8,6 +8,7 @@ REPO="kyaring/vps-commander"
 INSTALL_DIR="/opt/vps-commander"
 CONF_DIR="/etc/vps-commander"
 GITHUB_URL="https://github.com"
+API_URL="https://api.github.com"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -37,12 +38,39 @@ command -v curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl ||
 
 # 获取最新版本 tag
 info "正在获取 VPS-Commander 最新版本信息..."
-LATEST_TAG=$(curl -fsSL -k "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name":' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_TAG=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 30 "${API_URL}/repos/${REPO}/releases/latest" | sed -n 's/^[[:space:]]*"tag_name": "\([^"]*\)".*/\1/p' | head -n1)
 if [ -z "$LATEST_TAG" ]; then
-    warn "无法通过 GitHub API 自动获取 Tag，回退至 v1.1.5"
-    LATEST_TAG="v1.1.5"
+    error "无法从 GitHub 获取最新正式 Release，已停止安装；不会回退到旧版本"
 fi
 info "检测到最新版本: ${LATEST_TAG} (${TARGET_ARCH})"
+
+download_verified() {
+    local url="$1" dest="$2" asset_name="$3"
+    local tmp checksum expected actual
+    tmp=$(mktemp "${dest}.tmp.XXXXXX") || error "无法创建临时下载文件: ${dest}"
+    rm -f "$tmp"
+    trap 'rm -f "${tmp}"' RETURN
+    info "正在下载: ${url}"
+    if ! curl -fL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 600 -o "$tmp" "$url"; then
+        rm -f "$tmp"
+        error "下载失败: ${url}"
+    fi
+    if [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        error "下载结果为空: ${asset_name}"
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        checksum=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 60 "${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/checksums.txt") || error "无法获取 Release 校验文件"
+        expected=$(printf '%s\n' "$checksum" | awk -v f="$asset_name" '$2 == f {print $1; exit}')
+        [ -n "$expected" ] || error "Release 校验文件中缺少 ${asset_name}"
+        actual=$(sha256sum "$tmp" | awk '{print $1}')
+        [ "$actual" = "$expected" ] || error "SHA256 校验失败: ${asset_name}"
+    else
+        error "系统缺少 sha256sum，无法安全校验 Release"
+    fi
+    mv -f "$tmp" "$dest" || error "无法安装下载文件到: ${dest}"
+    trap - RETURN
+}
 
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/data" "$CONF_DIR"
 chmod 750 "$INSTALL_DIR" "$CONF_DIR"
@@ -60,8 +88,7 @@ install_agent() {
     BIN_NAME="vps-commander-agent-linux-${TARGET_ARCH}"
     DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
-    info "正在下载 Agent: ${DOWNLOAD_URL}"
-    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-agent" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    download_verified "${DOWNLOAD_URL}" "${INSTALL_DIR}/vps-commander-agent" "${BIN_NAME}"
     chmod +x "${INSTALL_DIR}/vps-commander-agent"
 
     echo -e "\n--- 配置 Agent 参数 ---"
@@ -125,8 +152,7 @@ install_hub() {
     BIN_NAME="vps-commander-hub-linux-${TARGET_ARCH}"
     DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
-    info "正在下载 Hub: ${DOWNLOAD_URL}"
-    curl -fsSL -k -o "${INSTALL_DIR}/vps-commander-hub" "${DOWNLOAD_URL}" || error "下载失败，请检查网络或 Release 是否存在"
+    download_verified "${DOWNLOAD_URL}" "${INSTALL_DIR}/vps-commander-hub" "${BIN_NAME}"
     chmod +x "${INSTALL_DIR}/vps-commander-hub"
 
     echo -e "\n--- 配置 Hub 参数 ---"
