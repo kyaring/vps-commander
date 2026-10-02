@@ -177,6 +177,28 @@ Agent 只主动连接 Hub，不需要公网入站端口。
 
 ---
 
+## 🚀 一键安装与升级
+
+### 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | sudo bash
+```
+
+安装脚本自动识别 `amd64/arm64` 并进入 Hub / Agent 安装流程。
+
+### 一键升级 Agent
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/upgrade-agent.sh | sudo bash
+```
+
+升级脚本下载目标 Release、校验文件大小、备份旧版本并在启动失败时自动回滚。
+
+生产环境的 Agent 凭据以独立设备凭据为准；不要将 Cluster Secret 作为长期生产凭据重新启用。
+
+---
+
 ## 📄 文档索引
 
 - [文档基线与全局索引](docs/DOCUMENTATION_BASELINE_20261002.md)

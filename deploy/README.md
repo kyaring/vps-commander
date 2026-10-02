@@ -47,9 +47,53 @@ chmod 0600 /etc/vps-commander/agent.env
 
 ---
 
-## 三、Hub 服务端部署步骤
+## 三、一键安装与升级
 
-### 3.1 编译
+### 3.1 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | sudo bash
+```
+
+脚本自动识别 `amd64/arm64`，并进入 Hub / Agent 安装流程。
+
+- Hub：自动生成 API Key 与 Web 面板密码。
+- Agent：输入 Hub WSS 地址、节点名称和独立 Agent Token。
+- 生产环境不再要求 Cluster Secret 作为长期凭据。
+
+### 3.2 一键升级 Agent
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/upgrade-agent.sh | sudo bash
+```
+
+升级流程：
+
+```text
+下载 Release
+   ↓
+临时文件完整性检查
+   ↓
+备份当前 Agent
+   ↓
+原子替换
+   ↓
+systemd restart
+   ↓
+健康检查
+   ├─ 成功 → 删除备份
+   └─ 失败 → 自动恢复旧版本
+```
+
+### 3.3 手工安装
+
+如果需要固定版本、离线部署或灰度验证，再使用下面的手工安装流程。
+
+---
+
+## 四、Hub 服务端部署步骤
+
+### 4.1 编译
 ```bash
 cd /root/.openclaw/workspace/vps-commander
 go test ./...
@@ -65,13 +109,13 @@ vcs.modified=false
 vcs.revision=<release commit>
 ```
 
-### 3.2 安装
+### 4.2 安装
 ```bash
 install -d -m 0750 /opt/vps-commander/data /etc/vps-commander
 install -m 0755 bin/vps-commander-hub-linux-amd64 /opt/vps-commander/vps-commander-hub
 ```
 
-### 3.3 配置
+### 4.3 配置
 ```bash
 cat << 'ENV' > /etc/vps-commander/hub.env
 VPS_COMMANDER_API_KEY=your_secure_api_key
@@ -80,7 +124,7 @@ ENV
 chmod 0600 /etc/vps-commander/hub.env
 ```
 
-### 3.4 Systemd
+### 4.4 Systemd
 ```ini
 [Service]
 EnvironmentFile=-/etc/vps-commander/hub.env
@@ -89,7 +133,7 @@ Restart=always
 RestartSec=3s
 ```
 
-### 3.5 启动
+### 4.5 启动
 ```bash
 systemctl daemon-reload
 systemctl enable --now vps-commander-hub
@@ -98,15 +142,15 @@ systemctl status vps-commander-hub
 
 ---
 
-## 四、远程 Agent 节点部署步骤
+## 五、远程 Agent 节点部署步骤
 
-### 4.1 安装二进制
+### 5.1 安装二进制
 ```bash
 install -d -m 0750 /etc/vps-commander /opt/vps-commander
 install -m 0755 vps-commander-agent-linux-amd64 /opt/vps-commander/vps-commander-agent
 ```
 
-### 4.2 配置
+### 5.2 配置
 ```bash
 cat << 'ENV' > /etc/vps-commander/agent.env
 VPS_COMMANDER_HUB_WS_URL=wss://vpstool.kory.kdns.fr/agent/ws
@@ -116,7 +160,7 @@ ENV
 chmod 0600 /etc/vps-commander/agent.env
 ```
 
-### 4.3 Systemd
+### 5.3 Systemd
 ```ini
 [Service]
 EnvironmentFile=-/etc/vps-commander/agent.env
@@ -127,7 +171,7 @@ RestartSec=3s
 
 当前 v2.0 生产迁移阶段可兼容显式 token；v2.1 发布后必须改为不出现在 ExecStart 的方式。
 
-### 4.4 启动
+### 5.4 启动
 ```bash
 systemctl daemon-reload
 systemctl enable --now vps-commander-agent
@@ -138,14 +182,14 @@ Agent 启动后主动连接 Hub，并在设备列表中显示为 `online`。
 
 ---
 
-## 五、控制面板与 MCP 使用
+## 六、控制面板与 MCP 使用
 
-### 5.1 管理面板
+### 6.1 管理面板
 `https://vpstool.kory.kdns.fr/panel/login`
 
 面板包含设备状态、安全策略、操作控制、审计和相关管理功能。
 
-### 5.2 MCP
+### 6.2 MCP
 远程入口：
 `https://vpstool.kory.kdns.fr/mcp/sse`
 
@@ -155,7 +199,7 @@ Agent 启动后主动连接 Hub，并在设备列表中显示为 `online`。
 
 ---
 
-## 六、生产升级流程
+## 七、生产升级流程
 
 ```text
 Backup
@@ -177,7 +221,7 @@ Full Acceptance
 
 ---
 
-## 七、日常运维检查
+## 八、日常运维检查
 
 ```bash
 systemctl status vps-commander-hub
@@ -189,7 +233,7 @@ curl -fsS http://127.0.0.1:9521/healthz
 
 ---
 
-## 八、当前生产审计提示
+## 九、当前生产审计提示
 
 2026-10-02 审计发现生产 Hub / Agent 曾由 `vcs.modified=true` 的工作树构建。
 因此生产现场二进制不能直接视为当前 HEAD 的可复现产物。

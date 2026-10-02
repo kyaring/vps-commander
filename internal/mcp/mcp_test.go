@@ -82,6 +82,23 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 	if !ok || len(tools) != 11 {
 		t.Fatalf("expected 11 tools, got %d", len(tools))
 	}
+	foundWriteFile := false
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("tool entry is not an object: %#v", raw)
+		}
+		name, _ := tool["name"].(string)
+		if name == "" {
+			t.Fatalf("tool entry has empty name: %#v", tool)
+		}
+		if name == "write_file" {
+			foundWriteFile = true
+		}
+	}
+	if !foundWriteFile {
+		t.Fatalf("write_file missing from tools/list")
+	}
 }
 
 func TestMCPCallTool(t *testing.T) {

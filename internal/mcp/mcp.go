@@ -286,6 +286,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标节点名称"}, "path": {Type: "string", Description: "目标文件路径"}, "old_text": {Type: "string", Description: "必须唯一匹配的原文本块"}, "new_text": {Type: "string", Description: "替换后的文本块"}}, Required: []string{"path", "old_text", "new_text"}},
 			},
 			{
+				Name:        "write_file",
 				Description: "向指定受控节点创建或覆写文件",
 				InputSchema: InputSchema{
 					Type: "object",

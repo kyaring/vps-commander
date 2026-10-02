@@ -72,15 +72,15 @@ install_agent() {
     read -rp "请输入本节点名称 (默认: ${DEFAULT_NAME}): " AGENT_NAME
     AGENT_NAME=${AGENT_NAME:-${DEFAULT_NAME}}
 
-    read -rp "请输入 Cluster Secret (集群通信密钥): " CLUSTER_SECRET
-    while [ -z "$CLUSTER_SECRET" ]; do
-        read -rp "Cluster Secret 不能为空，请重新输入: " CLUSTER_SECRET
+    read -rp "请输入 Agent 独立凭据 Token: " AGENT_TOKEN
+    while [ -z "$AGENT_TOKEN" ]; do
+        read -rp "Agent Token 不能为空，请重新输入: " AGENT_TOKEN
     done
 
     cat << ENV > "${CONF_DIR}/agent.env"
 VPS_COMMANDER_HUB_WS_URL=${HUB_WS}
 VPS_COMMANDER_AGENT_NAME=${AGENT_NAME}
-VPS_COMMANDER_CLUSTER_SECRET=***
+VPS_COMMANDER_AGENT_TOKEN=${AGENT_TOKEN}
 ENV
     chmod 0600 "${CONF_DIR}/agent.env"
 
@@ -133,23 +133,19 @@ install_hub() {
     read -rp "请输入监听端口 (默认 9521): " HUB_PORT
     HUB_PORT=${HUB_PORT:-9521}
 
-    GEN_API_KEY=*** -c 24 /dev/urandom | xxd -p)
-    GEN_SECRET=*** -c 24 /dev/urandom | xxd -p)
+    GEN_API_KEY=$(head -c 24 /dev/urandom | xxd -p)
     GEN_PASS=$(head -c 16 /dev/urandom | xxd -p)
 
     read -rp "请输入 API Key (默认随机生成): " API_KEY
-    API_KEY=***
-
-    read -rp "请输入 Cluster Secret (默认随机生成): " CLUSTER_SECRET
-    CLUSTER_SECRET=${CLUS…RET}
+    API_KEY=${API_KEY:-$GEN_API_KEY}
 
     read -rp "请输入 Web 管理面板密码 (默认随机生成): " WEB_PASS
     WEB_PASS=${WEB_PASS:-$GEN_PASS}
 
     cat << ENV > "${CONF_DIR}/hub.env"
-VPS_COMMANDER_API_KEY=***
-VPS_COMMANDER_CLUSTER_SECRET=***
-VPS_COMMANDER_WEB_PASSWORD=***
+VPS_COMMANDER_API_KEY=${API_KEY}
+VPS_COMMANDER_WEB_PASSWORD=${WEB_PASS}
+ENV
 ENV
     chmod 0600 "${CONF_DIR}/hub.env"
 
@@ -185,7 +181,6 @@ SVC
         echo -e "\n================== Hub 配置凭据 =================="
         echo -e "监听地址: 127.0.0.1:${HUB_PORT}"
         echo -e "API Key: ${API_KEY}"
-        echo -e "Cluster Secret: ${CLUSTER_SECRET}"
         echo -e "Web 面板密码: ${WEB_PASS}"
         echo -e "==================================================\n"
         warn "请妥善保管上述凭据，反代请将域名反代至 127.0.0.1:${HUB_PORT}"

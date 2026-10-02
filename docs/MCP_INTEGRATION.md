@@ -162,7 +162,31 @@ API Key 不应提交到 Git 仓库。
 
 ---
 
-## 七、Agent MCP
+## 七、一键安装与升级
+
+### 7.1 一键安装
+
+仓库已经提供统一安装脚本，支持 Linux `amd64` 与 `arm64`，安装时自动识别架构并从 GitHub Release 获取对应二进制。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | sudo bash
+```
+
+脚本会进入交互式安装流程，可选择 Hub 或 Agent。生产环境使用时，Agent 应使用独立设备凭据，不应重新启用全局 Shared Secret。
+
+### 7.2 一键升级 Agent
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/upgrade-agent.sh | sudo bash
+```
+
+升级采用临时文件下载 → 基础完整性检查 → 旧二进制备份 → 原子替换 → systemd 重启 → 健康检查；启动失败时自动回滚旧版本。
+
+> Hub 的生产升级建议继续采用滚动发布：先完成 Release 与构建校验，再替换 Hub，确认节点重新上线后再继续后续节点。避免把 Hub 升级做成无保护的“一键重启”。
+
+---
+
+## 八、Agent MCP
 
 Hub 可以发现远程 Agent 暴露的 MCP Service。
 
