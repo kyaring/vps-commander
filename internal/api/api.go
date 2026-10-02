@@ -332,7 +332,7 @@ func (s *Server) clusterDeviceNames() []string {
 }
 
 func (s *Server) Panel(password string) http.Handler {
-	p := panelweb.New(password, s)
+	p := panelweb.New(password, s.AdminToken, s)
 	go p.Cleanup()
 	return p.Handler()
 }

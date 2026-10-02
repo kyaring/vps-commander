@@ -24,14 +24,15 @@ type Runner interface {
 }
 
 type Panel struct {
-	Password string
-	Runner   Runner
-	mu       sync.RWMutex
-	sessions map[string]time.Time
+	Password   string
+	AdminToken string
+	Runner     Runner
+	mu         sync.RWMutex
+	sessions   map[string]time.Time
 }
 
-func New(password string, runner Runner) *Panel {
-	return &Panel{Password: password, Runner: runner, sessions: make(map[string]time.Time)}
+func New(password, adminToken string, runner Runner) *Panel {
+	return &Panel{Password: password, AdminToken: adminToken, Runner: runner, sessions: make(map[string]time.Time)}
 }
 
 func (p *Panel) Handler() http.Handler {
@@ -110,6 +111,9 @@ func (p *Panel) securitySettings(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "security API unavailable", 501)
 }
 func (p *Panel) updateSecuritySettings(w http.ResponseWriter, r *http.Request) {
+	if p.AdminToken != "" {
+		r.Header.Set("X-Admin-Token", p.AdminToken)
+	}
 	if v, ok := p.Runner.(securityPanelRunner); ok {
 		v.UpdateSecuritySettingsJSON(w, r)
 		return

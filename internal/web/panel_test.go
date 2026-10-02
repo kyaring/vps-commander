@@ -16,7 +16,7 @@ func (testRunner) RotateAPIKey(w http.ResponseWriter, r *http.Request) {}
 func (testRunner) DeleteDevice(w http.ResponseWriter, r *http.Request) {}
 
 func TestStaticCSSContentType(t *testing.T) {
-	p := New("test-password", testRunner{})
+	p := New("test-password", "admin", testRunner{})
 	req := httptest.NewRequest("GET", "/static/app.css", nil)
 	rec := httptest.NewRecorder()
 
