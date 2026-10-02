@@ -100,6 +100,13 @@ func (h *HubRemoteBackend) ReadFile(ctx context.Context, clientIP, device, path 
 	return res, err
 }
 
+func (h *HubRemoteBackend) EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error) {
+	payload := map[string]any{"device": device, "path": path, "old_text": oldText, "new_text": newText}
+	var res any
+	err := h.post("/api/v1/devices/file/edit_block", payload, &res)
+	return res, err
+}
+
 func (h *HubRemoteBackend) WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error) {
 	payload := map[string]any{
 		"device":  device,

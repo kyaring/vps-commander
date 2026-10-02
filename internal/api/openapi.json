@@ -616,6 +616,136 @@
           }
         }
       }
+    },
+    "/api/v1/devices/file/edit_block": {
+      "post": {
+        "summary": "Atomically replace a unique text block on a device",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "old_text",
+                  "new_text"
+                ],
+                "properties": {
+                  "device": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "old_text": {
+                    "type": "string"
+                  },
+                  "new_text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Edited"
+          },
+          "403": {
+            "description": "Security policy denied"
+          },
+          "409": {
+            "description": "Device offline or edit conflict"
+          },
+          "413": {
+            "description": "Edit block too large"
+          }
+        }
+      }
+    },
+    "/api/v1/process/session": {
+      "post": {
+        "summary": "Manage long-running process sessions",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "action",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "start",
+                "read",
+                "input",
+                "stop",
+                "list"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session operation result"
+          }
+        }
+      }
+    },
+    "/api/v1/file/list": {
+      "post": {
+        "summary": "List directory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful result"
+          }
+        }
+      }
+    },
+    "/api/v1/file/info": {
+      "post": {
+        "summary": "Get file metadata",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful result"
+          }
+        }
+      }
+    },
+    "/api/v1/file/search": {
+      "post": {
+        "summary": "Search files",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful result"
+          }
+        }
+      }
     }
   }
 }

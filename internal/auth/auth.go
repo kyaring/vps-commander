@@ -42,12 +42,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 		h := r.Header.Get("Authorization")
 		if strings.HasPrefix(h, "Bearer ") {
 			got = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
-		} else if q := r.URL.Query().Get("token"); q != "" {
-			got = q
-		} else if q := r.URL.Query().Get("key"); q != "" {
-			got = q
-		} else if q := r.URL.Query().Get("api_key"); q != "" {
-			got = q
+
 		}
 
 		expected := m.Token

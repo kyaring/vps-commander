@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -59,8 +62,8 @@ func TestSecurityEffectiveModeAndExecGate(t *testing.T) {
 	}
 	defer store.DB.Close()
 	s := &Server{Exec: executor.Local{MaxOutput: 1024 * 1024}, Store: store, LocalName: "local"}
-	if got := s.GetEffectiveSecurityMode("node-a"); got != "medium" {
-		t.Fatalf("default mode=%s", got)
+	if got := s.GetEffectiveSecurityMode("node-a"); got != "unknown" {
+		t.Fatalf("unknown mode=%s", got)
 	}
 	if err := store.SetNodeSecurityMode("node-a", "high"); err != nil {
 		t.Fatal(err)
@@ -86,5 +89,48 @@ func TestSecurityEffectiveModeAndExecGate(t *testing.T) {
 	logs, _ := store.RecentAudits(10)
 	if len(logs) == 0 || logs[0].Action != "security_denied" {
 		t.Fatalf("missing denial audit: %+v", logs)
+	}
+}
+
+func TestEditBlockSecurityAndReplacement(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	if err := store.SetGlobalSecurityMode("medium"); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Exec: executor.Local{MaxOutput: 1024 * 1024}, Store: store, LocalName: "local"}
+	if err := s.LoadSecurityPolicySnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.txt")
+	if err := os.WriteFile(path, []byte("alpha\nTARGET\nomega\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/devices/file/edit_block", strings.NewReader(fmt.Sprintf(`{"path":%q,"old_text":"TARGET","new_text":"CHANGED"}`, path)))
+	w := httptest.NewRecorder()
+	s.editBlock(w, r)
+	if w.Code != 200 {
+		t.Fatalf("edit status=%d body=%s", w.Code, w.Body.String())
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != "alpha\nCHANGED\nomega\n" {
+		t.Fatalf("unexpected content: %q", b)
+	}
+
+	if err := store.SetGlobalSecurityMode("low"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadSecurityPolicySnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "/api/v1/devices/file/edit_block", strings.NewReader(fmt.Sprintf(`{"path":%q,"old_text":"CHANGED","new_text":"NO"}`, path)))
+	w = httptest.NewRecorder()
+	s.editBlock(w, r)
+	if w.Code != 403 {
+		t.Fatalf("low mode status=%d body=%s", w.Code, w.Body.String())
 	}
 }

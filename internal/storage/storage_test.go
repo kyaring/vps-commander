@@ -58,3 +58,38 @@ func TestAuditConcurrent100NoLoss(t *testing.T) {
 		t.Fatalf("busy_timeout=%d, want >=5000", busy)
 	}
 }
+
+func TestDeviceCredentialHashAndRotation(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "commander.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+
+	if err := s.SetDeviceCredential("node-1", "secret-one"); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := s.HasDeviceCredential("node-1")
+	if err != nil || !configured {
+		t.Fatalf("credential should be configured: %v", err)
+	}
+	valid, err := s.VerifyDeviceCredential("node-1", "secret-one")
+	if err != nil || !valid {
+		t.Fatalf("valid credential rejected: %v", err)
+	}
+	valid, err = s.VerifyDeviceCredential("node-1", "wrong")
+	if err != nil || valid {
+		t.Fatal("wrong credential accepted")
+	}
+	if err := s.SetDeviceCredential("node-1", "secret-two"); err != nil {
+		t.Fatal(err)
+	}
+	valid, err = s.VerifyDeviceCredential("node-1", "secret-one")
+	if err != nil || valid {
+		t.Fatal("old credential accepted after rotation")
+	}
+	valid, err = s.VerifyDeviceCredential("node-1", "secret-two")
+	if err != nil || !valid {
+		t.Fatal("rotated credential rejected")
+	}
+}

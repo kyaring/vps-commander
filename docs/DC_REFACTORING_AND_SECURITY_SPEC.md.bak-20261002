@@ -1,0 +1,109 @@
+# 《VPS-Commander 平滑升级改造与三级安全拦截实施方案》
+
+## 1. 改造目标与背景
+本项目计划全量复刻 **Desktop Commander（DC）** 在终端与文件系统上的核心工程能力（包括局部块级精准替换、后台长进程生命周期管理、交互式 stdin 注入、结构化目录遍历与只读检索），并将其无缝接入 **Low（低风险）/ Medium（中风险）/ High（高风险）** 三级安全门禁体系。
+
+**核心红线与验收标准：**
+1. **服务不中断**：升级过程不影响正在运行的 Agent 探针与 Hub 中心。
+2. **协议向后兼容**：旧版 Agent 与新版 Hub 混合共存，老接口绝不废弃。
+3. **性能零损耗**：杜绝动态运行时映射，安全校验在编译期即已绑定。
+4. **轻量化保真**：继续保持纯 Go 静态编译的高效特性，严控内存占用（常驻内存锁定在 20MB 以内）。
+
+---
+
+## 2. 工具池全量复刻与三级风险定级表（静态强绑定）
+
+所有功能根据系统破坏力与副作用大小，在**编译期**严格归属于三级风险体系：
+
+| 风险等级 (Level) | 行为边界定义 | 包含的复刻工具 (DC 标杆) | 允许放行的安全模式 |
+| :--- | :--- | :--- | :--- |
+| 🟢 **Low（只读/感知）** | **纯只读、无状态改变、无系统副作用** | • `read_file` (支持切片与 Tail)<br>• `read_multiple_files`<br>• `list_directory` (结构化目录树)<br>• `get_file_info` (元数据)<br>• `start_search` / `get_more_search_results`<br>• `list_processes` / `list_sessions`<br>• `read_process_output` (拉取输出) | **Low**<br>**Medium**<br>**High** |
+| 🟡 **Medium（文件写）** | **文件与目录变更，但严禁拉起任意二进制或执行命令** | • `edit_block` (局部文本块精准替换，核心)<br>• `write_file` (文件新建/全量写入)<br>• `create_directory` (新建目录)<br>• `move_file` (移动/重命名) | **Medium**<br>**High**<br>*(Low 拦截)* |
+| 🔴 **High（完全控制）** | **具备操作系统执行权、进程生命周期调度与管道干预** | • `exec_command` (同步短命令)<br>• `start_process` (后台异步启动长进程)<br>• `interact_with_process` (stdin 交互写入)<br>• `kill_process` / `force_terminate` (终止进程) | **High**<br>*(Low / Medium 拦截)* |
+
+---
+
+## 3. 架构改造与平滑过渡设计
+
+### 3.1 协议层平滑升级（零破坏向后兼容）
+在 `internal/cluster/protocol.go` 中，保留原有字段，新增可选的扩展动作：
+```go
+type Message struct {
+    ID        string `json:"id,omitempty"`
+    Action    string `json:"action,omitempty"`     // 保持原有字段: "read" / "write" / "exec" / "probe"
+    SubAction string `json:"sub_action,omitempty"` // ✨ 增量动作: "edit_block", "start_process" 等
+    Device    string `json:"device,omitempty"`
+    Payload   any    `json:"payload,omitempty"`
+    ...
+}
+```
+* **兼容保障**：老版本 Agent 接收到带 `SubAction` 的 JSON 消息时会自动忽略多余字段，继续按老逻辑工作；升级后的 Agent 优先路由给 `SubAction` 处理。
+
+### 3.2 Hub 门禁与高并发性能优化（读写分离）
+现有系统每次请求均去 SQLite 查询策略，高并发下存在文件锁瓶颈。改造后引入 **RWMutex 内存策略快照**：
+1. **读路径（Fast Path，纳秒级）**：
+   ```go
+   // 常量数值定义，直接内联比较
+   const ( RiskLow = 1; RiskMedium = 2; RiskHigh = 3 )
+
+   func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device string, requiredRisk int, detail string) bool {
+       allowed := s.getEffectiveRiskLevel(device) // 查内存 RLock，耗时 < 10ns
+       if allowed >= requiredRisk {
+           return true
+       }
+       // 记录 audit_logs ("security_denied", 403) 并返回拦截响应
+       return false
+   }
+   ```
+2. **写路径（Slow Path，低频）**：
+   * 仅在管理员通过 Web 界面更改安全策略时，写一次 SQLite 并原子更新内存缓存。
+3. **老 API 零改动**：
+   * 原有 `/api/v1/devices/exec`、`/read`、`/write` 继续保留，老脚本老客户端零感知。
+
+### 3.3 Agent 端核心引擎实现（防资源膨胀设计）
+* **`edit_block` 引擎**：
+  * 读取原文件后校验 `old_text` 全局唯一性，唯一时单次替换并使用临时文件进行原子覆写（`os.Rename`）。
+  * 相比原有全量上传，网络传输和内存开销下降 95%。
+* **长进程与 PTY 会话引擎（`start_process` 等）**：
+  * Agent 内部建立轻量 `SessionManager`，挂接内核标准输入输出管道。
+  * **硬编码内存锁（Circular RingBuffer）**：每个进程会话分配最大 2MB 环形日志缓冲区，达到上限自动覆盖最早输出，**从物理上杜绝日志死循环导致的内存溢出（OOM）**。
+
+---
+
+## 4. 资源开销评估与性能上限控制
+
+得益于纯 Go 原生静态编译，系统坚决不引入任何 Node.js/Python 运行时，资源开销保持极致克制：
+
+| 评估指标 | 改造前基准（实测） | 改造后预期 | 性能/资源防护机制 |
+| :--- | :--- | :--- | :--- |
+| **Agent 静默内存** | ~13 MB | **~15 MB - 18 MB** | 零后台轮询，事件驱动 |
+| **Agent 峰值内存** | 随命令大小波动 | **基准 + (2MB × 活跃会话数)** | 环形缓冲区硬顶锁定，防内存泄露 |
+| **Hub 服务端内存** | ~16 MB | **~18 MB - 22 MB** | 内存门禁仅占不到 10KB |
+| **二进制体积** | ~9.4 MB | **~11 MB - 13 MB** | 静态单文件编译，极易分发部署 |
+| **安全判定延迟** | 毫秒级（查 SQLite） | **纳秒级（内存读锁）** | 单机可轻松支撑 10W+ QPS 门禁并发 |
+
+---
+
+## 5. 四阶段实施与回滚路线图（稳健落地）
+
+* **Phase 1：服务端门禁升级与内存读缓存**
+  * 在 Hub 端落地 `RWMutex` 安全策略缓存；
+  * API 入口统一接入 `requireSecurity(..., RiskLevel)`；
+  * *验证标准*：旧版 4 项基础功能与 Web 面板完好，并发查询 QPS 大幅提升。
+* **Phase 2：落地中风险神器 `edit_block`**
+  * Agent 端实现块级精准替换算法；
+  * Hub 暴露 `/api/v1/devices/file/edit_block` 并注册至 MCP Adapter；
+  * *验证标准*：在 Medium 模式下可正常修配置文件，在 Low 模式下被精确阻断并记入审计。
+* **Phase 3：落地高风险长进程引擎**
+  * Agent 端引入带 RingBuffer 的 `SessionManager`；
+  * 实现 `start_process`、`read_process_output`、`interact_with_process`、`kill_process`；
+  * *验证标准*：跑耗时任务不会超时断连，支持实时 Tail 查看输出与注入 stdin。
+* **Phase 4：落地只读结构化文件与系统感知（Low）**
+  * 实现 `list_directory`、`get_file_info` 及后台异步只读搜索。
+
+---
+
+## 6. 评估与审计重点建议
+1. **安全维度**：Low/Medium/High 对能力的切分是否彻底杜绝了提权与逃逸风险？
+2. **性能维度**：使用内存 RWMutex + 编译期静态安全级别判定，是否彻底解决了单文件 SQLite 高频读瓶颈？
+3. **稳定性维度**：为每个长进程会话限定 RingBuffer 内存上限，是否有效防止了边缘 VPS 探针被日志撑爆？
