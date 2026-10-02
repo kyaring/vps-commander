@@ -138,7 +138,7 @@ Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=-${CONF_DIR}/agent.env
-ExecStart=/bin/sh -c 'exec ${INSTALL_DIR}/vps-commander-agent -hub "$VPS_COMMANDER_HUB_WS_URL" -name "$VPS_COMMANDER_AGENT_NAME"'
+ExecStart=/bin/sh -c 'exec ${INSTALL_DIR}/vps-commander-agent -hub "\$VPS_COMMANDER_HUB_WS_URL" -name "\$VPS_COMMANDER_AGENT_NAME"'
 Restart=always
 RestartSec=3s
 KillSignal=SIGTERM
@@ -156,8 +156,8 @@ SVC
     # ${VPS_COMMANDER_*} in ExecStart directly; the shell wrapper above must
     # remain intact. This prevents a false-success install with a broken URL.
     if ! grep -Fq 'ExecStart=/bin/sh -c' /etc/systemd/system/vps-commander-agent.service ||
-       ! grep -Fq '"$VPS_COMMANDER_HUB_WS_URL"' /etc/systemd/system/vps-commander-agent.service ||
-       ! grep -Fq '"$VPS_COMMANDER_AGENT_NAME"' /etc/systemd/system/vps-commander-agent.service; then
+       ! grep -Fq '$VPS_COMMANDER_HUB_WS_URL' /etc/systemd/system/vps-commander-agent.service ||
+       ! grep -Fq '$VPS_COMMANDER_AGENT_NAME' /etc/systemd/system/vps-commander-agent.service; then
         error "生成的 Agent systemd 服务异常，ExecStart 未通过校验。安装已中止。"
     fi
     if ! [[ "$HUB_WS" =~ ^wss://[^[:space:]]+/agent/ws$ ]]; then
