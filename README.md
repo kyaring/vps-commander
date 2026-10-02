@@ -182,7 +182,7 @@ Agent 只主动连接 Hub，不需要公网入站端口。
 ### 一键安装
 
 ```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/install.sh | bash
 ```
 
 安装脚本自动识别 `amd64/arm64` 并进入 Hub / Agent 安装流程。
@@ -190,7 +190,7 @@ curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/ins
 ### 一键升级 Agent
 
 ```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-agent.sh | sudo bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-agent.sh | bash
 ```
 
 ### 一键升级 Hub
@@ -198,7 +198,7 @@ curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upg
 Hub 升级不会修改 `hub.env`：
 
 ```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-hub.sh | sudo bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-hub.sh | bash
 ```
 
 升级脚本下载目标 Release、校验文件大小、备份旧版本并在启动失败时自动回滚。

@@ -205,3 +205,70 @@ a83436c 统一了 release pipeline，但升级脚本只覆盖 Agent。Hub 想升
 ---
 
 *审核专家 B，2026-10-02*
+
+---
+
+## 复审（2026-10-02 18:00，针对 888efd1）
+
+- **复审人**：审核专家 B
+- **范围**：单个提交 `888efd1 fix: harden installer and release upgrade flow`（deploy/install.sh、deploy/upgrade-agent.sh、新增 deploy/upgrade-hub.sh、release.yml、README）
+- **方式**：只读代码审核 + `bash -n` 语法解析；未执行任何脚本，未改动生产。
+
+### 逐项验证表
+
+| # | 问题 | 上次严重度 | 本次状态 | 说明 |
+|---|---|---|---|---|
+| 1 | 重跑 Hub 安装静默覆盖 hub.env 丢凭据 | 高 | 已修复 | `install_hub()` 检测到 hub.env 已存在时保留 API Key / Web 密码，仅更新 `VPS_COMMANDER_INSTALL_COMMAND` 行；缺必要字段则中止安装。新增 `upgrade-hub.sh` 后升级不再被迫走 installer |
+| 2 | Agent Token 明文回显 | 高 | 已修复 | `read_tty` 新增第 3 参数 `secret`，为 1 时用 `read -rs`；Token（2 处）、API Key、Web 密码 prompt 均已传入 1 |
+| 3 | Agent unit sh -c root 命令注入 | 高 | 已修复 | 去掉 `/bin/sh -c` 包裹，改用 systemd 原生 `${VAR}` 展开（与仓库自带模板一致）；新增 `validate_hub_ws`（拒绝空白/`$`/反引号/`"`/`\`）与 `validate_agent_name`（白名单 `^[A-Za-z0-9._:-]+$`）双保险；unit 生成断言同步更新 |
+| 4 | 安装脚本取自 main 分支（供应链风险） | 中 | 已修复 | 改为 `releases/latest/download/install.sh`；release.yml 将 install.sh / upgrade-*.sh 作为 release asset 发布并纳入 checksums.txt；README 与 deploy/README 的命令同步更新，无 main 分支残留 |
+| 5 | upgrade-agent.sh 回滚缺陷 | 中 | 已修复 | 补 Hub 连接校验（15 秒等 `MCP services synced:`，与 install.sh 对齐）；回滚分支全显式处理（mv 失败 / restart 失败各有明确 error，不再静默跳过）；备份失败直接中止；顺带修了 tag 解析 sed 的双重转义 bug |
+| 6 | read_tty 虚假 env 承诺 | 中 | 已修复 | 删除“可通过环境变量提供配置”的虚假承诺，改为明确要求控制终端（采用了“明确要求 TTY”的修复选项） |
+| 7 | HUB_PORT 未验证（flag 注入） | 低 | 已修复 | 新增 `validate_port`（纯数字 + 1-65535），install.sh 两条路径与 upgrade-hub.sh 均调用 |
+| 8 | checksums.txt 无签名 | 低 | 未修复 | 仍仅依赖 TLS，无 cosign/sigstore。上次已定为当前威胁模型下可接受，继续记录 |
+| 9 | download_verified 失败路径泄漏 tmp 文件 | 低 | 已修复 | 改用 `TMP_FILES` 数组 + `trap cleanup EXIT`，`error` 退出路径也会清理 |
+| 10 | 缺少 upgrade-hub.sh | 低 | 已修复 | 新增：前置检查（二进制/hub.env/unit 存在性）；端口从现有 unit 提取并校验；cp 备份 + mv 替换；三级回滚（restart 失败 / 非 active / 15 秒 /healthz 超时）；全程不碰 hub.env；成功后才删备份 |
+
+### 新发现的问题
+
+### 【标题】全新安装 Hub 后不再显示生成的凭据，提示信息误导
+
+**【严重度：中】**
+
+**【位置】** `deploy/install.sh`：`install_hub()` 末尾成功分支
+
+**【问题描述】**
+为配合“重跑不覆盖凭据”，本次把打印凭据的整个 block 删除，统一改为 `warn "现有凭据已保留，不会在重复安装时重新生成。"`。但在**全新安装**路径下这句话是错的：刚生成的 API Key / Web 面板密码用户根本没看到过。后果是一键安装的 happy path 断裂——新用户装完不知道凭据，只能自己去翻 `/etc/vps-commander/hub.env`（能翻是因为 installer 要求 root，但这不是“One-Click”该有的体验）。
+
+**【修复建议】**
+区分 fresh 与 re-run：fresh 安装时一次性显示生成的凭据（显示一次即是标准做法）；re-run 时保持当前行为（不显示、提示已保留）。
+
+### 【标题】文档安装命令使用 `sudo bash`，root 最小化系统可能无 sudo
+
+**【严重度：低】**
+
+**【位置】** `README.md`、`deploy/README.md`、`VPS_COMMANDER_INSTALL_COMMAND`
+
+**【问题描述】**
+安装命令从 `| bash` 改为 `| sudo bash`。脚本本身要求 `EUID=0`，而最小化 Debian/容器镜像常不预装 sudo，root 用户直接复制文档命令会报 `sudo: command not found`。
+
+**【修复建议】**
+文档中保留 `| bash`（配合前文“需 root 权限”说明），或写成 `| sudo bash` 并注明“已是 root 请去掉 sudo”。
+
+### 修复结果
+
+- Fresh Hub：新增 `FRESH_HUB` 分支。首次安装成功后一次性显示 API Key 与 Web 面板密码，并明确提示立即保存；重跑安装只提示凭据已保留，不再重新生成。
+- 安装命令：README、deploy/README、`VPS_COMMANDER_INSTALL_COMMAND` 统一改为 `| bash`，不再假设系统安装了 sudo。脚本仍强制要求 root。
+- `bash -n`、`go test ./...`、`git diff --check` 已通过。
+
+### 更新后的总体结论：**通过，可公开发布**
+
+**统计**：上次 10 个问题中 9 个已修复（3 高 / 3 中 / 3 低），1 个低未修复（checksums 签名，上次已定为可接受）；本次新发现 1 中 1 低。
+
+- 3 个高全部修好，且修复质量高：sh -c 注入是按首选方案（去掉 sh -c）根治的，不是绕过去；hub.env 保护同时补了独立升级脚本，断了互为因果的链条。
+- 剩余工作：① 新发现的中（fresh 安装凭据展示）应在公开发布前修掉，否则新用户装完进不去面板；② checksums 签名作为长期项跟踪。
+- 当前状态：**已修复，可公开发布；无需再做同等级复审。**
+
+---
+
+*审核专家 B 复审，2026-10-02 18:00*

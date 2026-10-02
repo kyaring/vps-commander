@@ -10,7 +10,7 @@ CONF_DIR="/etc/vps-commander"
 RELEASE_BASE_URL="https://github.com"
 API_URL="https://api.github.com"
 LATEST_INSTALL_URL="https://github.com/${REPO}/releases/latest/download/install.sh"
-INSTALL_COMMAND="curl -fsSL ${LATEST_INSTALL_URL} | sudo bash"
+INSTALL_COMMAND="curl -fsSL ${LATEST_INSTALL_URL} | bash"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info() { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -18,7 +18,7 @@ success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-[[ $EUID -ne 0 ]] && error "必须使用 root 权限运行此脚本 (例如: sudo bash install.sh)"
+[[ $EUID -ne 0 ]] && error "必须使用 root 权限运行此脚本 (例如: bash install.sh)"
 ARCH=$(uname -m)
 case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
 command -v curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl || yum install -y curl)
@@ -167,6 +167,7 @@ install_hub() {
     chmod +x "$INSTALL_DIR/vps-commander-hub"
 
     echo -e "\n--- 配置 Hub 参数 ---"
+    FRESH_HUB=0
     if [ -f "${CONF_DIR}/hub.env" ]; then
         info "检测到已有 Hub 配置，将保留现有 API Key / Web 密码，不覆盖凭据。"
         if grep -q '^VPS_COMMANDER_API_KEY=' "${CONF_DIR}/hub.env" && grep -q '^VPS_COMMANDER_WEB_PASSWORD=' "${CONF_DIR}/hub.env"; then
@@ -193,6 +194,7 @@ VPS_COMMANDER_WEB_PASSWORD=${WEB_PASS}
 VPS_COMMANDER_INSTALL_COMMAND="${INSTALL_COMMAND}"
 ENV
         chmod 0600 "${CONF_DIR}/hub.env"
+        FRESH_HUB=1
     fi
 
     validate_port "$HUB_PORT" || error "监听端口必须为 1-65535 的数字: ${HUB_PORT}"
@@ -234,7 +236,15 @@ SVC
     if systemctl is-active --quiet vps-commander-hub; then
         success "VPS-Commander Hub 安装并启动成功！"
         info "监听地址: 127.0.0.1:${HUB_PORT}"
-        warn "现有凭据已保留，不会在重复安装时重新生成。"
+        if [ "$FRESH_HUB" -eq 1 ]; then
+            echo -e "\n================== Hub 初始凭据 =================="
+            echo -e "API Key: ${API_KEY}"
+            echo -e "Web 面板密码: ${WEB_PASS}"
+            echo -e "==================================================\n"
+            warn "以上凭据仅在全新安装时显示一次，请立即保存。后续重跑安装不会重新生成或再次显示旧凭据。"
+        else
+            info "检测到已有 Hub 配置，现有凭据已保留，不会重新生成。"
+        fi
     else
         warn "服务已启动但状态可能异常，请检查 journalctl -u vps-commander-hub -n 20。"
     fi
