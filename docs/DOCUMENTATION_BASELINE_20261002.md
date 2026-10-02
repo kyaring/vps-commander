@@ -1,123 +1,128 @@
-# VPS-Commander 文档基线与现状索引
+# VPS-Commander 全仓库文档基线与索引
 
-> 基线日期：2026-10-02
-> 本文件是仓库文档的导航入口。历史审核记录保留原貌，不作为当前实现契约。
+本文档作为 2026-10-02 之后的文档总入口，用于区分当前设计、历史记录与下一版本研发计划。
 
-## 当前定位
+---
 
-VPS-Commander 是自托管的多节点 Linux 运维控制中枢。
-链路：AI/客户端 → Hub → Local Executor 或 Agent WebSocket → 目标主机。
+## 一、当前项目定位
 
-当前目标：
-- 多节点统一身份、路由与状态管理；
-- 文件、进程、Shell、MCP 运维能力；
-- 认证、三级风险授权与审计；
-- 可回滚、可持续升级的生产部署；
-- 面向 AI Agent 的 MCP 与 HTTP 接口。
+VPS-Commander 是自托管、多节点、AI Agent 友好的 Linux 运维控制中枢。
 
-## 当前架构
+核心链路：
+`AI / MCP / Web Panel → Hub → Local Executor 或 Agent WSS → Target Host`。
 
-```text
-AI / MCP / Web
-      |
- HTTPS/WSS
-      |
-Reverse Proxy
-      |
-Hub 127.0.0.1:9521
-   |          |
-Local      Agent WSS
-Executor      |
-              +-- N3450
-              +-- hwhk
-              +-- hwsg
-              +-- m4-live-agent
-              +-- qnvn
-      |
-SQLite: state / policy / audit
-```
+---
 
-Hub 不直接公网监听；Agent 只主动回连 Hub。
+## 二、当前架构基线
 
-## 当前安全模型
+### 2.1 Hub
+- HTTP API。
+- MCP。
+- Web Panel。
+- Agent Router。
+- Security Snapshot。
+- Tool Registry。
+- Session。
+- SQLite。
+- Audit / Webhook。
 
-- HTTP/MCP：Bearer API Key；
-- Agent：per-device credential；
-- Policy Snapshot：设备级有效策略；
-- Tool Registry：Low / Medium / High；
-- MCP、HTTP、direct Agent MCP 统一授权；
-- SQLite 审计；
-- 生产 Shared Secret fallback 已关闭。
+### 2.2 Agent
+- 主动 WSS 回连。
+- per-device Credential。
+- Protocol / AgentVersion / Capabilities。
+- Host-level File / Shell / Process 执行。
 
-## 当前 MCP
+### 2.3 双通道
+- 控制通道：HTTP / MCP → Hub → Executor。
+- 节点通道：Agent → WSS → Hub。
+
+---
+
+## 三、当前 MCP 基线
 
 11 个工具：
-list_devices、exec_command、read_file、read_multiple_files、
-create_directory、move_file、list_processes、edit_block、
-write_file、list_agent_mcp、call_agent_mcp。
+`list_devices`、`exec_command`、`read_file`、`read_multiple_files`、`create_directory`、`move_file`、`list_processes`、`edit_block`、`write_file`、`list_agent_mcp`、`call_agent_mcp`。
 
-当前 HTTP MCP 是 legacy HTTP+SSE；本地是 stdio。
-Streamable HTTP 是后续演进方向。
+远程：legacy SSE。
+本地：stdio。
+下一阶段：Streamable HTTP。
 
-## 当前 HTTP
+---
 
-主要接口：
-/api/v1/devices
-/api/v1/exec
-/api/v1/file/read
-/api/v1/file/list
-/api/v1/file/info
-/api/v1/file/search
-/api/v1/process/session
-/api/v1/file/write
-/api/v1/devices/file/edit_block
-/api/v1/mcp/*
-/api/v1/security/*
-/api/v1/notifications/webhook*
-/agent/ws
-/healthz
-/openapi.json
-/panel/*
+## 四、当前安全基线
 
-## 文档分层
+- HTTP/MCP：Bearer API Key。
+- Agent：per-device Credential。
+- SQLite：Credential Hash。
+- Low / Medium / High Tool Risk。
+- Policy Snapshot。
+- Shared Secret fallback：生产关闭。
+- MCP 与 HTTP：统一授权门禁。
+- Panel Admin Token：服务端 bridge。
 
-当前规范：
-- README.md
-- docs/ARCHITECTURE.md
-- docs/DEV_SPEC.md
-- docs/MCP_INTEGRATION.md
-- deploy/README.md
-- docs/ACCEPTANCE_CRITERIA.md
-- docs/PROGRESS_TRACKING.md
-- docs/VPS_COMMANDER_V2_1_SECURITY_HARDENING_SPEC.md
+---
 
-审计/整改输入：
-- docs/BUGHUNT_20261002.md
-- docs/DC_REFACTORING_AND_SECURITY_SPEC.md
-- docs/DC_REFACTORING_SECURITY_REVIEW_HANDOFF_20261002.md
-- docs/REVIEW_B_TO_A_HANDOFF_20261002.md
+## 五、文档分层
 
-历史记录：
-- REVIEW_A_CODE_AUDIT_20261002.md
-- REVIEW_B_CODE_AUDIT_20261002.md
-- INCIDENT_TIMEOUT-20260930.md
-- M4_FINAL_ACCEPTANCE_REPORT.md
-- DC_PHASE1_IMPLEMENTATION.md
+### 5.1 当前规范
+- `README.md`：项目入口与能力总览。
+- `docs/ARCHITECTURE.md`：架构与设计。
+- `docs/DEV_SPEC.md`：研发与协议。
+- `docs/MCP_INTEGRATION.md`：MCP 接入。
+- `deploy/README.md`：生产部署。
+- `docs/ACCEPTANCE_CRITERIA.md`：验收门禁。
+- `docs/PROGRESS_TRACKING.md`：当前进度。
+- `docs/VPS_COMMANDER_V2_1_SECURITY_HARDENING_SPEC.md`：v2.1 安全加固。
 
-历史报告解释演进原因，不覆盖当前规范。
+### 5.2 审计 / 整改材料
+- `docs/BUGHUNT_20261002.md`。
+- `docs/DC_REFACTORING_AND_SECURITY_SPEC.md`。
+- `docs/DC_REFACTORING_SECURITY_REVIEW_HANDOFF_20261002.md`。
+- `docs/REVIEW_B_TO_A_HANDOFF_20261002.md`。
 
-## 生产状态
+### 5.3 历史记录
+- `REVIEW_A_CODE_AUDIT_20261002.md`。
+- `REVIEW_B_CODE_AUDIT_20261002.md`。
+- `INCIDENT_TIMEOUT-20260930.md`。
+- `M4_FINAL_ACCEPTANCE_REPORT.md`。
+- `DC_PHASE1_IMPLEMENTATION.md`。
 
-2026-10-02 审计确认 6 个设备在线：
-wjyhk、N3450、hwhk、hwsg、m4-live-agent、qnvn。
+历史文件用于记录演进过程，不覆盖当前规范。
 
-同时发现生产二进制存在 vcs.modified=true 的构建漂移。
-因此必须区分“源码当前状态”和“生产现场状态”。
-下一次发布必须 clean build、校验 revision/modified，再滚动部署。
+---
 
-## v2.1
+## 六、当前生产基线
 
-P0：EffectiveRisk fail-closed；Agent Token 脱离 argv/cmdline。
-P1：Principal/Operator 身份、Session 强隔离、完整身份审计链。
-这些属于下一版本，不伪装成 v2.0 已完成能劘，不伪装成 v2.0 已完成能力。
+当前生产集群包括：
+- `wjyhk`
+- `N3450`
+- `hwhk`
+- `hwsg`
+- `m4-live-agent`
+- `qnvn`
 
+Hub：`/opt/vps-commander/vps-commander-hub`。
+Database：`/opt/vps-commander/data/commander.db`。
+Listen：`127.0.0.1:9521`。
+
+2026-10-02 审计发现生产二进制曾 `vcs.modified=true`，因此下一次发布必须 clean rebuild 后重新对齐生产现场。
+
+---
+
+## 七、v2.1 基线
+
+### P0
+- EffectiveRisk 完全 fail-closed。
+- Agent Credential 脱离 argv / cmdline。
+
+### P1
+- Principal / Operator Identity。
+- Session Owner 强隔离。
+- principal → credential → session → device → operation 审计链。
+
+---
+
+## 八、文档维护规则
+
+新增能力必须同时检查 README、架构、开发规范、MCP、部署、验收、进度以及 OpenAPI Contract。
+历史报告只追加新的后续报告，不覆盖原始证据。

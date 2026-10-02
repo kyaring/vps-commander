@@ -1,47 +1,133 @@
-# VPS-Commander 当前进度与路线图
+# VPS-Commander 项目进度与路线图
 
-> 更新时间：2026-10-02
+本文档记录当前版本真实进度。历史审计文件继续保留原始证据，不直接作为当前状态判断依据。
 
-## 1. 已完成
-- Hub/Agent 双通道
-- 多节点状态持久化
-- per-device credential
-- Security Snapshot
-- Low/Medium/High gate
-- MCP 安全门禁
-- edit_block 原子安全
-- Session 资源限制
-- Web Panel
-- Webhook
-- MCP 11 tools
+---
 
-## 2. 当前 MCP
-11 个：list_devices、exec_command、read_file、read_multiple_files、create_directory、move_file、list_processes、edit_block、write_file、list_agent_mcp、call_agent_mcp。
-早期文档中的“4 个 MCP 工具”已废止。
+## 一、当前总体状态
 
-## 3. v2.0 当前定位
-Hub、Agent WSS、per-device credential、Policy Snapshot、Tool Registry、MCP/HTTP unified gate、SQLite audit、Panel、Session limits 已形成完整架构。
+| 模块 | 状态 |
+| :--- | :--- |
+| Hub / Agent 双通道 | ✅ 已完成 |
+| 多节点持久化 | ✅ 已完成 |
+| Per-device Credential | ✅ 已完成 |
+| Security Snapshot | ✅ 已完成 |
+| Low / Medium / High Gate | ✅ 已完成 |
+| MCP 安全门禁 | ✅ 已完成 |
+| edit_block 原子安全 | ✅ 已完成 |
+| Session 资源限制 | ✅ 已完成 |
+| Web Panel | ✅ 已完成 |
+| Webhook | ✅ 已完成 |
+| MCP 11 Tools | ✅ 已完成源码实现 |
+| Clean Production Rebuild | 🟡 下一次发布收口 |
+| EffectiveRisk 完全 Fail-closed | 🔵 v2.1 |
+| Agent Token 脱离 argv | 🔵 v2.1 |
+| Principal 强隔离 | 🔵 v2.1 |
 
-## 4. 当前发布问题
-2026-10-02 Bug Hunt：
-1. 生产 binary 曾由 dirty tree 构建；
-2. 造成生产 Agent 与 HEAD 能力漂移；
-3. process/session snake_case 请求字段存在兼容问题；
-4. Hub 本地 process/session 缺少 local fallback。
-在源码、测试、生产现场同时确认前，不把这些项目标记为已修复。
+---
 
-## 5. v2.1 P0
-EffectiveRisk：canonical device identity；unknown/offline/bad credential → risk 0；GlobalRisk 仅用于已认证设备；unknown 不得继承 High。
-Agent credential：EnvironmentFile/LoadCredential；ExecStart 不出现 secret；ps/cmdline 不可读 token；支持 rotation + rollback。
+## 二、MCP 当前能力
 
-## 6. v2.1 P1
-Principal：principal_id、principal_type、credential_id、device_id。
-Session owner 绑定 Principal；takeover 必须显式授权并审计。
-形成 principal → credential → session → device → operation 链。
+当前共 11 个 Tools：
+1. `list_devices`
+2. `exec_command`
+3. `read_file`
+4. `read_multiple_files`
+5. `create_directory`
+6. `move_file`
+7. `list_processes`
+8. `edit_block`
+9. `write_file`
+10. `list_agent_mcp`
+11. `call_agent_mcp`
 
-## 7. 发布顺序
-backup → clean build → single-node gray → Hub recovery → rolling Agent → MCP smoke → security matrix → audit → acceptance。
+早期“4 个 MCP Tools”的文档已经废止。
 
-## 8. 文档同步规则
-功能变化同时检查 README、ARCHITECTURE、DEV_SPEC、MCP_INTEGRATION、deploy/README、ACCEPTANCE_CRITERIA、PROGRESS_TRACKING、openapi.json。
-历史审核报告保留原貌，不回写当前结论。
+---
+
+## 三、v2.0 当前收口
+
+当前架构已经形成：
+- Hub 中央控制。
+- Agent WSS 回连。
+- Per-device Credential。
+- Policy Snapshot。
+- Tool Registry。
+- MCP / HTTP Unified Gate。
+- SQLite Audit。
+- Session Resource Limits。
+- Web Management Panel。
+
+---
+
+## 四、2026-10-02 审计发现
+
+### 4.1 生产构建漂移
+生产 Hub / Agent 曾以 `vcs.modified=true` 构建。
+这会破坏源码 → revision → binary 的可追溯链。
+
+### 4.2 代码兼容问题
+- process/session API 存在 snake_case 请求字段兼容问题。
+- Hub 本地 process/session 路径缺少 local fallback。
+
+在源码、测试和生产现场全部验证之前，上述项目不标记为“已修复”。
+
+---
+
+## 五、v2.1 路线
+
+### 5.1 P0-1：EffectiveRisk
+- Canonical Device Identity。
+- unknown / offline / bad credential → risk 0。
+- GlobalRisk 只作为已认证设备的业务默认。
+- Unknown 不得继承 High。
+
+### 5.2 P0-2：Agent Credential
+- EnvironmentFile / LoadCredential。
+- ExecStart 不出现 secret。
+- `/proc/*/cmdline` 不可读取 token。
+- 支持 rotation + rollback。
+
+### 5.3 P1：Principal
+- `principal_id`。
+- `principal_type`。
+- `credential_id`。
+- `device_id`。
+- Session Owner 绑定 Principal。
+- takeover 必须显式授权并审计。
+
+---
+
+## 六、标准发布顺序
+
+```text
+Backup
+  ↓
+Clean Build
+  ↓
+Single-node Gray Release
+  ↓
+Hub Restart Recovery
+  ↓
+Rolling Agent
+  ↓
+MCP / Security / Audit
+  ↓
+Full Acceptance
+```
+
+---
+
+## 七、文档同步规则
+
+任何新功能或安全变更必须同步检查：
+- README
+- ARCHITECTURE
+- DEV_SPEC
+- MCP_INTEGRATION
+- deploy/README
+- ACCEPTANCE_CRITERIA
+- PROGRESS_TRACKING
+- openapi.json（如影响 HTTP Contract）
+
+历史审核报告保持原貌，不回写成当前状态。

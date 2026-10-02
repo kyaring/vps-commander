@@ -1,52 +1,191 @@
-# VPS-Commander MCP 接入与能力
+# VPS-Commander MCP（Model Context Protocol）接入指南
 
-## 1. 当前状态
-MCP JSON-RPC 2.0；serverInfo 1.2.0；initialize protocolVersion 2024-11-05。
-远程 HTTP 当前是 legacy HTTP+SSE；本地是 stdio。Streamable HTTP 是后续演进方向。
+本文介绍 VPS-Commander 当前 MCP 能力、客户端接入方式、工具权限以及后续 transport 演进方向。
 
-## 2. 11 个工具
-| Tool | Risk | 作用 |
-|---|---|---|
-| list_devices | Low | 设备列表 |
-| exec_command | High | Shell |
-| read_file | Low | 文件读取 |
-| read_multiple_files | Low | 批量读取 |
-| create_directory | Medium | 创建目录 |
-| move_file | Medium | 移动/重命名 |
-| list_processes | Low | 进程观察 |
-| edit_block | Medium | 原子文本修改 |
-| write_file | Medium | 文件写入 |
-| list_agent_mcp | Low | Agent MCP 列表 |
-| call_agent_mcp | Medium | 调度 Agent MCP |
+---
 
-## 3. 远程接入
-GET /mcp/sse → sessionId → POST /mcp/message?sessionId=<id>。
-请求头：Authorization: Bearer <API_KEY>。
-HTTP+SSE 仅作为兼容层，不作为未来新能力的主要 transport。
+## 一、MCP 总体能力
 
-## 4. stdio
-启动 vps-commander-mcp-stdio，参数 -hub <Hub URL> -key <API_KEY>。
-API Key 不提交到仓库。
+VPS-Commander 当前提供两种 MCP 接入模式：
 
-## 5. 参数
-exec_command：device、command、workdir、timeout。
-read_file：device、path、offset、limit；默认 256 KiB，最大 1 MiB。
-read_multiple_files：device、paths、limit；paths 最多 32 个。
-create_directory：device、path。
-move_file：device、source、destination。
-list_processes：device。
-edit_block：device、path、old_text、new_text；old_text 必须唯一匹配。
-write_file：device、path、content。
-list_agent_mcp：device。
-call_agent_mcp：device、server、tool、arguments。
+- **远程 HTTP SSE 模式**：适用于远程 MCP Client。
+- **本地 stdio 模式**：适用于 Claude Desktop、Cursor、VS Code 等本地客户端。
 
-## 6. 安全链路
-MCP Client → Bearer auth → JSON-RPC → tool mapping → authenticated device → Policy Snapshot → Tool Registry → allow/deny → Local/Agent → audit。
-未知设备不得因为 GlobalRisk 而获得 High。
+当前 MCP Server：
+- JSON-RPC 2.0。
+- server version：`1.2.0`。
+- initialize protocolVersion：`2024-11-05`。
 
-## 7. Agent MCP
-Hub 发现远程 Agent MCP service；客户端不直连 Agent。
-Hub 负责 device authentication、risk gate、routing、audit。
+当前远程 SSE 属于兼容 transport；后续新能力优先考虑 Streamable HTTP。
 
-## 8. 下一步
-Streamable HTTP、SSE fallback、capability-based advertisement、Principal audit context、显式 operation/session handle。
+---
+
+## 二、当前支持的 11 大 MCP Tools
+
+| Tool 名称 | 风险等级 | 参数/功能说明 |
+| :--- | :--- | :--- |
+| `list_devices` | Low | 列出设备、状态及资源画像 |
+| `exec_command` | High | 指定节点执行 Shell |
+| `read_file` | Low | 分页读取文件 |
+| `read_multiple_files` | Low | 批量读取多个文件 |
+| `create_directory` | Medium | 创建目录 |
+| `move_file` | Medium | 移动/重命名文件 |
+| `list_processes` | Low | 查看进程 |
+| `edit_block` | Medium | 唯一匹配 + 原子写回 |
+| `write_file` | Medium | 创建或覆写文件 |
+| `list_agent_mcp` | Low | 查询 Agent MCP 服务 |
+| `call_agent_mcp` | Medium | 调用 Agent MCP 工具 |
+
+风险等级不是客户端提示，而是 Hub 强制执行的授权门禁。
+
+---
+
+## 三、统一安全链路
+
+```text
+MCP Client
+    │
+    ▼
+Bearer Authentication
+    │
+    ▼
+MCP JSON-RPC
+    │
+    ▼
+Tool / Action Mapping
+    │
+    ▼
+Authenticated Device Identity
+    │
+    ▼
+Security Snapshot + Tool Risk
+    │
+    ├── DENY
+    │
+    ▼
+Local Executor / Agent WSS
+    │
+    ▼
+Audit
+```
+
+`call_agent_mcp` 同样必须进入 MCP risk gate，不能因为目标是 Agent MCP 就绕过 Hub 授权。
+
+---
+
+## 四、远程 SSE 模式
+
+### 4.1 SSE 建立
+
+```text
+GET https://your-domain.example/mcp/sse
+Authorization: Bearer <YOUR_API_KEY>
+```
+
+服务器建立 MCP Session 后提供消息端点：
+
+```text
+POST /mcp/message?sessionId=<sessionId>
+Authorization: Bearer <YOUR_API_KEY>
+```
+
+### 4.2 注意事项
+- URL 中禁止放 Token。
+- `?token=`、`?key=`、`?api_key=` 不作为认证方式。
+- SSE 当前作为 legacy compatibility transport。
+
+---
+
+## 五、本地 stdio 模式
+
+适用于 Claude Desktop、Cursor、VS Code 等本地客户端。
+
+```json
+{
+  "mcpServers": {
+    "vps-commander": {
+      "command": "/opt/vps-commander/vps-commander-mcp-stdio",
+      "args": [
+        "-hub", "https://your-domain.example",
+        "-key", "YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+API Key 不应提交到 Git 仓库。
+
+---
+
+## 六、主要工具参数
+
+### 6.1 exec_command
+- `device`：目标节点，可选。
+- `command`：必填。
+- `workdir`：可选。
+- `timeout`：默认 30 秒，最大 300 秒。
+
+### 6.2 read_file
+- `device`、`path` 必填。
+- `offset` 可选。
+- `limit` 默认 256 KiB，最大 1 MiB。
+
+### 6.3 read_multiple_files
+- `device` 可选。
+- `paths` 必填数组。
+- 当前 Hub 最多接受 32 个路径。
+
+### 6.4 create_directory
+- `device`、`path`。
+
+### 6.5 move_file
+- `device`、`source`、`destination`。
+
+### 6.6 list_processes
+- `device` 可选。
+
+### 6.7 edit_block
+- `device`、`path`、`old_text`、`new_text`。
+- `old_text` 必须唯一匹配。
+- 使用 generation check + atomic write。
+
+### 6.8 write_file
+- `device`、`path`、`content`。
+
+### 6.9 list_agent_mcp
+- `device` 必填。
+
+### 6.10 call_agent_mcp
+- `device`、`server`、`tool` 必填。
+- `arguments` 可选 JSON 对象。
+
+---
+
+## 七、Agent MCP
+
+Hub 可以发现远程 Agent 暴露的 MCP Service。
+
+```text
+MCP Client
+   ↓
+Hub Authentication
+   ↓
+Security Gate
+   ↓
+Authenticated Agent
+   ↓
+Agent MCP Service
+```
+
+客户端不直接连接 Agent MCP。
+
+---
+
+## 八、后续演进
+
+1. Streamable HTTP。
+2. 保留 SSE fallback。
+3. Capability-based Tool Advertisement。
+4. Principal Identity 纳入 MCP Audit Context。
+5. 长任务引入显式 Operation / Session Handle。

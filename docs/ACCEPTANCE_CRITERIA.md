@@ -1,58 +1,131 @@
-# VPS-Commander 当前发布门禁
+# VPS-Commander 阶段验收标准与发布门禁用例矩阵
 
-## 1. Build
-- clean Git tree
-- vcs.modified=false
-- vcs.revision == release commit
-- AMD64/ARM64 build 成功
+本文档定义当前 v2.0 生产架构的发布门禁，并为 v2.1 安全加固预留验收项。
 
-## 2. Cluster
-- Hub 127.0.0.1:9521
-- 5 个远程 Agent online
-- Hub restart 后自动恢复
-- unknown device fail-closed
+---
 
-## 3. Auth
-- Bearer auth
-- URL token rejected
-- per-device credential
-- Shared Secret fallback disabled
-- Panel Admin Token 不进浏览器
+## 一、构建与版本一致性
 
-## 4. Authorization
-- Tool Registry 固定
-- Low/Medium/High 一致
-- MCP 与 HTTP 共用 gate
-- call_agent_mcp 无旁路
-- policy version 不回退
+### 1.1 基础测试
+```bash
+go test ./...
+go test -race ./...
+git diff --check
+```
 
-## 5. File
-- edit_block 唯一匹配
-- atomic write
-- generation check
-- failure 不损坏原文件
+### 1.2 生产构建
+- Git 工作树必须 clean。
+- `vcs.modified=false`。
+- `vcs.revision` 必须等于 release commit。
+- AMD64 / ARM64 编译成功。
 
-## 6. Session
-- hard TTL
-- idle TTL
-- ring buffer cap
-- manager concurrency safe
-- kill 只操作 Session 内部 process handle
+---
 
-## 7. MCP
-11 tools 与源码一致：list_devices、exec_command、read_file、read_multiple_files、create_directory、move_file、list_processes、edit_block、write_file、list_agent_mcp、call_agent_mcp。
-必须验证：Medium 可拦截写工具；Medium 可拦截 High 工具；Agent MCP 有 gate；stdio 正常；SSE 正常。
+## 二、Hub / Agent 集群验收
 
-## 8. API regression
-devices、exec、file read/list/info/search/write、edit_block、process/session、MCP、security、webhook、panel、agent WS。
+| 项目 | 验收标准 |
+| :--- | :--- |
+| Hub | 监听 `127.0.0.1:9521` |
+| Agent | 5 个远程节点可正常回连 |
+| Restart | Hub 重启后 Agent 自动恢复 |
+| Identity | Credential 与设备身份一致 |
+| Unknown | 未知设备必须 fail-closed |
 
-## 9. Test
-go test ./...；go test -race ./...；git diff --check。
-并在 clean build 后重新执行核心 smoke。
+---
 
-## 10. Stop conditions
-Agent 断联、认证绕过、unknown device 获得 High、MCP 旁路、token 进入 argv、审计丢失、dirty binary、policy version 回退、Session 无限制增长，任一发生即停止发布。
+## 三、认证与授权验收
 
-## 11. v2.1
-P0：EffectiveRisk fail-closed；Agent credential 不进 argv。
-P1：Principal、Session owner 强隔离、身份链审计。
+- Bearer API Key 正常。
+- URL token (`?token` / `?key` / `?api_key`) 必须拒绝。
+- 每设备 Credential 独立。
+- Shared Secret fallback 关闭。
+- Panel Admin Token 不进入浏览器。
+- Tool Registry 风险等级一致。
+- Policy version 不允许回退。
+
+---
+
+## 四、MCP 验收矩阵
+
+| Tool | Risk | 基础用例 |
+| :--- | :--- | :--- |
+| `list_devices` | Low | 返回设备列表 |
+| `exec_command` | High | `echo/true` |
+| `read_file` | Low | 读取 `/etc/hostname` |
+| `read_multiple_files` | Low | 批量读取临时文件 |
+| `create_directory` | Medium | 创建临时目录 |
+| `move_file` | Medium | 移动临时文件 |
+| `list_processes` | Low | 返回进程 |
+| `edit_block` | Medium | 唯一匹配修改 |
+| `write_file` | Medium | 写入临时文件 |
+| `list_agent_mcp` | Low | 查询 Agent MCP |
+| `call_agent_mcp` | Medium | 调用无害 Agent MCP |
+
+必须同时验证：
+- Medium 策略可以阻断 Medium 工具。
+- Medium 策略可以阻断 High 工具。
+- MCP 与 HTTP 使用同一授权逻辑。
+- `call_agent_mcp` 无旁路。
+
+---
+
+## 五、文件与 Session 验收
+
+### 5.1 edit_block
+- old_text 唯一匹配。
+- generation check。
+- atomic write。
+- fsync。
+- 失败不破坏原文件。
+
+### 5.2 Session
+- Hard TTL。
+- Idle TTL。
+- Ring Buffer 上限。
+- 总 buffer 上限。
+- 并发访问安全。
+- kill 只能作用于 Session 内部 process handle。
+
+---
+
+## 六、API Regression
+
+必须覆盖：
+- `/api/v1/devices`
+- `/api/v1/exec`
+- file read/list/info/search/write
+- edit_block
+- process/session
+- MCP services/list/call/test
+- security settings
+- webhook
+- Panel
+- Agent WebSocket
+
+---
+
+## 七、发布停止条件
+
+出现以下任一情况立即停止发布：
+- Agent 断联。
+- 未授权请求成功。
+- unknown device 获得 High。
+- MCP 存在旁路。
+- Token 出现在 argv。
+- 审计丢失。
+- dirty binary。
+- Policy version 回退。
+- Session 资源无限增长。
+
+---
+
+## 八、v2.1 验收预留
+
+### P0
+- EffectiveRisk 完全 fail-closed。
+- Agent Credential 不进入 argv / cmdline。
+
+### P1
+- Principal / Operator。
+- Session Owner 强隔离。
+- principal → credential → session → device → operation 审计链。

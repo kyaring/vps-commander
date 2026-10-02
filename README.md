@@ -1,50 +1,195 @@
+<div align="center">
+
 # VPS-Commander
 
-> 当前文档基线：2026-10-02
+**面向 AI Agent、MCP 与个人运维的高性能、轻量、多节点私有基础设施调度中枢**
 
-自托管、多节点、AI Agent 友好的 Linux 运维控制中枢。
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Architecture](https://img.shields.io/badge/Arch-Linux%20AMD64%20%7C%20ARM64-orange)](#)
 
-## 研发最初目标
-- 不依赖第三方运维 Relay，建立用户自己的私有控制面；
-- 从单机运维扩展到多 VPS 统一调度；
-- 在主机级能力之上建立认证、授权、审计、资源限制和可回滚发布体系。
+</div>
 
-当前系统已经从早期的 OpenAPI + Cluster Secret + 4 个 MCP 工具，演进为：
-Hub/Agent 双通道 + per-device credential + Policy Snapshot + Tool Registry + MCP/HTTP 统一安全门禁 + SQLite audit + Web Panel。
+---
 
-## 当前架构
-AI / MCP / Web Panel → HTTPS/WSS → Reverse Proxy → Hub 127.0.0.1:9521
-Hub → Local Executor，或 Hub → Agent WSS → Remote VPS。
-Hub 不直接公网监听；Agent 只主动回连 Hub。
+## 🌟 核心特性
 
-## 当前 MCP：11 个工具
-list_devices、exec_command、read_file、read_multiple_files、create_directory、move_file、list_processes、edit_block、write_file、list_agent_mcp、call_agent_mcp。
+- ⚡ **轻量单体部署**：纯 Go 原生编译，Hub、Agent、MCP stdio 均可独立部署。
+- 🤖 **原生 AI / MCP 接入**：提供 HTTP API、MCP SSE、stdio 以及 Agent WebSocket，多种客户端可以共用同一套安全模型。
+- 🌐 **Hub & Agent 双通道架构**：Hub 负责控制与授权，Agent 通过 WSS 主动回连，不要求远端开放入站管理端口。
+- 🛡️ **认证与授权分离**：HTTP/MCP 使用 Bearer API Key；Agent 使用每设备独立 Credential；Tool Registry + Security Snapshot 实现 Low / Medium / High 风险门禁。
+- 📋 **完整审计链**：SQLite 持久化设备、凭据哈希、策略版本、操作审计与 Webhook 配置。
+- 🧩 **多节点能力聚合**：文件、Shell、进程、Session、Agent MCP 等能力由 Hub 统一调度。
+- 🖥️ **内嵌 Web 管理面板**：Go embed 打包，无需 Node.js 运行时。
 
-风险：Low=读取/观察；Medium=文件修改/目录移动/Agent MCP；High=Shell/进程控制。
-远程 HTTP MCP 当前为 legacy HTTP+SSE；本地客户端为 stdio。Streamable HTTP 属于后续演进方向。
+---
 
-## 当前 HTTP
-/api/v1/devices、/api/v1/exec、/api/v1/file/read、/api/v1/file/list、/api/v1/file/info、/api/v1/file/search、/api/v1/process/session、/api/v1/file/write、/api/v1/devices/file/edit_block、/api/v1/mcp/*、/api/v1/security/*、/api/v1/notifications/webhook*、/agent/ws、/healthz、/openapi.json、/panel/*。
+## 🏁 研发最初目标
 
-## 安全
-HTTP/MCP 使用 Bearer API Key；Agent 使用每设备独立 credential，Hub 只保存 hash。
-生产 Shared Secret fallback 已关闭；URL token 不作为认证方式。
-MCP、HTTP、direct Agent MCP 共用 Hub security model；未知设备必须 fail-closed。
-Panel Admin Token 由服务端内部 bridge，不下发浏览器。
+VPS-Commander 最初并不是一个简单的远程 Shell 工具，而是为 AI Agent 建立一个**用户自己控制的私有化 Linux 运维控制面**。
 
-## 部署
-Hub：/opt/vps-commander/vps-commander-hub，监听 127.0.0.1:9521，数据库 /opt/vps-commander/data/commander.db。
-Agent：/opt/vps-commander/vps-commander-agent，配置 /etc/vps-commander/agent.env，通过 WSS 回连 Hub。
+### 1.1 私有化
+- 运维请求通过用户自己的 Hub 和 VPS 节点完成。
+- 不依赖第三方运维 Relay。
+- 凭据、策略和审计数据由用户自己的基础设施控制。
 
-发布必须：clean tree → go test ./... → go test -race ./... → clean build → vcs.modified=false → 单节点灰度 → Hub recovery → rolling Agent → MCP/security/audit 验收。
+### 1.2 Host-centric 运维
+- 全局 Shell。
+- 全局文件读写。
+- 进程与长任务 Session。
+- 远程 Agent MCP。
 
-## 文档
-docs/DOCUMENTATION_BASELINE_20261002.md、docs/ARCHITECTURE.md、docs/DEV_SPEC.md、docs/MCP_INTEGRATION.md、deploy/README.md、docs/ACCEPTANCE_CRITERIA.md、docs/PROGRESS_TRACKING.md、docs/VPS_COMMANDER_V2_1_SECURITY_HARDENING_SPEC.md。
+### 1.3 多节点统一调度
+- 一个 Hub 管理多个 VPS。
+- 使用节点名称选择目标。
+- 节点离线后保留设备身份与持久化状态。
 
-## 当前生产注意
-2026-10-02 Bug Hunt 发现生产二进制曾以 vcs.modified=true 构建，因此生产现场不能直接视为 HEAD 的可复现产物。
-下一次发布必须 clean rebuild，并把 revision/modified 作为发布证据。
+### 1.4 AI 原生接口
+- HTTP API。
+- MCP。
+- OpenAPI 契约。
+- Web 管理面板。
 
-## v2.1
-P0：EffectiveRisk 完全 fail-closed；Agent credential 不进入 argv/cmdline。
-P1：Principal/Operator 身份、Session owner 强隔离、principal→credential→session→device→operation 审计链。
+---
+
+## 🏗️ 当前总体架构
+
+```text
+                  +--------------------------------------+
+                  |      AI / MCP Client / Web Panel    |
+                  +------------------+-------------------+
+                                     | HTTPS / MCP / WSS
+                                     v
+                  +--------------------------------------+
+                  |       Reverse Proxy / TLS            |
+                  +------------------+-------------------+
+                                     | 127.0.0.1:9521
+                                     v
+        +-----------------------------------------------------------+
+        |                    VPS-Commander Hub                     |
+        |-----------------------------------------------------------|
+        | Auth / API / MCP / Web Panel                             |
+        | Security Snapshot / Tool Registry / Audit                |
+        | Cluster Router / Session / Rate Limiter                  |
+        +----------------------+-------------------+---------------+
+                               |                   |
+                         Local Executor       Agent WSS
+                               |                   |
+                               v                   v
+                         Hub 本机             Remote VPS
+                                                   |
+                                            Host Executor
+                                            File / Shell / Process
+```
+
+---
+
+## 🔐 当前安全模型
+
+### 1. Client Authentication
+`Authorization: Bearer <API_KEY>` 是 HTTP / MCP 的主要客户端认证方式。
+
+### 2. Agent Authentication
+每个 Agent 使用独立的 `VPS_COMMANDER_AGENT_TOKEN`。
+Hub SQLite 只保存 Credential Hash，不保存明文 Token。
+
+### 3. Authorization
+Tool Registry 首先确定操作风险：
+
+| 风险 | 典型能力 |
+| :--- | :--- |
+| Low | 读取、搜索、设备/进程观察 |
+| Medium | 文件修改、目录创建/移动、Agent MCP |
+| High | Shell、进程启动、交互、终止 |
+
+未知设备、未知身份或策略无法解析时不得获得 High 权限。
+
+### 4. Shared Secret
+生产环境已经关闭 Cluster Secret / Shared Secret fallback。
+
+---
+
+## 🤖 当前 MCP 能力
+
+目前共 **11 个 MCP Tools**：
+
+| Tool | Risk | 功能 |
+| :--- | :--- | :--- |
+| `list_devices` | Low | 节点列表与状态 |
+| `exec_command` | High | Shell 执行 |
+| `read_file` | Low | 分页读取文件 |
+| `read_multiple_files` | Low | 批量读取文件 |
+| `create_directory` | Medium | 创建目录 |
+| `move_file` | Medium | 移动/重命名 |
+| `list_processes` | Low | 进程观察 |
+| `edit_block` | Medium | 原子文本修改 |
+| `write_file` | Medium | 创建/覆写文件 |
+| `list_agent_mcp` | Low | 查看 Agent MCP |
+| `call_agent_mcp` | Medium | 调用 Agent MCP |
+
+远程 MCP 当前使用 **legacy HTTP + SSE**；本地客户端使用 stdio。
+Streamable HTTP 作为下一阶段 transport 演进方向。
+
+---
+
+## 📊 HTTP / Web 能力
+
+| 接口 | 方法 | 功能 |
+| :--- | :--- | :--- |
+| `/api/v1/devices` | GET | 设备状态与资源画像 |
+| `/api/v1/exec` | POST | 远程 Shell |
+| `/api/v1/file/read` | POST | 文件读取 |
+| `/api/v1/file/list` | POST | 目录列表 |
+| `/api/v1/file/info` | POST | 文件信息 |
+| `/api/v1/file/search` | POST | 文件搜索 |
+| `/api/v1/file/write` | POST | 文件写入 |
+| `/api/v1/devices/file/edit_block` | POST | 安全块编辑 |
+| `/api/v1/process/session` | POST | Session 操作 |
+| `/api/v1/mcp/*` | GET/POST/DELETE | MCP 服务管理与调用 |
+| `/api/v1/security/*` | GET/POST | 安全策略 |
+| `/api/v1/notifications/webhook*` | GET/POST/DELETE | Webhook |
+| `/agent/ws` | WebSocket | Agent 长连接 |
+| `/panel/*` | GET/POST | Web 管理面板 |
+
+---
+
+## 🚀 生产部署
+
+Hub：
+```text
+/opt/vps-commander/vps-commander-hub
+/etc/vps-commander/hub.env
+/opt/vps-commander/data/commander.db
+127.0.0.1:9521
+```
+
+Agent：
+```text
+/opt/vps-commander/vps-commander-agent
+/etc/vps-commander/agent.env
+wss://vpstool.kory.kdns.fr/agent/ws
+```
+
+Agent 只主动连接 Hub，不需要公网入站端口。
+
+生产发布顺序：
+`backup → clean build → 单节点灰度 → Hub restart recovery → rolling Agent → MCP/security/audit 验收`。
+
+---
+
+## 📄 文档索引
+
+- [文档基线与全局索引](docs/DOCUMENTATION_BASELINE_20261002.md)
+- [系统架构与开发设计规范](docs/ARCHITECTURE.md)
+- [研发与协议规范](docs/DEV_SPEC.md)
+- [MCP 接入指南](docs/MCP_INTEGRATION.md)
+- [生产部署与运维指南](deploy/README.md)
+- [发布验收标准](docs/ACCEPTANCE_CRITERIA.md)
+- [项目进度与路线图](docs/PROGRESS_TRACKING.md)
+- [v2.1 安全加固规范](docs/VPS_COMMANDER_V2_1_SECURITY_HARDENING_SPEC.md)
+
+---
+
+## 📜 开源协议
+
+本项目基于 [MIT](LICENSE) 协议开源。
