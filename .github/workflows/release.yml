@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
 
@@ -20,49 +18,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine Version Tag & Generate Notes
+      - name: Prepare Release Notes
         id: versioning
         run: |
-          PREV_TAG=$(git tag -l "v*" --sort=-v:refname | head -n1)
-          echo "Previous tag: $PREV_TAG"
-
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            if [ -z "$PREV_TAG" ]; then
-              TAG="v1.0.0"
+          TAG="${GITHUB_REF#refs/tags/}"
+          git fetch --tags --force
+          PREV_TAG=$(git tag -l "v*" --sort=-v:refname | grep -Fxv "$TAG" | head -n1 || true)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 🚀 What's Changed in ${TAG}"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h by @kyaring)"
             else
-              VER_NUM="${PREV_TAG#v}"
-              IFS='.' read -r MAJOR MINOR PATCH <<< "$VER_NUM"
-              PATCH=$((PATCH + 1))
-              TAG="v${MAJOR}.${MINOR}.${PATCH}"
+              git log -n 10 --pretty=format:"- %s (%h by @kyaring)"
             fi
-            echo "Auto incremented patch version to $TAG"
-            
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-
-          # 生成详细的 Release Changelog 正文
-          cat << NOTES > release_notes.md
-          ### 🚀 What's Changed in ${TAG}
-
-          NOTES
-
-          if [ -n "$PREV_TAG" ]; then
-            git log "${PREV_TAG}..HEAD" --pretty=format:"- %s (%h by @kyaring)" >> release_notes.md
-          else
-            git log -n 10 --pretty=format:"- %s (%h by @kyaring)" >> release_notes.md
-          fi
-
-          echo "" >> release_notes.md
-          echo "" >> release_notes.md
-          if [ -n "$PREV_TAG" ]; then
-            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> release_notes.md
-          fi
+            echo
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+            fi
+          } > release_notes.md
           cat release_notes.md
 
       - name: Set up Go
@@ -80,6 +56,9 @@ jobs:
           # Linux ARM64
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-hub-linux-arm64 ./cmd/hub
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-arm64 ./cmd/agent
+
+          # MCP stdio（与 Gitea 本地发布保持一致）
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-mcp-stdio-linux-amd64 ./cmd/mcp-stdio
 
           # Checksums
           cd dist
