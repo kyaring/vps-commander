@@ -52,7 +52,7 @@ chmod 0600 /etc/vps-commander/agent.env
 ### 3.1 一键安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | sudo bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/install.sh | sudo bash
 ```
 
 脚本自动识别 `amd64/arm64`，并进入 Hub / Agent 安装流程。
@@ -64,7 +64,15 @@ curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/i
 ### 3.2 一键升级 Agent
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/upgrade-agent.sh | sudo bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-agent.sh | sudo bash
+```
+
+### 3.3 一键升级 Hub
+
+Hub 升级不会修改 `hub.env`：
+
+```bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-hub.sh | sudo bash
 ```
 
 升级流程：

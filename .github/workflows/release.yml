@@ -49,18 +49,17 @@ jobs:
       - name: Build Hub & Agent
         run: |
           mkdir -p dist
-          # Linux AMD64
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-hub-linux-amd64 ./cmd/hub
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-amd64 ./cmd/agent
-          
-          # Linux ARM64
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-hub-linux-arm64 ./cmd/hub
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-arm64 ./cmd/agent
-
-          # MCP stdio（与 Gitea 本地发布保持一致）
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-mcp-stdio-linux-amd64 ./cmd/mcp-stdio
 
-          # Checksums
+          # Installer / upgrade scripts are part of the immutable release.
+          install -m 0755 deploy/install.sh dist/install.sh
+          install -m 0755 deploy/upgrade-agent.sh dist/upgrade-agent.sh
+          install -m 0755 deploy/upgrade-hub.sh dist/upgrade-hub.sh
+
           cd dist
           sha256sum * > checksums.txt
           cd ..
