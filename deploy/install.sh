@@ -7,8 +7,10 @@ set -e
 REPO="kyaring/vps-commander"
 INSTALL_DIR="/opt/vps-commander"
 CONF_DIR="/etc/vps-commander"
-GITHUB_URL="https://github.com"
+RELEASE_BASE_URL="https://github.com"
 API_URL="https://api.github.com"
+RAW_INSTALL_URL="https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh"
+INSTALL_COMMAND="curl -fsSL ${RAW_INSTALL_URL} | bash"
 
 # 颜色输出
 RED='\033[0;31m'
@@ -60,7 +62,7 @@ download_verified() {
         error "下载结果为空: ${asset_name}"
     fi
     if command -v sha256sum >/dev/null 2>&1; then
-        checksum=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 60 "${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/checksums.txt") || error "无法获取 Release 校验文件"
+        checksum=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 60 "${RELEASE_BASE_URL}/${REPO}/releases/download/${LATEST_TAG}/checksums.txt") || error "无法获取 Release 校验文件"
         expected=$(printf '%s\n' "$checksum" | awk -v f="$asset_name" '$2 == f {print $1; exit}')
         [ -n "$expected" ] || error "Release 校验文件中缺少 ${asset_name}"
         actual=$(sha256sum "$tmp" | awk '{print $1}')
@@ -85,7 +87,7 @@ read_tty() {
         fi
         printf -v "$__var" '%s' "$value"
     else
-        error "检测不到可用 TTY。当前命令可能通过管道运行；请使用带终端的 shell 执行，例如: curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/install.sh | bash"
+        error "检测不到可用 TTY。当前命令可能通过管道运行；请使用带终端的 shell 执行，例如: curl -fsSL ${RAW_INSTALL_URL} | bash"
     fi
 }
 
@@ -100,7 +102,7 @@ select_mode() {
 install_agent() {
     info "开始安装 VPS-Commander Agent (${TARGET_ARCH})..."
     BIN_NAME="vps-commander-agent-linux-${TARGET_ARCH}"
-    DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
+    DOWNLOAD_URL="${RELEASE_BASE_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
     download_verified "${DOWNLOAD_URL}" "${INSTALL_DIR}/vps-commander-agent" "${BIN_NAME}"
     chmod +x "${INSTALL_DIR}/vps-commander-agent"
@@ -164,7 +166,7 @@ SVC
 install_hub() {
     info "开始安装 VPS-Commander Hub (${TARGET_ARCH})..."
     BIN_NAME="vps-commander-hub-linux-${TARGET_ARCH}"
-    DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
+    DOWNLOAD_URL="${RELEASE_BASE_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
 
     download_verified "${DOWNLOAD_URL}" "${INSTALL_DIR}/vps-commander-hub" "${BIN_NAME}"
     chmod +x "${INSTALL_DIR}/vps-commander-hub"
@@ -185,6 +187,7 @@ install_hub() {
     cat << ENV > "${CONF_DIR}/hub.env"
 VPS_COMMANDER_API_KEY=${API_KEY}
 VPS_COMMANDER_WEB_PASSWORD=${WEB_PASS}
+VPS_COMMANDER_INSTALL_COMMAND="${INSTALL_COMMAND}"
 ENV
     chmod 0600 "${CONF_DIR}/hub.env"
 

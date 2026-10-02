@@ -39,17 +39,18 @@ const (
 )
 
 type Server struct {
-	Auth          *auth.Manager
-	Exec          executor.Local
-	Cluster       *cluster.Manager
-	Store         *storage.Store
-	LocalName     string
-	Notify        *notify.Manager
-	Policy        *security.Snapshot
-	AdminToken    string
-	ExecLimiter   chan struct{}
-	SearchLimiter chan struct{}
-	LocalSessions *executor.SessionManager
+	Auth           *auth.Manager
+	Exec           executor.Local
+	Cluster        *cluster.Manager
+	Store          *storage.Store
+	LocalName      string
+	Notify         *notify.Manager
+	Policy         *security.Snapshot
+	AdminToken     string
+	InstallCommand string
+	ExecLimiter    chan struct{}
+	SearchLimiter  chan struct{}
+	LocalSessions  *executor.SessionManager
 }
 
 const (
@@ -254,8 +255,17 @@ func (s *Server) ProvisionDeviceCredentialJSON(w http.ResponseWriter, r *http.Re
 		http.Error(w, "local control node does not use agent credential", 400)
 		return
 	}
-	if s.Cluster == nil || !s.Cluster.Online(q.Device) {
-		http.Error(w, "device offline", 409)
+	if strings.ContainsAny(q.Device, "/\\?&=#%") {
+		http.Error(w, "invalid device name", 400)
+		return
+	}
+	configured, err := s.Store.HasDeviceCredential(q.Device)
+	if err != nil {
+		http.Error(w, "credential lookup failed", 500)
+		return
+	}
+	if configured {
+		http.Error(w, "device credential already exists; revoke/rotate it before provisioning again", 409)
 		return
 	}
 	b := make([]byte, 32)
@@ -269,7 +279,7 @@ func (s *Server) ProvisionDeviceCredentialJSON(w http.ResponseWriter, r *http.Re
 		return
 	}
 	_ = s.Store.Audit(clientIP(r), q.Device, "device_credential_provision", "device="+q.Device, 0, 0, "credential provisioned")
-	jsonOut(w, map[string]any{"ok": true, "device": q.Device, "token": token})
+	jsonOut(w, map[string]any{"ok": true, "device": q.Device, "token": token, "install_command": s.InstallCommand})
 }
 
 func (s *Server) UpdateSecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {

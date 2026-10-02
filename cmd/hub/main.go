@@ -38,6 +38,7 @@ func main() {
 	clusterSecret := os.Getenv("VPS_COMMANDER_CLUSTER_SECRET")
 	webPassword := os.Getenv("VPS_COMMANDER_WEB_PASSWORD")
 	adminToken := os.Getenv("VPS_COMMANDER_ADMIN_TOKEN")
+	installCommand := os.Getenv("VPS_COMMANDER_INSTALL_COMMAND")
 	if adminToken == "" {
 		adminToken = webPassword
 	}
@@ -61,16 +62,17 @@ func main() {
 	notificationManager.Start()
 	defer notificationManager.Stop()
 	s := &api.Server{
-		Auth:          authManager,
-		Exec:          executor.Local{MaxOutput: 1024 * 1024},
-		Cluster:       cluster.NewManager(clusterSecret, store),
-		Store:         store,
-		LocalName:     local,
-		Notify:        notificationManager,
-		AdminToken:    adminToken,
-		ExecLimiter:   make(chan struct{}, 32),
-		SearchLimiter: make(chan struct{}, 8),
-		LocalSessions: executor.NewSessionManager(0),
+		Auth:           authManager,
+		Exec:           executor.Local{MaxOutput: 1024 * 1024},
+		Cluster:        cluster.NewManager(clusterSecret, store),
+		Store:          store,
+		LocalName:      local,
+		Notify:         notificationManager,
+		AdminToken:     adminToken,
+		InstallCommand: installCommand,
+		ExecLimiter:    make(chan struct{}, 32),
+		SearchLimiter:  make(chan struct{}, 8),
+		LocalSessions:  executor.NewSessionManager(0),
 	}
 	if err := s.LoadSecurityPolicySnapshot(); err != nil {
 		log.Fatalf("load security policy snapshot: %v", err)

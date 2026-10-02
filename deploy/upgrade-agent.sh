@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO="kyaring/vps-commander"
 INSTALL_DIR="/opt/vps-commander"
-GITHUB_URL="https://github.com"
+RELEASE_BASE_URL="https://github.com"
 API_URL="https://api.github.com"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -35,8 +35,8 @@ LATEST_TAG=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --conn
 info "目标升级版本: ${LATEST_TAG} (${TARGET_ARCH})"
 
 BIN_NAME="vps-commander-agent-linux-${TARGET_ARCH}"
-DOWNLOAD_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
-CHECKSUM_URL="${GITHUB_URL}/${REPO}/releases/download/${LATEST_TAG}/checksums.txt"
+DOWNLOAD_URL="${RELEASE_BASE_URL}/${REPO}/releases/download/${LATEST_TAG}/${BIN_NAME}"
+CHECKSUM_URL="${RELEASE_BASE_URL}/${REPO}/releases/download/${LATEST_TAG}/checksums.txt"
 TMP_BIN=$(mktemp "${INSTALL_DIR}/vps-commander-agent.tmp.XXXXXX") || error "无法创建临时文件"
 TMP_SUM=$(mktemp "${INSTALL_DIR}/vps-commander-checksums.tmp.XXXXXX") || { rm -f "$TMP_BIN"; error "无法创建校验文件"; }
 BAK_BIN="${INSTALL_DIR}/vps-commander-agent.bak"

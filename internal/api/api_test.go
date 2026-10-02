@@ -167,3 +167,44 @@ func TestEditBlockSecurityAndReplacement(t *testing.T) {
 		t.Fatalf("low mode status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestProvisionDeviceCredentialForNewOfflineDevice(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "commander.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+
+	s := &Server{
+		Store:      store,
+		LocalName:  "wjyhk",
+		AdminToken: "admin-test-token",
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/security/device-credentials/provision", strings.NewReader("{\"device\":\"new-node-01\"}"))
+	req.Header.Set("X-Admin-Token", "admin-test-token")
+	w := httptest.NewRecorder()
+	s.ProvisionDeviceCredentialJSON(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("provision status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "\"token\"") {
+		t.Fatalf("missing token: %s", w.Body.String())
+	}
+
+	ok, err := store.HasDeviceCredential("new-node-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("credential was not persisted")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/security/device-credentials/provision", strings.NewReader("{\"device\":\"new-node-01\"}"))
+	req.Header.Set("X-Admin-Token", "admin-test-token")
+	w = httptest.NewRecorder()
+	s.ProvisionDeviceCredentialJSON(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate provision status=%d body=%s", w.Code, w.Body.String())
+	}
+}

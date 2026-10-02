@@ -54,6 +54,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/mcp/test", p.protected(p.testMCP))
 	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
 	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
+	mux.HandleFunc("/panel/api/security/device-credentials/provision", p.protected(p.provisionDeviceCredential))
 	mux.HandleFunc("/panel/api/notifications/webhooks", p.protected(p.webhookTargets))
 	mux.HandleFunc("/panel/api/notifications/webhook/update", p.protected(p.updateWebhookTarget))
 	mux.HandleFunc("/panel/api/notifications/webhook/delete", p.protected(p.deleteWebhookTarget))
@@ -65,6 +66,7 @@ func (p *Panel) Handler() http.Handler {
 type securityPanelRunner interface {
 	SecuritySettingsJSON(http.ResponseWriter, *http.Request)
 	UpdateSecuritySettingsJSON(http.ResponseWriter, *http.Request)
+	ProvisionDeviceCredentialJSON(http.ResponseWriter, *http.Request)
 }
 
 type mcpPanelRunner interface {
@@ -116,6 +118,17 @@ func (p *Panel) updateSecuritySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if v, ok := p.Runner.(securityPanelRunner); ok {
 		v.UpdateSecuritySettingsJSON(w, r)
+		return
+	}
+	http.Error(w, "security API unavailable", 501)
+}
+
+func (p *Panel) provisionDeviceCredential(w http.ResponseWriter, r *http.Request) {
+	if p.AdminToken != "" {
+		r.Header.Set("X-Admin-Token", p.AdminToken)
+	}
+	if v, ok := p.Runner.(securityPanelRunner); ok {
+		v.ProvisionDeviceCredentialJSON(w, r)
 		return
 	}
 	http.Error(w, "security API unavailable", 501)

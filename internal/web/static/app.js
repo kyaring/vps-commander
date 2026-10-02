@@ -213,6 +213,25 @@ $("#mcpTest").onclick=async()=>{
 $("#mcpTransport").onchange=()=>{const stdio=$("#mcpTransport").value==="stdio";$("#mcpCommand").parentElement.style.display=stdio?"":"none";$("#mcpArgs").parentElement.style.display=stdio?"":"none";$("#mcpUrl").parentElement.style.display=stdio?"none":""};
 loadMCPServices().catch(console.error);
 
+async function provisionDeviceCredential(){
+  const result=$("#deviceProvisionResult");
+  const status=$("#deviceProvisionStatus");
+  const name=($("#provisionDeviceName").value||"").trim();
+  if(!name){status.textContent="请输入节点名称。";return}
+  try{
+    const x=await api("/security/device-credentials/provision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device:name})});
+    $("#deviceProvisionToken").value=x.token||"";
+    $("#deviceProvisionCommand").value=x.install_command||"";
+    result.hidden=false;
+    status.textContent=name+" 接入凭证已生成。安装时把 Token 填入 Agent Token。";
+  }catch(e){status.textContent="生成失败: "+e.message}
+}
+$("#deviceProvisionNew").onclick=()=>{$("#deviceProvisionEditor").hidden=false;$("#deviceProvisionResult").hidden=true;$("#deviceProvisionStatus").textContent="";$("#provisionDeviceName").focus()};
+$("#deviceProvisionCancel").onclick=()=>{$("#deviceProvisionEditor").hidden=true};
+$("#deviceProvisionCreate").onclick=()=>provisionDeviceCredential();
+$("#deviceProvisionToken").onclick=e=>e.target.select();
+$("#deviceProvisionCommand").onclick=e=>e.target.select();
+
 async function loadSecuritySettings(){const x=await api("/security/settings"),nodes=x.nodes||[],effective=x.effective||{},configured=new Map(nodes.map(n=>[n.node,n.mode])),devices=await api("/devices");$("#globalSecurity").value=x.global||"medium";$("#securityNodes").innerHTML=devices.map(d=>{const mode=configured.get(d.name)||"inherit",eff=effective[d.name]||x.global||"medium";return `<tr><td>${esc(d.name)}</td><td><select data-security-node="${esc(d.name)}"><option value="inherit" ${mode==='inherit'?'selected':''}>跟随全局</option><option value="low" ${mode==='low'?'selected':''}>低 · Low</option><option value="medium" ${mode==='medium'?'selected':''}>中 · Medium</option><option value="high" ${mode==='high'?'selected':''}>高 · High</option></select></td><td>${esc(eff)}</td><td><button type="button" onclick="saveNodeSecurity('${esc(d.name)}')">保存</button></td></tr>`}).join("")}
 async function saveNodeSecurity(node){const el=document.querySelector(`[data-security-node="${CSS.escape(node)}"]`);if(!el)return;try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node,mode:el.value})});$("#securityStatus").textContent=`${node} 策略已保存。`;await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}}
 $("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);loadSecuritySettings().catch(console.error);
