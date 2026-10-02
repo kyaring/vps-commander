@@ -133,8 +133,8 @@ install_hub() {
     read -rp "请输入监听端口 (默认 9521): " HUB_PORT
     HUB_PORT=${HUB_PORT:-9521}
 
-    GEN_API_KEY=$(head -c 24 /dev/urandom | xxd -p)
-    GEN_PASS=$(head -c 16 /dev/urandom | xxd -p)
+    GEN_API_KEY=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+    GEN_PASS=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 
     read -rp "请输入 API Key (默认随机生成): " API_KEY
     API_KEY=${API_KEY:-$GEN_API_KEY}
@@ -145,7 +145,6 @@ install_hub() {
     cat << ENV > "${CONF_DIR}/hub.env"
 VPS_COMMANDER_API_KEY=${API_KEY}
 VPS_COMMANDER_WEB_PASSWORD=${WEB_PASS}
-ENV
 ENV
     chmod 0600 "${CONF_DIR}/hub.env"
 
