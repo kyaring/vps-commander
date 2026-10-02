@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -89,6 +90,38 @@ func TestSecurityEffectiveModeAndExecGate(t *testing.T) {
 	logs, _ := store.RecentAudits(10)
 	if len(logs) == 0 || logs[0].Action != "security_denied" {
 		t.Fatalf("missing denial audit: %+v", logs)
+	}
+}
+
+func TestProcessSessionLocalSnakeCaseAndLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	store, err := storage.Open(filepath.Join(dir, "db.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	if err := store.SetGlobalSecurityMode("high"); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Exec: executor.Local{MaxOutput: 1024 * 1024}, Store: store, LocalName: "local", LocalSessions: executor.NewSessionManager(0)}
+	if err := s.LoadSecurityPolicySnapshot(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=start", strings.NewReader(`{"device":"local","session_id":"session-test-001","command":"sleep 0.2; printf local-ok"}`))
+	w := httptest.NewRecorder()
+	s.processSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", w.Code, w.Body.String())
+	}
+	time.Sleep(400 * time.Millisecond)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=read", strings.NewReader(`{"device":"local","session_id":"session-test-001"}`))
+	w = httptest.NewRecorder()
+	s.processSession(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("read status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "local-ok") {
+		t.Fatalf("missing session output: %s", w.Body.String())
 	}
 }
 

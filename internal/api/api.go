@@ -851,7 +851,7 @@ func (s *Server) processSession(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			var sess *executor.Session
-			sess, err = s.LocalSessions.Start(ctx, req.SessionID, req.Command, req.Workdir, owner, req.RingCapacity)
+			sess, err = s.LocalSessions.Start(context.Background(), req.SessionID, req.Command, req.Workdir, owner, req.RingCapacity)
 			if err == nil {
 				result = map[string]any{"session_id": sess.ID, "started_at": sess.StartedAt.Unix()}
 			}
