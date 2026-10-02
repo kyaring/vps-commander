@@ -151,16 +151,54 @@ WantedBy=multi-user.target
 SVC
 
     systemctl daemon-reload
-    systemctl enable --now vps-commander-agent
-    sleep 1
 
-    if systemctl is-active --quiet vps-commander-agent; then
-        success "VPS-Commander Agent 安装并启动成功！"
-        info "节点名称: ${AGENT_NAME}"
-        info "可通过 'systemctl status vps-commander-agent' 查看运行状态。"
-    else
-        warn "服务已启动但状态可能异常，请检查 'journalctl -u vps-commander-agent -n 20'。"
+    # Validate the generated unit before starting it. systemd does not expand
+    # ${VPS_COMMANDER_*} in ExecStart directly; the shell wrapper above must
+    # remain intact. This prevents a false-success install with a broken URL.
+    if ! grep -Fq 'ExecStart=/bin/sh -c' /etc/systemd/system/vps-commander-agent.service ||
+       ! grep -Fq '"$VPS_COMMANDER_HUB_WS_URL"' /etc/systemd/system/vps-commander-agent.service ||
+       ! grep -Fq '"$VPS_COMMANDER_AGENT_NAME"' /etc/systemd/system/vps-commander-agent.service; then
+        error "生成的 Agent systemd 服务异常，ExecStart 未通过校验。安装已中止。"
     fi
+    if ! [[ "$HUB_WS" =~ ^wss://[^[:space:]]+/agent/ws$ ]]; then
+        error "Hub WSS 地址格式无效: ${HUB_WS}"
+    fi
+    if [[ "$AGENT_NAME" =~ [[:space:]/\?\&\=\#\%] ]]; then
+        error "节点名称包含非法字符: ${AGENT_NAME}"
+    fi
+
+    INSTALL_CHECK_SINCE=$(date --iso-8601=seconds)
+    systemctl enable --now vps-commander-agent
+    sleep 2
+
+    if ! systemctl is-active --quiet vps-commander-agent; then
+        error "Agent 服务启动失败，请执行: journalctl -u vps-commander-agent -n 50 --no-pager"
+    fi
+
+    # Verify that the running process received the actual URL/name, not literal
+    # placeholders or installer source text.
+    AGENT_CMD=$(ps -eo args= | grep -F "${INSTALL_DIR}/vps-commander-agent" | grep -v grep | head -n1 || true)
+    if [[ "$AGENT_CMD" != *"-hub ${HUB_WS} -name ${AGENT_NAME}"* ]]; then
+        error "Agent 进程参数校验失败: ${AGENT_CMD}"
+    fi
+
+    # A fresh connection produces this message after the Hub handshake/MCP sync.
+    # Do not report success merely because systemd says the process is running.
+    CONNECTED=0
+    for _ in {1..13}; do
+        if journalctl -u vps-commander-agent --since "$INSTALL_CHECK_SINCE" --no-pager -o cat 2>/dev/null | grep -q "MCP services synced:"; then
+            CONNECTED=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$CONNECTED" -ne 1 ]; then
+        error "Agent 已启动，但 15 秒内未确认成功连接 Hub，请检查: journalctl -u vps-commander-agent -n 50 --no-pager"
+    fi
+
+    success "VPS-Commander Agent 安装、启动并完成 Hub 连接校验！"
+    info "节点名称: ${AGENT_NAME}"
+    info "可通过 'systemctl status vps-commander-agent' 查看运行状态。"
 }
 
 install_hub() {
