@@ -1,5 +1,7 @@
 # VPS-Commander M4 最终验收报告（待人工签收）
 
+> 文档属性：历史验收快照（2026-09-28）。当前状态以 README、DOCUMENTATION_BASELINE_20261002 和当前验收门禁为准。
+
 日期：2026-09-28
 状态：🟡 技术收尾完成；管理面板 UI 已人工验收并上线，M4 总体验收仍等待 Custom GPT Actions 人工签收
 

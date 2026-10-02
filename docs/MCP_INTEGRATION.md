@@ -1,50 +1,52 @@
-# VPS-Commander MCP (Model Context Protocol) 接入指南
+# VPS-Commander MCP 接入与能力
 
-## 一、概述
-为了应对 OpenAI Custom GPTs 退役及新一代 Plugins/Skills 规范转型，VPS-Commander 现已全面支持标准 **MCP (Model Context Protocol)** 协议。
+## 1. 当前状态
+MCP JSON-RPC 2.0；serverInfo 1.2.0；initialize protocolVersion 2024-11-05。
+远程 HTTP 当前是 legacy HTTP+SSE；本地是 stdio。Streamable HTTP 是后续演进方向。
 
-- **零侵入**：原有 REST API、OpenAPI 3.1、Web 面板及 WebSocket 多节点连接池 100% 保持不变。
-- **纯 Go 原生**：零外部庞大框架依赖，常驻内存基线依然保持在极低水平。
-- **双模支持**：同时支持 **远程 SSE 模式** 与 **本地 stdio 模式**。
+## 2. 11 个工具
+| Tool | Risk | 作用 |
+|---|---|---|
+| list_devices | Low | 设备列表 |
+| exec_command | High | Shell |
+| read_file | Low | 文件读取 |
+| read_multiple_files | Low | 批量读取 |
+| create_directory | Medium | 创建目录 |
+| move_file | Medium | 移动/重命名 |
+| list_processes | Low | 进程观察 |
+| edit_block | Medium | 原子文本修改 |
+| write_file | Medium | 文件写入 |
+| list_agent_mcp | Low | Agent MCP 列表 |
+| call_agent_mcp | Medium | 调度 Agent MCP |
 
----
+## 3. 远程接入
+GET /mcp/sse → sessionId → POST /mcp/message?sessionId=<id>。
+请求头：Authorization: Bearer <API_KEY>。
+HTTP+SSE 仅作为兼容层，不作为未来新能力的主要 transport。
 
-## 二、支持的 4 大 MCP Tools
+## 4. stdio
+启动 vps-commander-mcp-stdio，参数 -hub <Hub URL> -key <API_KEY>。
+API Key 不提交到仓库。
 
-| Tool 名称 | 参数说明 | 描述 |
-| :--- | :--- | :--- |
-| `list_devices` | 无 | 列出当前所有已注册的受控 VPS 节点（如本机 `wjyhk` 及远程 `m4-live-agent` 等）及在线状态 |
-| `exec_command` | `device` (可选), `command` (必填), `workdir` (可选), `timeout` (可选, 默认30) | 在指定受控节点执行任意 Shell 命令并返回退出码与输出 |
-| `read_file` | `device` (可选), `path` (必填), `offset` (可选), `limit` (可选) | 读取指定受控节点的文件内容（支持安全分页读取） |
-| `write_file` | `device` (可选), `path` (必填), `content` (必填) | 在指定受控节点创建或覆写文件 |
+## 5. 参数
+exec_command：device、command、workdir、timeout。
+read_file：device、path、offset、limit；默认 256 KiB，最大 1 MiB。
+read_multiple_files：device、paths、limit；paths 最多 32 个。
+create_directory：device、path。
+move_file：device、source、destination。
+list_processes：device。
+edit_block：device、path、old_text、new_text；old_text 必须唯一匹配。
+write_file：device、path、content。
+list_agent_mcp：device。
+call_agent_mcp：device、server、tool、arguments。
 
----
+## 6. 安全链路
+MCP Client → Bearer auth → JSON-RPC → tool mapping → authenticated device → Policy Snapshot → Tool Registry → allow/deny → Local/Agent → audit。
+未知设备不得因为 GlobalRisk 而获得 High。
 
-## 三、接入方式
+## 7. Agent MCP
+Hub 发现远程 Agent MCP service；客户端不直连 Agent。
+Hub 负责 device authentication、risk gate、routing、audit。
 
-### 方式 1：远程 SSE 模式（适用于远程 Agent、OpenAI 新生态端点）
-
-Hub 原生提供 MCP SSE 端点（需带 Bearer Token 鉴权）：
-- **SSE 建立端点**：`GET https://vpstool.kory.kdns.fr/mcp/sse`
-- **消息交互端点**：`POST https://vpstool.kory.kdns.fr/mcp/message?sessionId=<sessionId>`
-- **请求头**：`Authorization: Bearer <YOUR_API_KEY>`
-
-### 方式 2：本地 stdio 模式（适用于 Claude Desktop、Cursor、VS Code）
-
-直接使用编译好的极轻量 Go 二进制 `vps-commander-mcp-stdio-linux-amd64`。
-
-#### 客户端配置示例 (`claude_desktop_config.json` 或 Cursor MCP 设置)：
-
-```json
-{
-  "mcpServers": {
-    "vps-commander": {
-      "command": "/root/.openclaw/workspace/vps-commander/bin/vps-commander-mcp-stdio-linux-amd64",
-      "args": [
-        "-hub", "https://vpstool.kory.kdns.fr",
-        "-key", "YOUR_API_KEY"
-      ]
-    }
-  }
-}
-```
+## 8. 下一步
+Streamable HTTP、SSE fallback、capability-based advertisement、Principal audit context、显式 operation/session handle。

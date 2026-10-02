@@ -1,5 +1,7 @@
 # DC Refactoring Phase 1 Implementation Record
 
+> 文档属性：历史实施记录。后续阶段和当前状态以当前架构规范与 v2.1 规范为准。
+
 Date: 2026-10-02
 
 ## Completed
