@@ -428,6 +428,6 @@ git diff --check    PASS
 `1969456fb09004e4be5b05ba1bf30a0a19a6ed2d41236c2bccd391b2ad6bc362`
 
 最终生产 Hub SHA-256：
-`0978eb06a993909137ee64913c0b09b85835b51a65ef854ddcfbb9cecbd63f6c`
+`1cb2136cb5f108480f8cc4f59d432838812332d319ae84ff28f0a53fba68d3c5`
 
 Shared Secret 已从 Hub 生产环境移除；现阶段生产认证权威为 per-device credential。
