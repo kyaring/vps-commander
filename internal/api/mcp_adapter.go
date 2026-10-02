@@ -98,6 +98,33 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	}, nil
 }
 
+func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device string, req executor.DiagnosticRequest) (any, error) {
+	if device == "" {
+		device = b.server.LocalName
+	}
+	if err := b.authorize(device, "diagnostic", clientIP); err != nil {
+		return nil, err
+	}
+	if req.Action == "" {
+		return nil, errors.New("diagnostic action required")
+	}
+	if b.server.isRemote(device) {
+		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
+			return nil, fmt.Errorf("device %s is offline", device)
+		}
+		res, err := b.server.Cluster.Diagnostic(ctx, device, req)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
+	res, err := executor.Diagnostic(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error) {
 	if device == "" {
 		device = b.server.LocalName

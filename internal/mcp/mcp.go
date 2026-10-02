@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/executor"
 )
 
 // MCP Protocol / JSON-RPC 2.0 Types
@@ -75,6 +76,10 @@ type ActionBackend interface {
 	ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error)
 	WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error)
 	EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error)
+}
+
+type DiagnosticBackend interface {
+	DiagnosticCommand(ctx context.Context, clientIP, device string, req executor.DiagnosticRequest) (any, error)
 }
 
 type ExtendedBackend interface {
@@ -280,6 +285,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			{Name: "create_directory", Description: "创建目录", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "path": {Type: "string", Description: "目录路径"}}, Required: []string{"path"}}},
 			{Name: "move_file", Description: "移动或重命名文件", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "source": {Type: "string", Description: "源路径"}, "destination": {Type: "string", Description: "目标路径"}}, Required: []string{"source", "destination"}}},
 			{Name: "list_processes", Description: "列出受控节点当前进程", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}}}},
+			{Name: "diagnostic_command", Description: "执行严格白名单的只读系统诊断，不接受任意 Shell", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "action": {Type: "string", Description: "docker_ps|docker_logs|docker_inspect|systemctl_status|journalctl|ss_listen|df|free|uptime"}, "target": {Type: "string", Description: "容器名或 systemd unit（按 action 使用）"}, "lines": {Type: "integer", Description: "docker_logs 最大行数，1-500"}}, Required: []string{"action"}}},
 			{
 				Name:        "edit_block",
 				Description: "对指定文件执行唯一文本块的原子替换；old_text 必须恰好匹配一次",
@@ -430,6 +436,24 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 			return map[string]string{"error": err.Error()}, true
 		}
 		return res, false
+	case "diagnostic_command":
+		var a struct {
+			Device string `json:"device"`
+			Action string `json:"action"`
+			Target string `json:"target"`
+			Lines  int    `json:"lines"`
+		}
+		_ = json.Unmarshal(params.Arguments, &a)
+		b, ok := s.Backend.(DiagnosticBackend)
+		if !ok {
+			return map[string]string{"error": "diagnostic tools unavailable"}, true
+		}
+		res, err := b.DiagnosticCommand(ctx, clientIP, a.Device, executor.DiagnosticRequest{Action: a.Action, Target: a.Target, Lines: a.Lines})
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return res, false
+
 	case "list_processes":
 		var a struct {
 			Device string `json:"device"`

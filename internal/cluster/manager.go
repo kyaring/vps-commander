@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/security"
 	"github.com/wjyhk/vps-commander/internal/storage"
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
@@ -462,6 +463,19 @@ func (m *Manager) Exec(ctx context.Context, name string, p ExecPayload) (Result,
 		return Result{}, err
 	}
 	return Result{msg.ExitCode, msg.Stdout, msg.Stderr, msg.DurationMS}, nil
+}
+
+func (m *Manager) Diagnostic(ctx context.Context, name string, req executor.DiagnosticRequest) (executor.DiagnosticResult, error) {
+	msg, err := m.call(ctx, name, "diagnostic_command", req)
+	if err != nil {
+		return executor.DiagnosticResult{}, err
+	}
+	b, _ := json.Marshal(msg.Payload)
+	var out executor.DiagnosticResult
+	if err := json.Unmarshal(b, &out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (m *Manager) ReadFile(ctx context.Context, name string, p FileReadPayload) (FileResult, error) {

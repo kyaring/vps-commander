@@ -152,6 +152,17 @@ func run(hub, name, token string, insecure bool) error {
 
 func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, sessions *executor.SessionManager, msg cluster.Message) error {
 	switch msg.Action {
+	case "diagnostic_command":
+		var p executor.DiagnosticRequest
+		if err := decodePayload(msg.Payload, &p); err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		v, err := executor.Diagnostic(context.Background(), p)
+		if err != nil {
+			return sendError(writeJSON, msg.ID, err)
+		}
+		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: v})
+
 	case "mcp_list":
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: mcpRuntime.List()})
 	case "mcp_test":

@@ -15,6 +15,7 @@ var registry = map[string]ToolSpec{
 	"start_search":            {Name: "start_search", RequiredRisk: RiskLow, Category: "search", ReadOnly: true},
 	"get_more_search_results": {Name: "get_more_search_results", RequiredRisk: RiskLow, Category: "search", ReadOnly: true},
 	"list_processes":          {Name: "list_processes", RequiredRisk: RiskLow, Category: "process", ReadOnly: true},
+	"diagnostic_command":      {Name: "diagnostic_command", RequiredRisk: RiskLow, Category: "diagnostic", ReadOnly: true},
 	"list_sessions":           {Name: "list_sessions", RequiredRisk: RiskLow, Category: "process", ReadOnly: true},
 	"read_process_output":     {Name: "read_process_output", RequiredRisk: RiskLow, Category: "process", ReadOnly: true},
 	"edit_block":              {Name: "edit_block", RequiredRisk: RiskMedium, Category: "file", ReadOnly: false},
