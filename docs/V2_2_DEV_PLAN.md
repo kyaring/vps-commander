@@ -221,6 +221,12 @@ docs/api.md               由 /openapi.json 生成
 docs/archive/             现有带日期的评审/交接文档全部移入
 ```
 
+### D 部署安全说明
+
+- 生产反代后开启 `VPS_COMMANDER_TRUST_PROXY=on` 前，必须确认反代会覆盖客户端提供的 `X-Real-IP`，例如 Nginx 使用 `proxy_set_header X-Real-IP $remote_addr;`；否则该请求头可能被客户端伪造，不得直接信任。
+- 同时配置并验证 `X-Forwarded-For` 的代理链，Hub 仅在明确配置可信反代后才启用代理头解析。
+- MCP 与 REST 统一使用 `auth.ClientIP` 记录 caller IP；MCP 审计 transport 统一为 `mcp`，device 使用 Hub 归一后的节点名。
+
 ### D 验收标准
 
 1. 审核员 C 在一台全新 Debian VM 上**只按文档**完成：Hub 部署 → 反代 → 接入 1 台 Agent → 创建命名令牌 → MCP 客户端连上并执行命令；任何一步需要看源码才能继续即不通过。

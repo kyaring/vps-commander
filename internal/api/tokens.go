@@ -67,7 +67,25 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 
 func (s *Server) AuditMCP(ctx context.Context, ip, device, tool, result, detail string) {
 	device = s.normalizeDevice(device)
-	_ = s.auditContext(ctx, ip, device, "mcp_denied", tool, 0, 0, result+": "+detail)
+	_ = s.auditMCPContext(ctx, ip, device, "mcp_denied", tool, 0, 0, result+": "+detail)
+}
+
+func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, command string, code int, ms int64, msg string) error {
+	device = s.normalizeDevice(device)
+	p, _ := auth.PrincipalFromContext(ctx)
+	targetType := "device"
+	if action == "mcp_call" || action == "mcp_denied" {
+		targetType = "mcp_tool"
+	}
+	result := "ok"
+	if code != 0 {
+		result = "error"
+	}
+	if action == "mcp_denied" {
+		result = "denied"
+		code = 0
+	}
+	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: targetType, Target: command, Result: result})
 }
 
 func (s *Server) audit(r *http.Request, device, action, command string, code int, ms int64, msg string) error {

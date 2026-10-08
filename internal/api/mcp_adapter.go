@@ -86,7 +86,7 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	}
 
 	if b.server.Store != nil {
-		_ = b.server.auditContext(ctx, clientIP, device, "exec", command, res.ExitCode, res.DurationMS, res.Stderr)
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "exec", command, res.ExitCode, res.DurationMS, res.Stderr)
 	}
 
 	return model.ExecResponse{
@@ -182,7 +182,7 @@ func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string
 	}
 
 	if b.server.Store != nil {
-		_ = b.server.auditContext(ctx, clientIP, device, "file_read", path, 0, 0, "")
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "file_read", path, 0, 0, "")
 	}
 
 	return model.FileReadResponse{
@@ -218,14 +218,14 @@ func (b *MCPBackend) EditBlock(ctx context.Context, clientIP, device, path, oldT
 		if err != nil {
 			return nil, err
 		}
-		_ = b.server.auditContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
 		return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
 	}
 	res, err := executor.EditBlock(path, oldText, newText)
 	if err != nil {
 		return nil, err
 	}
-	_ = b.server.auditContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+	_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
 	return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
 }
 
@@ -261,7 +261,7 @@ func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, cont
 	}
 
 	if b.server.Store != nil {
-		_ = b.server.auditContext(ctx, clientIP, device, "file_write", path, 0, 0, "")
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "file_write", path, 0, 0, "")
 	}
 
 	return model.FileWriteResponse{
@@ -298,9 +298,9 @@ func (b *MCPBackend) CallAgentMCP(ctx context.Context, clientIP, device, server,
 	ms := time.Since(start).Milliseconds()
 	if b.server.Store != nil {
 		if err != nil {
-			_ = b.server.auditContext(ctx, clientIP, device, "mcp_call", server+"/"+tool, 1, ms, err.Error())
+			_ = b.server.auditMCPContext(ctx, clientIP, device, "mcp_call", server+"/"+tool, 1, ms, err.Error())
 		} else {
-			_ = b.server.auditContext(ctx, clientIP, device, "mcp_call", server+"/"+tool, 0, ms, "")
+			_ = b.server.auditMCPContext(ctx, clientIP, device, "mcp_call", server+"/"+tool, 0, ms, "")
 		}
 	}
 	return v, err

@@ -391,7 +391,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			}
 		}
 
-		clientIP := r.RemoteAddr
+		clientIP := auth.ClientIP(r)
 		res, isErr := s.callTool(ctx, clientIP, params)
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 
