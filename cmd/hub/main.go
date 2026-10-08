@@ -45,12 +45,21 @@ func main() {
 	if apiKey == "" || webPassword == "" {
 		log.Fatal("VPS_COMMANDER_API_KEY and VPS_COMMANDER_WEB_PASSWORD are required via environment")
 	}
-	authManager := auth.NewManager(apiKey)
 	store, err := storage.Open(*dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.DB.Close()
+	if err := store.EnsureAPITokens(apiKey); err != nil {
+		log.Fatalf("ensure api tokens: %v", err)
+	}
+	authManager := auth.NewManagerWithValidator(apiKey, auth.TokenValidatorFunc(func(raw, ip string) (auth.Principal, bool) {
+		id, name, scopes, devices, ok := store.ValidateAPIToken(raw, ip)
+		if !ok {
+			return auth.Principal{}, false
+		}
+		return auth.Principal{Type: "api_token", ID: id, Name: name, TokenID: id, Scopes: scopes, Devices: devices}, true
+	}))
 	local := "local"
 	if h, err := os.Hostname(); err == nil && h != "" {
 		local = h
