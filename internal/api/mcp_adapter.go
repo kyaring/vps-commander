@@ -24,14 +24,12 @@ func (s *Server) NewMCPBackend() *MCPBackend {
 	return &MCPBackend{server: s}
 }
 
-func (b *MCPBackend) authorize(device, action, clientIP string) error {
-	if device == "" {
-		device = b.server.LocalName
-	}
+func (b *MCPBackend) authorize(ctx context.Context, device, action, clientIP string) error {
+	device = b.server.normalizeDevice(device)
 	mode := b.server.GetEffectiveSecurityMode(device)
 	if !securityAllows(mode, action) {
 		if b.server.Store != nil {
-			_ = b.server.Store.Audit(clientIP, device, "security_denied", action, 403, 0, "MCP security gate")
+			_ = b.server.auditMCPContext(ctx, clientIP, device, "security_denied", action, 0, 0, "MCP security gate")
 		}
 		return fmt.Errorf("security mode %s denies %s", mode, action)
 	}
@@ -55,10 +53,11 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	if command == "" {
 		return nil, errors.New("command required")
 	}
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "exec", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "exec", clientIP); err != nil {
 		return nil, err
 	}
 	if timeout <= 0 {
@@ -99,10 +98,11 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 }
 
 func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device string, req executor.DiagnosticRequest) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "diagnostic", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "diagnostic", clientIP); err != nil {
 		return nil, err
 	}
 	if req.Action == "" {
@@ -126,10 +126,11 @@ func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device str
 }
 
 func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "read", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "read", clientIP); err != nil {
 		return nil, err
 	}
 	if path == "" || !validPath(path) || offset < 0 {
@@ -198,10 +199,11 @@ func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string
 }
 
 func (b *MCPBackend) EditBlock(ctx context.Context, clientIP, device, path, oldText, newText string) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "write", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "write", clientIP); err != nil {
 		return nil, err
 	}
 	if path == "" || !validPath(path) || oldText == "" {
@@ -230,10 +232,11 @@ func (b *MCPBackend) EditBlock(ctx context.Context, clientIP, device, path, oldT
 }
 
 func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, content string) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "write", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "write", clientIP); err != nil {
 		return nil, err
 	}
 	if path == "" || !validPath(path) {
@@ -313,14 +316,15 @@ func (b *MCPBackend) AuditMCP(ctx context.Context, clientIP, device, tool, resul
 
 // AuthorizeMCP exposes the same Hub-side gate to the MCP transport layer.
 func (b *MCPBackend) AuthorizeMCP(device, action, clientIP string) error {
-	return b.authorize(device, action, clientIP)
+	return b.authorize(context.Background(), device, action, clientIP)
 }
 
 func (b *MCPBackend) ReadMultipleFiles(ctx context.Context, clientIP, device string, paths []string, limit int64) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "read", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "read", clientIP); err != nil {
 		return nil, err
 	}
 	if len(paths) > 32 {
@@ -335,10 +339,11 @@ func (b *MCPBackend) ReadMultipleFiles(ctx context.Context, clientIP, device str
 	return executor.ReadMultipleFiles(paths, limit), nil
 }
 func (b *MCPBackend) CreateDirectory(ctx context.Context, clientIP, device, path string) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "write", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "write", clientIP); err != nil {
 		return nil, err
 	}
 	if b.server.isRemote(device) {
@@ -356,10 +361,11 @@ func (b *MCPBackend) CreateDirectory(ctx context.Context, clientIP, device, path
 	return map[string]any{"device": device, "path": path, "ok": true}, nil
 }
 func (b *MCPBackend) MoveFile(ctx context.Context, clientIP, device, source, destination string) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "write", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "write", clientIP); err != nil {
 		return nil, err
 	}
 	if b.server.isRemote(device) {
@@ -377,10 +383,11 @@ func (b *MCPBackend) MoveFile(ctx context.Context, clientIP, device, source, des
 	return map[string]any{"device": device, "source": source, "destination": destination, "ok": true}, nil
 }
 func (b *MCPBackend) ListProcesses(ctx context.Context, clientIP, device string) (any, error) {
+	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
 	}
-	if err := b.authorize(device, "read", clientIP); err != nil {
+	if err := b.authorize(ctx, device, "read", clientIP); err != nil {
 		return nil, err
 	}
 	if b.server.isRemote(device) {

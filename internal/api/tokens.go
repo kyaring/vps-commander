@@ -81,11 +81,15 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	if code != 0 {
 		result = "error"
 	}
-	if action == "mcp_denied" {
+	if action == "mcp_denied" || action == "security_denied" {
 		result = "denied"
 		code = 0
 	}
-	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: targetType, Target: command, Result: result})
+	target := device
+	if targetType == "mcp_tool" {
+		target = command
+	}
+	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: targetType, Target: target, Result: result})
 }
 
 func (s *Server) audit(r *http.Request, device, action, command string, code int, ms int64, msg string) error {

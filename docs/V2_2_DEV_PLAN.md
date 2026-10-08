@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 ALTER TABLE audit_logs ADD COLUMN actor_type  TEXT;   -- api_token / panel / agent / system
 ALTER TABLE audit_logs ADD COLUMN actor_id    TEXT;   -- token id
 ALTER TABLE audit_logs ADD COLUMN actor_name  TEXT;   -- 令牌名称（冗余存储，令牌删除后仍可读）
-ALTER TABLE audit_logs ADD COLUMN transport   TEXT;   -- rest / mcp-sse / mcp-http / panel / stdio / internal
+ALTER TABLE audit_logs ADD COLUMN transport   TEXT;   -- rest / mcp / panel / stdio / internal
 ALTER TABLE audit_logs ADD COLUMN target_type TEXT;   -- device / file / process / token / webhook / policy / mcp_service
 ALTER TABLE audit_logs ADD COLUMN target      TEXT;   -- 设备名、文件路径、令牌名等
 ALTER TABLE audit_logs ADD COLUMN result      TEXT;   -- ok / denied / error
@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device, timestamp);
 ### A 验收标准
 
 1. 新建令牌 `reviewer-c`（仅 `devices:read`）：`GET /api/v1/devices` 200；`POST /api/v1/exec` 403，且审计出现 `actor_name=reviewer-c, result=denied`。
-2. 用令牌 X 通过 MCP 执行 `exec`，审计行同时有 `actor_name=X, transport=mcp-sse, target_type=device, target=<设备>`。
+2. 用令牌 X 通过 MCP 执行 `exec`，审计行同时有 `actor_name=X, transport=mcp, target_type=device, target=<设备>`。
 3. 令牌 Y 向令牌 X 的 `sessionId` POST 消息 → 403。
 4. 吊销令牌后 5s 内该令牌所有请求 401；已建立的 SSE 会话被关闭。
 5. 旧 env Key 仍可用并在审计中显示为 `legacy-env`；`VPS_COMMANDER_LEGACY_KEY=off` 后 401。

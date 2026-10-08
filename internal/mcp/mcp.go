@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -433,6 +434,7 @@ func mcpToolScope(name string) string {
 }
 
 func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
+	device = strings.TrimSpace(device)
 	if device == "local" && s.LocalName != "" {
 		device = s.LocalName
 	}
