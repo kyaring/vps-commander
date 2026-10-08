@@ -135,7 +135,34 @@ func securityAllows(mode, action string) bool {
 	return security.ModeRisk(mode) >= required
 }
 
+func (s *Server) normalizeDevice(device string) string {
+	if device == "" || device == "local" {
+		return s.LocalName
+	}
+	return device
+}
+
+func (s *Server) requireDeviceAccess(w http.ResponseWriter, r *http.Request, device string) bool {
+	device = s.normalizeDevice(device)
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		return true
+	}
+	if !p.AllowsDevice(device) {
+		_ = s.audit(r, device, "device_denied", "device", http.StatusForbidden, 0, "token device whitelist denied")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"device denied","device":%q}`, device)))
+		return false
+	}
+	return true
+}
+
 func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device, action, detail string) bool {
+	device = s.normalizeDevice(device)
+	if !s.requireDeviceAccess(w, r, device) {
+		return false
+	}
 	mode := s.GetEffectiveSecurityMode(device)
 	if securityAllows(mode, action) {
 		return true
@@ -430,6 +457,10 @@ func (s *Server) TestMCPJSON(w http.ResponseWriter, r *http.Request) {
 	if q.Device == "" {
 		q.Device = s.LocalName
 	}
+	q.Device = s.normalizeDevice(q.Device)
+	if !s.requireDeviceAccess(w, r, q.Device) {
+		return
+	}
 	q.Service.Transport = strings.ToLower(strings.TrimSpace(q.Service.Transport))
 	if q.Service.Transport == "" {
 		http.Error(w, "transport required", 400)
@@ -550,6 +581,10 @@ func (s *Server) ListAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 	device := r.URL.Query().Get("device")
 	if device == "" {
 		http.Error(w, "device required", 400)
+		return
+	}
+	device = s.normalizeDevice(device)
+	if !s.requireDeviceAccess(w, r, device) {
 		return
 	}
 	if s.isRemote(device) && (s.Cluster == nil || !s.Cluster.Online(device)) {
@@ -787,6 +822,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	if req.Device == "" {
 		req.Device = s.LocalName
 	}
+	req.Device = s.normalizeDevice(req.Device)
 	if !s.requireSecurity(w, r, req.Device, "exec", req.Command) {
 		return
 	}
