@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ func main() {
 	dbPath := flag.String("db", "data/commander.db", "sqlite database")
 	flag.Parse()
 	apiKey := os.Getenv("VPS_COMMANDER_API_KEY")
+	legacyKeyOff := strings.EqualFold(os.Getenv("VPS_COMMANDER_LEGACY_KEY"), "off")
 	clusterSecret := os.Getenv("VPS_COMMANDER_CLUSTER_SECRET")
 	webPassword := os.Getenv("VPS_COMMANDER_WEB_PASSWORD")
 	adminToken := os.Getenv("VPS_COMMANDER_ADMIN_TOKEN")
@@ -42,8 +44,8 @@ func main() {
 	if adminToken == "" {
 		adminToken = webPassword
 	}
-	if apiKey == "" || webPassword == "" {
-		log.Fatal("VPS_COMMANDER_API_KEY and VPS_COMMANDER_WEB_PASSWORD are required via environment")
+	if webPassword == "" || (apiKey == "" && !legacyKeyOff) {
+		log.Fatal("VPS_COMMANDER_WEB_PASSWORD is required; VPS_COMMANDER_API_KEY is required unless VPS_COMMANDER_LEGACY_KEY=off")
 	}
 	store, err := storage.Open(*dbPath)
 	if err != nil {
@@ -55,6 +57,9 @@ func main() {
 	}
 	authManager := auth.NewManagerWithValidator(apiKey, auth.TokenValidatorFunc(func(raw, ip string) (auth.Principal, bool) {
 		id, name, scopes, devices, ok := store.ValidateAPIToken(raw, ip)
+		if legacyKeyOff && id == "legacy-env" {
+			ok = false
+		}
 		if !ok {
 			return auth.Principal{}, false
 		}
@@ -89,6 +94,7 @@ func main() {
 
 	// MCP Server instance
 	mcpServer := mcp.NewServer(s.NewMCPBackend(), authManager)
+	s.MCP = mcpServer
 
 	protected := auth.Middleware{Manager: authManager}.Handler(s.Routes())
 	mux := http.NewServeMux()

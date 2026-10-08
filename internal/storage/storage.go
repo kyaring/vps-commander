@@ -52,7 +52,10 @@ func (s *Store) init() error {
 	if err != nil {
 		return err
 	}
-	return s.migrateDevices()
+	if err := s.migrateDevices(); err != nil {
+		return err
+	}
+	return s.migrateAudit()
 }
 
 type MCPService struct {
@@ -267,6 +270,70 @@ func (s *Store) DeleteDevice(name string) error {
 	return err
 }
 
+func (s *Store) migrateAudit() error {
+	rows, err := s.DB.Query("PRAGMA table_info(audit_logs)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	migrations := []struct{ name, sql string }{
+		{"actor_type", "ALTER TABLE audit_logs ADD COLUMN actor_type TEXT"},
+		{"actor_id", "ALTER TABLE audit_logs ADD COLUMN actor_id TEXT"},
+		{"actor_name", "ALTER TABLE audit_logs ADD COLUMN actor_name TEXT"},
+		{"transport", "ALTER TABLE audit_logs ADD COLUMN transport TEXT"},
+		{"target_type", "ALTER TABLE audit_logs ADD COLUMN target_type TEXT"},
+		{"target", "ALTER TABLE audit_logs ADD COLUMN target TEXT"},
+		{"result", "ALTER TABLE audit_logs ADD COLUMN result TEXT"},
+		{"request_id", "ALTER TABLE audit_logs ADD COLUMN request_id TEXT"},
+		{"session_id", "ALTER TABLE audit_logs ADD COLUMN session_id TEXT"},
+	}
+	for _, m := range migrations {
+		if !cols[m.name] {
+			if _, err := s.DB.Exec(m.sql); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = s.DB.Exec("UPDATE audit_logs SET actor_name=COALESCE(actor_name,'unknown(legacy)'), result=COALESCE(result,CASE WHEN exit_code=0 THEN 'ok' ELSE 'error' END), transport=COALESCE(transport,'legacy') WHERE actor_name IS NULL OR result IS NULL OR transport IS NULL")
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(timestamp); CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor_name,timestamp); CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device,timestamp)")
+	return err
+}
+
+type AuditEntry struct {
+	CallerIP   string
+	Device     string
+	Action     string
+	Command    string
+	ExitCode   int
+	DurationMS int64
+	ErrorMsg   string
+	ActorType  string
+	ActorID    string
+	ActorName  string
+	Transport  string
+	TargetType string
+	Target     string
+	Result     string
+	RequestID  string
+	SessionID  string
+}
+
 type AuditLog struct {
 	ID         int64  `json:"id"`
 	Timestamp  int64  `json:"timestamp"`
@@ -277,6 +344,15 @@ type AuditLog struct {
 	ExitCode   int    `json:"exit_code"`
 	DurationMS int64  `json:"duration_ms"`
 	ErrorMsg   string `json:"error_msg"`
+	ActorType  string `json:"actor_type"`
+	ActorID    string `json:"actor_id"`
+	ActorName  string `json:"actor_name"`
+	Transport  string `json:"transport"`
+	TargetType string `json:"target_type"`
+	Target     string `json:"target"`
+	Result     string `json:"result"`
+	RequestID  string `json:"request_id"`
+	SessionID  string `json:"session_id"`
 }
 
 var auditSecretRE = regexp.MustCompile(`(?i)(authorization|bearer|token|api[_-]?key|password|secret|cookie)(\s*[:=]\s+)([^\s,;]+)`)
@@ -290,10 +366,28 @@ func redactAudit(v string) string {
 	}
 	return v
 }
-func (s *Store) Audit(ip, device, action, command string, code int, ms int64, msg string) error {
-	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg) VALUES(?,?,?,?,?,?,?,?)",
-		time.Now().Unix(), ip, device, action, redactAudit(command), code, ms, redactAudit(msg))
+func (s *Store) AuditEntry(e AuditEntry) error {
+	if e.ActorName == "" {
+		e.ActorName = "unknown(legacy)"
+	}
+	if e.Transport == "" {
+		e.Transport = "legacy"
+	}
+	if e.Result == "" {
+		if e.ExitCode == 0 {
+			e.Result = "ok"
+		} else {
+			e.Result = "error"
+		}
+	}
+	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		time.Now().Unix(), e.CallerIP, e.Device, e.Action, redactAudit(e.Command), e.ExitCode, e.DurationMS, redactAudit(e.ErrorMsg),
+		e.ActorType, e.ActorID, redactAudit(e.ActorName), e.Transport, redactAudit(e.TargetType), redactAudit(e.Target), e.Result, redactAudit(e.RequestID), redactAudit(e.SessionID))
 	return err
+}
+
+func (s *Store) Audit(ip, device, action, command string, code int, ms int64, msg string) error {
+	return s.AuditEntry(AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg})
 }
 
 type WebhookTarget struct {
@@ -342,14 +436,46 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
+func (s *Store) QueryAudits(actor, device, action, result string, from, to, cursor int64, limit int) ([]AuditLog, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	if limit > 500 {
 		limit = 500
 	}
-	rows, err := s.DB.Query("SELECT id,timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg FROM audit_logs ORDER BY id DESC LIMIT ?", limit)
+	q := "SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs WHERE 1=1"
+	args := []any{}
+	if actor != "" {
+		q += " AND actor_name=?"
+		args = append(args, actor)
+	}
+	if device != "" {
+		q += " AND device=?"
+		args = append(args, device)
+	}
+	if action != "" {
+		q += " AND action=?"
+		args = append(args, action)
+	}
+	if result != "" {
+		q += " AND result=?"
+		args = append(args, result)
+	}
+	if from > 0 {
+		q += " AND timestamp>=?"
+		args = append(args, from)
+	}
+	if to > 0 {
+		q += " AND timestamp<=?"
+		args = append(args, to)
+	}
+	if cursor > 0 {
+		q += " AND id<?"
+		args = append(args, cursor)
+	}
+	q += " ORDER BY id DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +483,30 @@ func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
 	out := make([]AuditLog, 0, limit)
 	for rows.Next() {
 		var v AuditLog
-		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg); err != nil {
+		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := s.DB.Query("SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AuditLog, 0, limit)
+	for rows.Next() {
+		var v AuditLog
+		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

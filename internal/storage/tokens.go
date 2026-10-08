@@ -145,7 +145,11 @@ func (s *Store) ValidateAPIToken(token, ip string) (string, string, map[string]b
 		return "", "", nil, nil, false
 	}
 	prefix := token
-	if len(prefix) > 8 {
+	if strings.HasPrefix(token, "vpc_") {
+		if i := strings.IndexByte(token[4:], '_'); i >= 0 {
+			prefix = token[4 : 4+i]
+		}
+	} else if len(prefix) > 8 {
 		prefix = prefix[:8]
 	}
 	t, err := s.GetAPITokenByPrefix(prefix)

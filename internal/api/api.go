@@ -22,6 +22,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
+	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/model"
 	"github.com/wjyhk/vps-commander/internal/notify"
 	"github.com/wjyhk/vps-commander/internal/security"
@@ -40,6 +41,7 @@ const (
 
 type Server struct {
 	Auth           *auth.Manager
+	MCP            *mcp.Server
 	Exec           executor.Local
 	Cluster        *cluster.Manager
 	Store          *storage.Store
@@ -142,7 +144,7 @@ func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device,
 	if detail != "" {
 		reason += ": " + detail
 	}
-	_ = s.Store.Audit(clientIP(r), device, "security_denied", action, http.StatusForbidden, 0, reason)
+	_ = s.audit(r, device, "security_denied", action, http.StatusForbidden, 0, reason)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"forbidden","device":%q,"mode":%q,"reason":%q}`, device, mode, reason)))
@@ -182,7 +184,7 @@ func (s *Server) UpdateWebhookTargetJSON(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	_ = s.Store.Audit(clientIP(r), "", "notification_setting", "webhook:"+v.ID, 0, 0, "")
+	_ = s.audit(r, "", "notification_setting", "webhook:"+v.ID, 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true, "id": v.ID})
 }
 func (s *Server) DeleteWebhookTargetJSON(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +286,7 @@ func (s *Server) ProvisionDeviceCredentialJSON(w http.ResponseWriter, r *http.Re
 		http.Error(w, "credential save failed", 500)
 		return
 	}
-	_ = s.Store.Audit(clientIP(r), q.Device, "device_credential_provision", "device="+q.Device, 0, 0, "credential provisioned")
+	_ = s.audit(r, q.Device, "device_credential_provision", "device="+q.Device, 0, 0, "credential provisioned")
 	jsonOut(w, map[string]any{"ok": true, "device": q.Device, "token": token, "install_command": s.InstallCommand})
 }
 
@@ -329,10 +331,10 @@ func (s *Server) UpdateSecuritySettingsJSON(w http.ResponseWriter, r *http.Reque
 	}
 	newGlobal := s.GetEffectiveSecurityMode(s.LocalName)
 	if q.Global != "" {
-		_ = s.Store.Audit(clientIP(r), "", "security_setting", "global="+q.Global, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldGlobal, newGlobal, s.Policy.Current().Version))
+		_ = s.audit(r, "", "security_setting", "global="+q.Global, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldGlobal, newGlobal, s.Policy.Current().Version))
 	}
 	if q.Node != "" {
-		_ = s.Store.Audit(clientIP(r), q.Node, "security_setting", "mode="+q.Mode, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldNode, s.GetEffectiveSecurityMode(q.Node), s.Policy.Current().Version))
+		_ = s.audit(r, q.Node, "security_setting", "mode="+q.Mode, 0, 0, fmt.Sprintf("old=%s new=%s version=%d", oldNode, s.GetEffectiveSecurityMode(q.Node), s.Policy.Current().Version))
 	}
 	jsonOut(w, map[string]any{"ok": true, "global": s.Store.GetGlobalSecurityMode(), "node": q.Node, "mode": q.Mode, "version": s.Policy.Current().Version})
 }
@@ -378,7 +380,10 @@ func (s *Server) AuditsJSON(w http.ResponseWriter, r *http.Request) {
 	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
 		limit = v
 	}
-	logs, err := s.Store.RecentAudits(limit)
+	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	logs, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), from, to, cursor, limit)
 	if err != nil {
 		http.Error(w, "audit query failed", 500)
 		return
@@ -461,11 +466,11 @@ func (s *Server) TestMCPJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		_ = s.Store.Audit(clientIP(r), q.Device, "mcp_test", service.Name, 1, ms, err.Error())
+		_ = s.audit(r, q.Device, "mcp_test", service.Name, 1, ms, err.Error())
 		jsonOut(w, map[string]any{"success": false, "device": q.Device, "transport": service.Transport, "duration_ms": ms, "tool_count": 0, "tools": []any{}, "error": map[string]any{"code": "MCP_TEST_FAILED", "message": err.Error()}})
 		return
 	}
-	_ = s.Store.Audit(clientIP(r), q.Device, "mcp_test", service.Name, 0, ms, "")
+	_ = s.audit(r, q.Device, "mcp_test", service.Name, 0, ms, "")
 	jsonOut(w, map[string]any{"success": true, "device": q.Device, "transport": service.Transport, "duration_ms": ms, "tool_count": len(tools), "tools": tools, "error": nil})
 }
 
@@ -511,7 +516,7 @@ func (s *Server) MCPServicesJSON(w http.ResponseWriter, r *http.Request) {
 		if s.Cluster != nil {
 			s.Cluster.SyncMCPServices()
 		}
-		_ = s.Store.Audit(clientIP(r), s.LocalName, "mcp_service_save", q.ID, 0, 0, "")
+		_ = s.audit(r, s.LocalName, "mcp_service_save", q.ID, 0, 0, "")
 		jsonOut(w, v)
 	default:
 		http.Error(w, "method not allowed", 405)
@@ -534,7 +539,7 @@ func (s *Server) DeleteMCPService(w http.ResponseWriter, r *http.Request) {
 	if s.Cluster != nil {
 		s.Cluster.SyncMCPServices()
 	}
-	_ = s.Store.Audit(clientIP(r), s.LocalName, "mcp_service_delete", id, 0, 0, "")
+	_ = s.audit(r, s.LocalName, "mcp_service_delete", id, 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true})
 }
 func (s *Server) ListAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
@@ -581,7 +586,7 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.isRemote(q.Device) && (s.Cluster == nil || !s.Cluster.Online(q.Device)) {
 		if s.Store != nil {
-			_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, 0, "device offline")
+			_ = s.audit(r, q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, 0, "device offline")
 		}
 		http.Error(w, "device offline", 409)
 		return
@@ -594,38 +599,50 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 	v, err := s.Cluster.CallMCP(r.Context(), q.Device, q.Server, q.Tool, q.Arguments)
 	ms := time.Since(start).Milliseconds()
 	if err != nil {
-		_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, ms, err.Error())
+		_ = s.audit(r, q.Device, "mcp_call", q.Server+"/"+q.Tool, 1, ms, err.Error())
 		http.Error(w, err.Error(), 502)
 		return
 	}
-	_ = s.Store.Audit(clientIP(r), q.Device, "mcp_call", q.Server+"/"+q.Tool, 0, ms, "")
+	_ = s.audit(r, q.Device, "mcp_call", q.Server+"/"+q.Tool, 0, ms, "")
 	jsonOut(w, v)
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
-	mux.HandleFunc("/api/v1/devices", s.devices)
-	mux.HandleFunc("/api/v1/exec", s.exec)
-	mux.HandleFunc("/api/v1/file/read", s.fileRead)
-	mux.HandleFunc("/api/v1/file/list", s.listDirectory)
-	mux.HandleFunc("/api/v1/file/info", s.fileInfo)
-	mux.HandleFunc("/api/v1/file/search", s.searchFiles)
-	mux.HandleFunc("/api/v1/process/session", s.processSession)
-	mux.HandleFunc("/api/v1/file/write", s.fileWrite)
-	mux.HandleFunc("/api/v1/devices/file/edit_block", s.editBlock)
-	mux.HandleFunc("/api/v1/mcp/services", s.MCPServicesJSON)
-	mux.HandleFunc("/api/v1/mcp/service", s.DeleteMCPService)
-	mux.HandleFunc("/api/v1/mcp/list", s.ListAgentMCPJSON)
-	mux.HandleFunc("/api/v1/mcp/call", s.CallAgentMCPJSON)
-	mux.HandleFunc("/api/v1/mcp/test", s.TestMCPJSON)
-	mux.HandleFunc("/api/v1/security/settings", s.SecuritySettingsJSON)
-	mux.HandleFunc("/api/v1/security/settings/update", s.UpdateSecuritySettingsJSON)
-	mux.HandleFunc("/api/v1/security/device-credentials/provision", s.ProvisionDeviceCredentialJSON)
-	mux.HandleFunc("/api/v1/notifications/webhooks", s.WebhookTargetsJSON)
-	mux.HandleFunc("/api/v1/notifications/webhook/update", s.UpdateWebhookTargetJSON)
-	mux.HandleFunc("/api/v1/notifications/webhook/delete", s.DeleteWebhookTargetJSON)
-	mux.HandleFunc("/api/v1/notifications/webhook/test", s.TestWebhookJSON)
+	mux.Handle("/api/v1/devices", requireScope("devices:read", http.HandlerFunc(s.devices)))
+	mux.Handle("/api/v1/exec", requireScope("exec", http.HandlerFunc(s.exec)))
+	mux.Handle("/api/v1/file/read", requireScope("files:read", http.HandlerFunc(s.fileRead)))
+	mux.Handle("/api/v1/file/list", requireScope("files:read", http.HandlerFunc(s.listDirectory)))
+	mux.Handle("/api/v1/file/info", requireScope("files:read", http.HandlerFunc(s.fileInfo)))
+	mux.Handle("/api/v1/file/search", requireScope("files:read", http.HandlerFunc(s.searchFiles)))
+	mux.Handle("/api/v1/process/session", requireScope("process", http.HandlerFunc(s.processSession)))
+	mux.Handle("/api/v1/file/write", requireScope("files:write", http.HandlerFunc(s.fileWrite)))
+	mux.Handle("/api/v1/devices/file/edit_block", requireScope("files:write", http.HandlerFunc(s.editBlock)))
+	mux.Handle("/api/v1/mcp/services", requireScope("admin", http.HandlerFunc(s.MCPServicesJSON)))
+	mux.Handle("/api/v1/mcp/service", requireScope("admin", http.HandlerFunc(s.DeleteMCPService)))
+	mux.Handle("/api/v1/mcp/list", requireScope("mcp:call", http.HandlerFunc(s.ListAgentMCPJSON)))
+	mux.Handle("/api/v1/mcp/call", requireScope("mcp:call", http.HandlerFunc(s.CallAgentMCPJSON)))
+	mux.Handle("/api/v1/mcp/test", requireScope("mcp:call", http.HandlerFunc(s.TestMCPJSON)))
+	mux.Handle("/api/v1/security/settings", requireScope("admin", http.HandlerFunc(s.SecuritySettingsJSON)))
+	mux.Handle("/api/v1/security/settings/update", requireScope("admin", http.HandlerFunc(s.UpdateSecuritySettingsJSON)))
+	mux.Handle("/api/v1/security/device-credentials/provision", requireScope("admin", http.HandlerFunc(s.ProvisionDeviceCredentialJSON)))
+	mux.Handle("/api/v1/notifications/webhooks", requireScope("admin", http.HandlerFunc(s.WebhookTargetsJSON)))
+	mux.Handle("/api/v1/notifications/webhook/update", requireScope("admin", http.HandlerFunc(s.UpdateWebhookTargetJSON)))
+	mux.Handle("/api/v1/notifications/webhook/delete", requireScope("admin", http.HandlerFunc(s.DeleteWebhookTargetJSON)))
+	mux.Handle("/api/v1/notifications/webhook/test", requireScope("admin", http.HandlerFunc(s.TestWebhookJSON)))
+	mux.Handle("/api/v1/tokens", requireScope("admin", http.HandlerFunc(s.TokenListJSON)))
+	mux.Handle("/api/v1/tokens/", requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/rotate") {
+			s.TokenRotateJSON(w, r)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/revoke") {
+			s.TokenRevokeJSON(w, r)
+			return
+		}
+		s.TokenDeleteJSON(w, r)
+	})))
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
 	return mux
@@ -676,8 +693,20 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return remoteDevs[i].Name < remoteDevs[j].Name
 	})
 
-	// 本机永远钉死在第 1 位
-	out := append([]model.Device{localDev}, remoteDevs...)
+	p := principal(r)
+	if len(p.Devices) > 0 && !p.AllowsDevice(s.LocalName) && !p.AllowsDevice("local") {
+		localDev = model.Device{}
+	}
+	filtered := make([]model.Device, 0, len(remoteDevs))
+	for _, d := range remoteDevs {
+		if p.AllowsDevice(d.Name) {
+			filtered = append(filtered, d)
+		}
+	}
+	out := filtered
+	if localDev.Name != "" {
+		out = append([]model.Device{localDev}, out...)
+	}
 	jsonOut(w, out)
 }
 
@@ -699,7 +728,7 @@ func (s *Server) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 	} else if s.Store != nil {
 		_ = s.Store.RevokeDevice(name, "revoked by admin via web console")
 	}
-	_ = s.Store.Audit(clientIP(r), name, "revoke_device", "revoked by admin", 0, 0, "")
+	_ = s.audit(r, name, "revoke_device", "revoked by admin", 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true, "revoked": name})
 }
 
@@ -774,7 +803,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res = s.Exec.Run(ctx, req.Command, req.Workdir)
 	}
-	if err := s.Store.Audit(clientIP(r), req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, res.Stderr); err != nil {
+	if err := s.audit(r, req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, res.Stderr); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
@@ -1112,7 +1141,7 @@ func (s *Server) fileRead(w http.ResponseWriter, r *http.Request) {
 		content, n = string(buf[:rn]), int64(rn)
 		hasMore = req.Offset+n < totalSize
 	}
-	if err := s.Store.Audit(clientIP(r), req.Device, "file_read", req.Path, 0, 0, ""); err != nil {
+	if err := s.audit(r, req.Device, "file_read", req.Path, 0, 0, ""); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
@@ -1169,7 +1198,7 @@ func (s *Server) editBlock(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.Store.Audit(clientIP(r), req.Device, "edit_block", req.Path, 0, 0, fmt.Sprintf("bytes_written=%d", result.BytesWritten)); err != nil {
+	if err := s.audit(r, req.Device, "edit_block", req.Path, 0, 0, fmt.Sprintf("bytes_written=%d", result.BytesWritten)); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
@@ -1219,7 +1248,7 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		n = int64(len(req.Content))
 	}
-	if err := s.Store.Audit(clientIP(r), req.Device, "file_write", req.Path, 0, 0, ""); err != nil {
+	if err := s.audit(r, req.Device, "file_write", req.Path, 0, 0, ""); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}

@@ -98,19 +98,38 @@ type SecurityGate interface {
 	AuthorizeMCP(device, action, clientIP string) error
 }
 
+type session struct {
+	ch           chan []byte
+	ownerTokenID string
+	closeOnce    *sync.Once
+}
+
 type Server struct {
 	Backend ActionBackend
 	Auth    *auth.Manager
 
 	mu       sync.RWMutex
-	sessions map[string]chan []byte
+	sessions map[string]session
 }
 
 func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 	return &Server{
 		Backend:  backend,
 		Auth:     authMgr,
-		sessions: make(map[string]chan []byte),
+		sessions: make(map[string]session),
+	}
+}
+
+func (s *Server) CloseSessionsForToken(tokenID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.sessions {
+		if sess.ownerTokenID == tokenID {
+			if sess.closeOnce != nil {
+				sess.closeOnce.Do(func() { close(sess.ch) })
+			}
+			delete(s.sessions, id)
+		}
 	}
 }
 
@@ -135,15 +154,22 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := s.newSessionID()
 	msgCh := make(chan []byte, 64)
+	closeOnce := &sync.Once{}
+	p, _ := auth.PrincipalFromContext(r.Context())
 
 	s.mu.Lock()
-	s.sessions[sessionID] = msgCh
+	if len(s.sessions) >= 500 {
+		s.mu.Unlock()
+		http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
+		return
+	}
+	s.sessions[sessionID] = session{ch: msgCh, ownerTokenID: p.TokenID, closeOnce: closeOnce}
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
 		delete(s.sessions, sessionID)
-		close(msgCh)
+		closeOnce.Do(func() { close(msgCh) })
 		s.mu.Unlock()
 	}()
 
@@ -187,8 +213,15 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.URL.Query().Get("sessionId")
 	s.mu.RLock()
-	ch, exists := s.sessions[sessionID]
+	sess, exists := s.sessions[sessionID]
 	s.mu.RUnlock()
+	if exists {
+		p, _ := auth.PrincipalFromContext(r.Context())
+		if sess.ownerTokenID != "" && p.TokenID != sess.ownerTokenID {
+			http.Error(w, "session owner mismatch", http.StatusForbidden)
+			return
+		}
+	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024))
 	if err != nil {
@@ -206,9 +239,9 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 
 	// If session exists, push response via SSE; otherwise reply directly via HTTP
 	respBytes, _ := json.Marshal(resp)
-	if exists && ch != nil {
+	if exists && sess.ch != nil {
 		select {
-		case ch <- respBytes:
+		case sess.ch <- respBytes:
 		default:
 		}
 		w.WriteHeader(http.StatusAccepted)
