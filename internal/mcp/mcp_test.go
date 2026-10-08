@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/wjyhk/vps-commander/internal/auth"
 )
 
 type mockBackend struct{}
@@ -112,6 +114,7 @@ func TestMCPCallTool(t *testing.T) {
 	}
 	body, _ := json.Marshal(callReq)
 	req := httptest.NewRequest("POST", "/mcp/message", bytes.NewReader(body))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "test", Scopes: map[string]bool{"exec": true}, Devices: map[string]bool{"local": true}, MaxSessions: 1}))
 	w := httptest.NewRecorder()
 	srv.HandleMessage(w, req)
 
@@ -150,6 +153,57 @@ func (g *gatedMockBackend) ListAgentMCP(ctx context.Context, device string) (any
 
 func (g *gatedMockBackend) CallAgentMCP(ctx context.Context, clientIP, device, server, tool string, args any) (any, error) {
 	return map[string]any{"device": device, "server": server, "tool": tool}, nil
+}
+
+func TestMCPToolScopeAndDeviceMatrix(t *testing.T) {
+	cases := []struct{ name, scope string }{
+		{"exec_command", "exec"},
+		{"read_file", "files:read"},
+		{"read_multiple_files", "files:read"},
+		{"create_directory", "files:write"},
+		{"move_file", "files:write"},
+		{"list_processes", "files:read"},
+		{"diagnostic_command", "files:read"},
+		{"edit_block", "files:write"},
+		{"write_file", "files:write"},
+		{"list_agent_mcp", "files:read"},
+		{"call_agent_mcp", "mcp:call"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := CallToolParams{Name: tc.name, Arguments: json.RawMessage(`{"device":"local"}`)}
+			ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", TokenID: "t", Scopes: map[string]bool{tc.scope: true}, Devices: map[string]bool{"local": true}})
+			res, failed := NewServer(&mockBackend{}, nil).callTool(ctx, "127.0.0.1", params)
+			if failed && strings.Contains(fmt.Sprint(res), "scope denied") {
+				t.Fatalf("valid scope denied: %v", res)
+			}
+
+			wrong := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", TokenID: "t", Scopes: map[string]bool{"devices:read": true}, Devices: map[string]bool{"local": true}})
+			res, failed = NewServer(&mockBackend{}, nil).callTool(wrong, "127.0.0.1", params)
+			if !failed || !strings.Contains(fmt.Sprint(res), "scope denied") {
+				t.Fatalf("wrong scope allowed: %v", res)
+			}
+
+			denied := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", TokenID: "t", Scopes: map[string]bool{tc.scope: true}, Devices: map[string]bool{"N3450": true}})
+			res, failed = NewServer(&mockBackend{}, nil).callTool(denied, "127.0.0.1", params)
+			if !failed || !strings.Contains(fmt.Sprint(res), "device denied") {
+				t.Fatalf("device whitelist bypassed: %v", res)
+			}
+		})
+	}
+}
+
+func TestMCPListDevicesRequiresScope(t *testing.T) {
+	params := CallToolParams{Name: "list_devices", Arguments: json.RawMessage("{}")}
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", TokenID: "t", Scopes: map[string]bool{"devices:read": true}})
+	if _, failed := NewServer(&mockBackend{}, nil).callTool(ctx, "127.0.0.1", params); failed {
+		t.Fatal("devices:read should allow list_devices")
+	}
+	wrong := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", TokenID: "t", Scopes: map[string]bool{"files:read": true}})
+	res, failed := NewServer(&mockBackend{}, nil).callTool(wrong, "127.0.0.1", params)
+	if !failed || !strings.Contains(fmt.Sprint(res), "scope denied") {
+		t.Fatalf("list_devices scope bypassed: %v", res)
+	}
 }
 
 func TestMCPAgentCallUsesSecurityGate(t *testing.T) {

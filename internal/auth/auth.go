@@ -12,12 +12,13 @@ import (
 )
 
 type Principal struct {
-	Type    string
-	ID      string
-	Name    string
-	Scopes  map[string]bool
-	Devices map[string]bool
-	TokenID string
+	Type        string
+	ID          string
+	Name        string
+	Scopes      map[string]bool
+	Devices     map[string]bool
+	TokenID     string
+	MaxSessions int
 }
 
 func (p Principal) HasScope(scope string) bool {
@@ -70,6 +71,7 @@ func (m *Manager) PrincipalFromRequest(r *http.Request) (Principal, bool) {
 		if p, ok := m.validator.ValidateAPIToken(got, r.RemoteAddr); ok {
 			return p, true
 		}
+		return Principal{}, false
 	}
 	expected := m.Token()
 	if expected != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1 {

@@ -3,6 +3,7 @@ package storage
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -128,6 +129,25 @@ func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS
 	return nil
 }
 
+func (s *Store) RotateAPIToken(id, prefix, tokenHash string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var revoked sql.NullInt64
+	if err := tx.QueryRow("SELECT revoked_at FROM api_tokens WHERE id=?", id).Scan(&revoked); err != nil {
+		return err
+	}
+	if revoked.Valid {
+		return fmt.Errorf("token already revoked")
+	}
+	if _, err := tx.Exec("UPDATE api_tokens SET prefix=?,token_hash=?,revoked_at=NULL WHERE id=?", prefix, tokenHash, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RevokeAPIToken(id string) error {
 	now := time.Now().Unix()
 	r, err := s.DB.Exec("UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL", now, id)
@@ -153,8 +173,26 @@ func (s *Store) DeleteAPIToken(id string) error {
 	return nil
 }
 
+func (s *Store) GetAPITokenByID(id string) (APIToken, error) {
+	var t APIToken
+	var legacy int
+	row := s.DB.QueryRow("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens WHERE id=?", id)
+	err := row.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy)
+	t.IsLegacy = legacy != 0
+	return t, err
+}
+
 func (s *Store) TouchAPIToken(id, ip string) error {
-	_, err := s.DB.Exec("UPDATE api_tokens SET last_used_at=?,last_used_ip=? WHERE id=?", time.Now().Unix(), ip, id)
+	now := time.Now().Unix()
+	var last sql.NullInt64
+	var lastIP sql.NullString
+	if err := s.DB.QueryRow("SELECT last_used_at,last_used_ip FROM api_tokens WHERE id=?", id).Scan(&last, &lastIP); err != nil {
+		return err
+	}
+	if last.Valid && lastIP.String == ip && now-last.Int64 < 60 {
+		return nil
+	}
+	_, err := s.DB.Exec("UPDATE api_tokens SET last_used_at=?,last_used_ip=? WHERE id=?", now, ip, id)
 	return err
 }
 

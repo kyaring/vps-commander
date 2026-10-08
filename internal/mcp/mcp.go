@@ -105,8 +105,9 @@ type session struct {
 }
 
 type Server struct {
-	Backend ActionBackend
-	Auth    *auth.Manager
+	Backend   ActionBackend
+	Auth      *auth.Manager
+	LocalName string
 
 	mu       sync.RWMutex
 	sessions map[string]session
@@ -114,9 +115,16 @@ type Server struct {
 
 func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 	return &Server{
-		Backend:  backend,
-		Auth:     authMgr,
-		sessions: make(map[string]session),
+		Backend:   backend,
+		Auth:      authMgr,
+		LocalName: "local",
+		sessions:  make(map[string]session),
+	}
+}
+
+func (s *Server) SetLocalName(name string) {
+	if name != "" {
+		s.LocalName = name
 	}
 }
 
@@ -155,13 +163,30 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	sessionID := s.newSessionID()
 	msgCh := make(chan []byte, 64)
 	closeOnce := &sync.Once{}
-	p, _ := auth.PrincipalFromContext(r.Context())
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	s.mu.Lock()
 	if len(s.sessions) >= 500 {
 		s.mu.Unlock()
 		http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
 		return
+	}
+	if p.MaxSessions > 0 && p.TokenID != "" {
+		count := 0
+		for _, sess := range s.sessions {
+			if sess.ownerTokenID == p.TokenID {
+				count++
+			}
+		}
+		if count >= p.MaxSessions {
+			s.mu.Unlock()
+			http.Error(w, "token MCP session limit reached", http.StatusTooManyRequests)
+			return
+		}
 	}
 	s.sessions[sessionID] = session{ch: msgCh, ownerTokenID: p.TokenID, closeOnce: closeOnce}
 	s.mu.Unlock()
@@ -386,7 +411,53 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 	}
 }
 
+func mcpToolScope(name string) string {
+	switch name {
+	case "list_devices":
+		return "devices:read"
+	case "exec_command":
+		return "exec"
+	case "read_file", "read_multiple_files", "list_processes", "diagnostic_command", "list_agent_mcp":
+		return "files:read"
+	case "create_directory", "move_file", "edit_block", "write_file":
+		return "files:write"
+	case "call_agent_mcp":
+		return "mcp:call"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
+	if device == "local" && s.LocalName != "" {
+		device = s.LocalName
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return fmt.Errorf("unauthorized")
+	}
+	if scope := mcpToolScope(name); scope == "" || !p.HasScope(scope) {
+		return fmt.Errorf("scope denied: %s", scope)
+	}
+	if device != "" && !p.AllowsDevice(device) {
+		return fmt.Errorf("device denied: %s", device)
+	}
+	return nil
+}
+
 func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolParams) (any, bool) {
+	device := ""
+	var rawDevice map[string]any
+	_ = json.Unmarshal(params.Arguments, &rawDevice)
+	if v, ok := rawDevice["device"].(string); ok {
+		device = v
+	}
+	if device == "" && params.Name != "list_devices" {
+		device = "local"
+	}
+	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
+		return map[string]string{"error": err.Error()}, true
+	}
 	switch params.Name {
 	case "list_devices":
 		devs, err := s.Backend.ListDevices(ctx)
@@ -582,5 +653,8 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 }
 
 func (s *Server) HandleDirectRequest(ctx context.Context, req JSONRPCRequest) JSONRPCResponse {
+	if _, ok := auth.PrincipalFromContext(ctx); !ok {
+		ctx = auth.WithPrincipal(ctx, auth.Principal{Type: "system", ID: "stdio", Name: "stdio"})
+	}
 	return s.handleRequest(ctx, &http.Request{RemoteAddr: "stdio"}, req)
 }

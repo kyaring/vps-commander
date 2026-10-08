@@ -65,13 +65,14 @@ func main() {
 	}
 	authManager := auth.NewManagerWithValidator(apiKey, auth.TokenValidatorFunc(func(raw, ip string) (auth.Principal, bool) {
 		id, name, scopes, devices, ok := store.ValidateAPIToken(raw, ip)
-		if legacyKeyOff && id == "legacy-env" {
-			ok = false
-		}
 		if !ok {
 			return auth.Principal{}, false
 		}
-		return auth.Principal{Type: "api_token", ID: id, Name: name, TokenID: id, Scopes: scopes, Devices: devices}, true
+		t, err := store.GetAPITokenByID(id)
+		if err != nil || (legacyKeyOff && t.IsLegacy) {
+			return auth.Principal{}, false
+		}
+		return auth.Principal{Type: "api_token", ID: id, Name: name, TokenID: id, Scopes: scopes, Devices: devices, MaxSessions: t.MaxSessions}, true
 	}))
 	local := "local"
 	if h, err := os.Hostname(); err == nil && h != "" {
@@ -102,6 +103,7 @@ func main() {
 
 	// MCP Server instance
 	mcpServer := mcp.NewServer(s.NewMCPBackend(), authManager)
+	mcpServer.SetLocalName(local)
 	s.MCP = mcpServer
 
 	protected := auth.Middleware{Manager: authManager}.Handler(s.Routes())

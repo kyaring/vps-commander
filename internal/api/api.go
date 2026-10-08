@@ -633,9 +633,18 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/notifications/webhook/test", requireScope("admin", http.HandlerFunc(s.TestWebhookJSON)))
 	mux.Handle("/api/v1/audits/export.csv", requireScope("admin", http.HandlerFunc(s.AuditExportCSV)))
 	mux.Handle("/api/v1/audits", requireScope("admin", http.HandlerFunc(s.AuditsJSON)))
-	mux.Handle("/api/v1/tokens", requireScope("admin", http.HandlerFunc(s.TokenListJSON)))
+	mux.Handle("/api/v1/tokens", requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.TokenCreateJSON(w, r)
+			return
+		}
+		s.TokenListJSON(w, r)
+	})))
 	mux.Handle("/api/v1/tokens/", requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch { s.TokenPatchJSON(w,r); return }
+		if r.Method == http.MethodPatch {
+			s.TokenPatchJSON(w, r)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/rotate") {
 			s.TokenRotateJSON(w, r)
 			return
@@ -1263,6 +1272,19 @@ func validPath(path string) bool {
 }
 
 func clientIP(r *http.Request) string {
+	if strings.EqualFold(os.Getenv("VPS_COMMANDER_TRUST_PROXY"), "on") {
+		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
+			if i := strings.IndexByte(v, ','); i >= 0 {
+				v = v[:i]
+			}
+			if net.ParseIP(strings.TrimSpace(v)) != nil {
+				return strings.TrimSpace(v)
+			}
+		}
+		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
+			return v
+		}
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host

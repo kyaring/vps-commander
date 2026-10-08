@@ -208,10 +208,14 @@ func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
 	scopesJSON := old.ScopesJSON
 	if a, ok := q["scopes"].([]any); ok {
 		sc := []string{}
+		allowed := map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}
 		for _, v := range a {
-			if x, ok := v.(string); ok {
-				sc = append(sc, x)
+			x, ok := v.(string)
+			if !ok || !allowed[x] {
+				http.Error(w, "invalid scope", 400)
+				return
 			}
+			sc = append(sc, x)
 		}
 		b, _ := json.Marshal(sc)
 		scopesJSON = string(b)
@@ -271,14 +275,15 @@ func (s *Server) TokenRotateJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := randomTokenPart(8)
 	token := "vpc_" + prefix + "_" + randomTokenPart(32)
-	_ = s.Store.RevokeAPIToken(id)
-	t := storage.APIToken{ID: randomTokenPart(16), Name: old.Name, Prefix: prefix, TokenHash: storage.HashAPIToken(token), ScopesJSON: old.ScopesJSON, DevicesJSON: old.DevicesJSON, RateRPS: old.RateRPS, MaxSessions: old.MaxSessions, Note: old.Note, CreatedAt: time.Now().Unix(), CreatedBy: "api:admin", ExpiresAt: old.ExpiresAt}
-	if err := s.Store.CreateAPIToken(t); err != nil {
-		http.Error(w, "token rotate failed", 500)
+	if err := s.Store.RotateAPIToken(id, prefix, storage.HashAPIToken(token)); err != nil {
+		http.Error(w, "token rotate failed", 409)
 		return
 	}
+	if s.MCP != nil {
+		s.MCP.CloseSessionsForToken(id)
+	}
 	_ = s.audit(r, "", "token_rotate", old.Name, 0, 0, "")
-	jsonOut(w, map[string]any{"id": t.ID, "name": t.Name, "token": token, "prefix": prefix})
+	jsonOut(w, map[string]any{"id": id, "name": old.Name, "token": token, "prefix": prefix})
 }
 
 func (s *Server) TokenRevokeJSON(w http.ResponseWriter, r *http.Request) {
