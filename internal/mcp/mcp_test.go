@@ -43,10 +43,17 @@ func TestMCPToolsListFiltersByScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected tools result: %#v", result["tools"])
 	}
+	foundReadFile := false
 	for _, tool := range tools {
 		if scope := mcpToolScope(tool.Name); scope != "" && scope != "files:read" {
 			t.Fatalf("scope-filtered tool leaked: %s", tool.Name)
 		}
+		if tool.Name == "read_file" {
+			foundReadFile = true
+		}
+	}
+	if !foundReadFile {
+		t.Fatal("read_file missing from scope-filtered tools/list")
 	}
 }
 
@@ -191,7 +198,7 @@ func TestMCPToolScopeAndDeviceMatrix(t *testing.T) {
 		{"read_multiple_files", "files:read"},
 		{"create_directory", "files:write"},
 		{"move_file", "files:write"},
-		{"list_processes", "files:read"},
+		{"list_processes", "process"},
 		{"diagnostic_command", "files:read"},
 		{"edit_block", "files:write"},
 		{"write_file", "files:write"},

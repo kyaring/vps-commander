@@ -34,6 +34,10 @@ func principal(r *http.Request) auth.Principal {
 }
 
 func (s *Server) auditContext(ctx context.Context, ip, device, action, command string, code int, ms int64, msg string) error {
+	return s.auditContextTarget(ctx, ip, device, action, command, command, code, ms, msg)
+}
+
+func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, target, command string, code int, ms int64, msg string) error {
 	p, _ := auth.PrincipalFromContext(ctx)
 	targetType := "device"
 	if strings.HasPrefix(action, "token_") {
@@ -53,6 +57,7 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 	}
 	if action == "device_denied" {
 		targetType = "device"
+		target = device
 		result = "denied"
 		command = device
 		code = 0
@@ -63,10 +68,11 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 		code = 0
 	}
 	if action == "scope_denied" {
+		targetType = "scope"
 		result = "denied"
 		code = 0
 	}
-	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: command, Result: result})
+	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
 }
 
 func (s *Server) AuditMCP(ctx context.Context, ip, device, tool, result, detail string) {
@@ -103,7 +109,7 @@ func (s *Server) audit(r *http.Request, device, action, command string, code int
 func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !principal(r).HasScope(scope) {
-			_ = s.auditContext(r.Context(), auth.ClientIP(r), "", "scope_denied", scope, 0, 0, "required scope denied")
+			_ = s.auditContextTarget(r.Context(), auth.ClientIP(r), "", "scope_denied", scope, r.URL.Path, 0, 0, "required scope denied")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"scope %s required"}`, scope)))

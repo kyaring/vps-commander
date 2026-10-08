@@ -36,4 +36,7 @@ func TestRequireScopeWritesDeniedAudit(t *testing.T) {
 	if got.Action != "scope_denied" || got.Result != "denied" || got.ActorID != "token-ro" {
 		t.Fatalf("unexpected audit: %+v", got)
 	}
+	if got.TargetType != "scope" || got.Target != "exec" || got.Command != "/api/v1/exec" {
+		t.Fatalf("unexpected scope audit target: %+v", got)
+	}
 }

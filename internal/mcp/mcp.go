@@ -431,8 +431,10 @@ func mcpToolScope(name string) string {
 		return "devices:read"
 	case "exec_command":
 		return "exec"
-	case "read_file", "read_multiple_files", "list_processes", "diagnostic_command", "list_agent_mcp":
+	case "read_file", "read_multiple_files", "diagnostic_command", "list_agent_mcp":
 		return "files:read"
+	case "list_processes":
+		return "process"
 	case "create_directory", "move_file", "edit_block", "write_file":
 		return "files:write"
 	case "call_agent_mcp":

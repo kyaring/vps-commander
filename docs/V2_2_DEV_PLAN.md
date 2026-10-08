@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 - 面板登录会话的 Principal 为 `panel:admin`（后续可扩展多用户）。
 - 鉴权 = **令牌 scope 允许** AND **现有安全策略（Low/Medium/High 门禁）允许** AND **设备在白名单内**；任一拒绝返回 403 并记审计 `result=denied`。
 - scope 与动作映射集中在 `internal/security/registry.go`（已有 Tool Registry，扩展字段 `scope`），REST 与 MCP 共用同一张表，禁止各处硬编码。
+- MCP 工具 scope 映射：`list_devices -> devices:read`；`exec_command -> exec`；`read_file/read_multiple_files/diagnostic_command/list_agent_mcp -> files:read`；`list_processes -> process`；`create_directory/move_file/edit_block/write_file -> files:write`；`call_agent_mcp -> mcp:call`。其中 `list_processes` 使用既有 `process` scope，`list_agent_mcp` 使用 `files:read`，作为当前兼容设计明确记录。
 
 ### A4. MCP 会话绑定令牌
 
