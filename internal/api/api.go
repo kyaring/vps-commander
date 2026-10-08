@@ -146,10 +146,13 @@ func (s *Server) requireDeviceAccess(w http.ResponseWriter, r *http.Request, dev
 	device = s.normalizeDevice(device)
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
-		return true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
+		return false
 	}
 	if !p.AllowsDevice(device) {
-		_ = s.audit(r, device, "device_denied", "device", http.StatusForbidden, 0, "token device whitelist denied")
+		_ = s.audit(r, device, "device_denied", "", 0, 0, "token device whitelist denied")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"device denied","device":%q}`, device)))
@@ -612,11 +615,16 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", 400)
 		return
 	}
-	if q.Device == "" || q.Server == "" || q.Tool == "" {
-		http.Error(w, "device, server and tool required", 400)
+	if q.Device == "" {
+		http.Error(w, "device required", 400)
 		return
 	}
+	q.Device = s.normalizeDevice(q.Device)
 	if !s.requireSecurity(w, r, q.Device, "mcp", q.Server+"/"+q.Tool) {
+		return
+	}
+	if q.Server == "" || q.Tool == "" {
+		http.Error(w, "server and tool required", 400)
 		return
 	}
 	if s.isRemote(q.Device) && (s.Cluster == nil || !s.Cluster.Online(q.Device)) {

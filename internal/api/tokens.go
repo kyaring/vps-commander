@@ -47,6 +47,12 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 	if code != 0 {
 		result = "error"
 	}
+	if action == "device_denied" {
+		targetType = "device"
+		result = "denied"
+		command = device
+		code = 0
+	}
 	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "rest", TargetType: targetType, Target: command, Result: result})
 }
 
@@ -111,6 +117,37 @@ func (s *Server) TokenListJSON(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, out)
 }
 
+func (s *Server) normalizeTokenDevices(devices []string) ([]string, error) {
+	if len(devices) == 0 {
+		return []string{}, nil
+	}
+	known := make(map[string]bool)
+	if s.LocalName != "" {
+		known[s.LocalName] = true
+		known["local"] = true
+	}
+	if s.Cluster != nil {
+		for _, d := range s.Cluster.Devices() {
+			if name, ok := d["name"].(string); ok && strings.TrimSpace(name) != "" {
+				known[name] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(devices))
+	seen := make(map[string]bool)
+	for _, raw := range devices {
+		device := s.normalizeDevice(strings.TrimSpace(raw))
+		if device == "" || !known[device] {
+			return nil, fmt.Errorf("unknown device: %q", raw)
+		}
+		if !seen[device] {
+			seen[device] = true
+			out = append(out, device)
+		}
+	}
+	return out, nil
+}
+
 func (s *Server) TokenCreateJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", 405)
@@ -150,6 +187,11 @@ func (s *Server) TokenCreateJSON(w http.ResponseWriter, r *http.Request) {
 				devices = append(devices, x)
 			}
 		}
+	}
+	devices, err := s.normalizeTokenDevices(devices)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
 	}
 	rate := 10
 	if x, ok := q["rate_rps"].(float64); ok && int(x) > 0 {
@@ -227,6 +269,11 @@ func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
 			if x, ok := v.(string); ok {
 				ds = append(ds, x)
 			}
+		}
+		ds, err = s.normalizeTokenDevices(ds)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
 		}
 		b, _ := json.Marshal(ds)
 		devicesJSON = string(b)

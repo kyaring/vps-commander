@@ -11,9 +11,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
+
+func systemRequest(req *http.Request) *http.Request {
+	return req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
+		Type: "system", ID: "test-system", Name: "test-system",
+		Scopes: map[string]bool{"exec": true, "files:read": true, "files:write": true, "process": true, "mcp:call": true, "admin": true},
+	}))
+}
 
 func TestExecConcurrent100AuditsPersisted(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "commander.db"))
@@ -36,7 +44,7 @@ func TestExecConcurrent100AuditsPersisted(t *testing.T) {
 			defer wg.Done()
 			req := httptest.NewRequest("POST", "/api/v1/exec", strings.NewReader("{\"device\":\"local\",\"command\":\"true\",\"timeout\":10}"))
 			rec := httptest.NewRecorder()
-			s.exec(rec, req)
+			s.exec(rec, systemRequest(req))
 			statuses <- rec.Code
 		}()
 	}
@@ -83,7 +91,7 @@ func TestSecurityEffectiveModeAndExecGate(t *testing.T) {
 	}
 	req := httptest.NewRequest("POST", "/api/v1/exec", strings.NewReader(`{"device":"node-a","command":"true"}`))
 	rec := httptest.NewRecorder()
-	s.exec(rec, req)
+	s.exec(rec, systemRequest(req))
 	if rec.Code != 403 {
 		t.Fatalf("low exec status=%d", rec.Code)
 	}
@@ -109,14 +117,14 @@ func TestProcessSessionLocalSnakeCaseAndLifecycle(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=start", strings.NewReader(`{"device":"local","session_id":"session-test-001","command":"sleep 0.2; printf local-ok"}`))
 	w := httptest.NewRecorder()
-	s.processSession(w, req)
+	s.processSession(w, systemRequest(req))
 	if w.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", w.Code, w.Body.String())
 	}
 	time.Sleep(1 * time.Second)
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=read", strings.NewReader(`{"device":"local","session_id":"session-test-001"}`))
 	w = httptest.NewRecorder()
-	s.processSession(w, req)
+	s.processSession(w, systemRequest(req))
 	if w.Code != http.StatusOK {
 		t.Fatalf("read status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -145,7 +153,7 @@ func TestEditBlockSecurityAndReplacement(t *testing.T) {
 	}
 	r := httptest.NewRequest(http.MethodPost, "/api/v1/devices/file/edit_block", strings.NewReader(fmt.Sprintf(`{"path":%q,"old_text":"TARGET","new_text":"CHANGED"}`, path)))
 	w := httptest.NewRecorder()
-	s.editBlock(w, r)
+	s.editBlock(w, systemRequest(r))
 	if w.Code != 200 {
 		t.Fatalf("edit status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -162,7 +170,7 @@ func TestEditBlockSecurityAndReplacement(t *testing.T) {
 	}
 	r = httptest.NewRequest(http.MethodPost, "/api/v1/devices/file/edit_block", strings.NewReader(fmt.Sprintf(`{"path":%q,"old_text":"CHANGED","new_text":"NO"}`, path)))
 	w = httptest.NewRecorder()
-	s.editBlock(w, r)
+	s.editBlock(w, systemRequest(r))
 	if w.Code != 403 {
 		t.Fatalf("low mode status=%d body=%s", w.Code, w.Body.String())
 	}
