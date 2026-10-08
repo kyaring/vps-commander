@@ -136,6 +136,7 @@ func securityAllows(mode, action string) bool {
 }
 
 func (s *Server) normalizeDevice(device string) string {
+	device = strings.TrimSpace(device)
 	if device == "" || device == "local" {
 		return s.LocalName
 	}
@@ -147,6 +148,8 @@ func (s *Server) requireDeviceAccess(w http.ResponseWriter, r *http.Request, dev
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="vps-commander"`)
+		_ = s.audit(r, device, "auth_denied", "", http.StatusUnauthorized, 0, "missing principal")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
 		return false

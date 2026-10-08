@@ -121,15 +121,21 @@ func TestProcessSessionLocalSnakeCaseAndLifecycle(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", w.Code, w.Body.String())
 	}
-	time.Sleep(1 * time.Second)
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=read", strings.NewReader(`{"device":"local","session_id":"session-test-001"}`))
-	w = httptest.NewRecorder()
-	s.processSession(w, systemRequest(req))
-	if w.Code != http.StatusOK {
-		t.Fatalf("read status=%d body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), "local-ok") {
-		t.Fatalf("missing session output: %s", w.Body.String())
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/process/session?action=read", strings.NewReader(`{"device":"local","session_id":"session-test-001"}`))
+		w = httptest.NewRecorder()
+		s.processSession(w, systemRequest(req))
+		if w.Code != http.StatusOK {
+			t.Fatalf("read status=%d body=%s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), "local-ok") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for session output: %s", w.Body.String())
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

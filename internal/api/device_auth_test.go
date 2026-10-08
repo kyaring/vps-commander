@@ -155,7 +155,12 @@ func TestRESTDeviceWhitelistMatrix(t *testing.T) {
 }
 
 func TestDeviceAccessRequiresPrincipal(t *testing.T) {
-	s := &Server{LocalName: "wjyhk"}
+	store, err := storage.Open(filepath.Join(t.TempDir(), "auth.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB.Close()
+	s := &Server{LocalName: "wjyhk", Store: store}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/exec", strings.NewReader(`{"device":"wjyhk","command":"id"}`))
 	rec := httptest.NewRecorder()
 	if s.requireDeviceAccess(rec, req, "wjyhk") {
@@ -163,6 +168,13 @@ func TestDeviceAccessRequiresPrincipal(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without principal, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="vps-commander"` {
+		t.Fatalf("unexpected WWW-Authenticate: %q", got)
+	}
+	audits, err := store.RecentAudits(10)
+	if err != nil || len(audits) == 0 || audits[0].Action != "auth_denied" {
+		t.Fatalf("expected auth_denied audit, got err=%v audits=%+v", err, audits)
 	}
 }
 

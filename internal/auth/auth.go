@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -68,7 +70,7 @@ func (m *Manager) PrincipalFromRequest(r *http.Request) (Principal, bool) {
 		return Principal{}, false
 	}
 	if m.validator != nil {
-		if p, ok := m.validator.ValidateAPIToken(got, r.RemoteAddr); ok {
+		if p, ok := m.validator.ValidateAPIToken(got, clientIP(r)); ok {
 			return p, true
 		}
 		return Principal{}, false
@@ -126,6 +128,27 @@ func bearer(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
 	return ""
+}
+
+func clientIP(r *http.Request) string {
+	if strings.EqualFold(os.Getenv("VPS_COMMANDER_TRUST_PROXY"), "on") {
+		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
+			if i := strings.IndexByte(v, ','); i >= 0 {
+				v = v[:i]
+			}
+			if v = strings.TrimSpace(v); net.ParseIP(v) != nil {
+				return v
+			}
+		}
+		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
+			return v
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func unauthorized(w http.ResponseWriter) {
