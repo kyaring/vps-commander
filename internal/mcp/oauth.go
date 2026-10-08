@@ -6,7 +6,10 @@ import (
 	"net/http"
 )
 
-// HandleOAuthMetadata serves /.well-known/oauth-authorization-server
+// OAuth discovery is retained for MCP clients that probe OAuth metadata.
+// Token issuance is intentionally disabled: VPS-Commander uses its configured
+// static Bearer API key and must never expose it through an unauthenticated
+// OAuth endpoint.
 func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 	scheme := "https"
 	host := r.Host
@@ -16,43 +19,18 @@ func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint":                        fmt.Sprintf("%s://%s/oauth/token", scheme, host),
 		"response_types_supported":              []string{"code"},
 		"grant_types_supported":                 []string{"authorization_code"},
-		"code_challenge_methods_supported":      []string{"S256", "plain"},
-		"token_endpoint_auth_methods_supported": []string{"client_secret_post", "client_secret_basic", "none"},
+		"code_challenge_methods_supported":      []string{"S256"},
+		"token_endpoint_auth_methods_supported": []string{"none"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	_ = json.NewEncoder(w).Encode(meta)
 }
 
-// HandleAuthorize handles the user/client authorization step
 func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
-	redirectURI := r.URL.Query().Get("redirect_uri")
-	state := r.URL.Query().Get("state")
-
-	if redirectURI == "" {
-		http.Error(w, "missing redirect_uri", http.StatusBadRequest)
-		return
-	}
-
-	code := "vps-commander-auth-code"
-	target := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, code, state)
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Error(w, "OAuth authorization is not supported; use the configured Bearer API key", http.StatusNotImplemented)
 }
 
-// HandleToken exchanges code for bearer token
 func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
-	token := ""
-	if s.Auth != nil {
-		token = s.Auth.Token()
-	}
-
-	resp := map[string]any{
-		"access_token": token,
-		"token_type":   "Bearer",
-		"expires_in":   86400 * 365,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	_ = json.NewEncoder(w).Encode(resp)
+	http.Error(w, "OAuth token issuance is disabled", http.StatusNotImplemented)
 }

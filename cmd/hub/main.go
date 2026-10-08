@@ -87,8 +87,8 @@ func main() {
 
 	// MCP Endpoints
 	// Flexible Auth: allows optional token on SSE connect, but enforces token on Message calls
-	mux.HandleFunc("/mcp/sse", mcpServer.HandleSSE)
-	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager, Optional: true}.Handler(http.HandlerFunc(mcpServer.HandleMessage)))
+	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleSSE)))
+	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleMessage)))
 
 	// OAuth Endpoints (For OpenAI OAuth auto-discovery)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", mcpServer.HandleOAuthMetadata)

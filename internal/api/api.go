@@ -84,6 +84,12 @@ func (s *Server) LoadSecurityPolicySnapshot() error {
 }
 
 func (s *Server) GetEffectiveSecurityMode(node string) string {
+	// "local" is the public MCP/CLI device alias for the Hub control node.
+	// Normalize it before security-policy lookup; otherwise Phase 2 treats it
+	// as a literal, unregistered remote node and returns "unknown" (default deny).
+	if node == "local" {
+		node = s.LocalName
+	}
 	if s.Policy == nil && s.Store != nil {
 		if mode, ok := s.Store.GetNodeSecurityMode(node); ok {
 			if mode != SecurityInherit {
