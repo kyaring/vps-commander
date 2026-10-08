@@ -140,14 +140,22 @@ func (s *Session) wait() {
 	// background descendants that inherit stdout/stderr from hanging forever.
 	err := s.cmd.Wait()
 	s.mu.Lock()
-	s.err = err
-	if err == nil {
+	// ProcessState is authoritative once the shell has exited. WaitDelay may
+	// expire only because a background descendant inherited stdout/stderr;
+	// that must not turn a successful shell exit into exit code 1.
+	if ps := s.cmd.ProcessState; ps != nil {
+		s.exitCode = ps.ExitCode()
+		if errors.Is(err, exec.ErrWaitDelay) && s.exitCode == 0 {
+			err = nil
+		}
+	} else if err == nil {
 		s.exitCode = 0
 	} else if ee, ok := err.(*exec.ExitError); ok {
 		s.exitCode = ee.ExitCode()
 	} else {
 		s.exitCode = 1
 	}
+	s.err = err
 	s.mu.Unlock()
 	close(s.done)
 }
