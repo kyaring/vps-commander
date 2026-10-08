@@ -127,9 +127,17 @@ func StartSession(ctx context.Context, id, command, workdir, owner string, capac
 		_ = stdin.Close()
 		return nil, err
 	}
-	go s.copy(out, stdout)
-	go s.copy(errOut, stderr)
-	go s.wait()
+	var copyWG sync.WaitGroup
+	copyWG.Add(2)
+	go func() {
+		defer copyWG.Done()
+		s.copy(out, stdout)
+	}()
+	go func() {
+		defer copyWG.Done()
+		s.copy(errOut, stderr)
+	}()
+	go s.wait(&copyWG)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -144,8 +152,13 @@ func (s *Session) copy(src io.Reader, dst io.Writer) {
 	_, _ = io.Copy(dst, src)
 }
 
-func (s *Session) wait() {
+func (s *Session) wait(copyWG *sync.WaitGroup) {
 	err := s.cmd.Wait()
+	// The process may have exited before the stdout/stderr reader goroutines
+	// have finished draining their pipes. Do not publish the terminal state
+	// until both buffers are complete; otherwise a concurrent Status()+Output()
+	// can observe running=false with incomplete (or empty) output.
+	copyWG.Wait()
 	s.mu.Lock()
 	s.err = err
 	if err == nil {
