@@ -95,7 +95,7 @@ type AgentMCPBackend interface {
 }
 
 type AuditSink interface {
-	AuditMCP(ctx context.Context, clientIP, device, result, detail string)
+	AuditMCP(ctx context.Context, clientIP, device, tool, result, detail string)
 }
 
 type SecurityGate interface {
@@ -461,7 +461,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 	}
 	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
 		if sink, ok := s.Backend.(AuditSink); ok {
-			sink.AuditMCP(ctx, clientIP, device, "denied", err.Error())
+			sink.AuditMCP(ctx, clientIP, device, params.Name, "denied", err.Error())
 		}
 		return map[string]string{"error": err.Error()}, true
 	}

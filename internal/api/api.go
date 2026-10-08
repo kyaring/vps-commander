@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -869,7 +868,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, model.ExecResponse{Device: req.Device, ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMS: res.DurationMS})
 }
 func sessionOwner(r *http.Request) string {
-	v := r.Header.Get("Authorization") + "|" + r.Header.Get("X-Operator-ID") + "|" + clientIP(r)
+	v := r.Header.Get("Authorization") + "|" + r.Header.Get("X-Operator-ID") + "|" + auth.ClientIP(r)
 	h := sha256.Sum256([]byte(v))
 	return hex.EncodeToString(h[:])
 }
@@ -1316,27 +1315,6 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 
 func validPath(path string) bool {
 	return !strings.ContainsRune(path, 0) && !strings.HasPrefix(path, "-")
-}
-
-func clientIP(r *http.Request) string {
-	if strings.EqualFold(os.Getenv("VPS_COMMANDER_TRUST_PROXY"), "on") {
-		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
-			if i := strings.IndexByte(v, ','); i >= 0 {
-				v = v[:i]
-			}
-			if net.ParseIP(strings.TrimSpace(v)) != nil {
-				return strings.TrimSpace(v)
-			}
-		}
-		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
-			return v
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {

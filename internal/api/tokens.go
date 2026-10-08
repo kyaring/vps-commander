@@ -51,21 +51,27 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 	if code != 0 {
 		result = "error"
 	}
-	if action == "device_denied" || action == "mcp_denied" {
+	if action == "device_denied" {
 		targetType = "device"
 		result = "denied"
 		command = device
 		code = 0
 	}
+	if action == "mcp_denied" {
+		targetType = "mcp_tool"
+		result = "denied"
+		code = 0
+	}
 	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: command, Result: result})
 }
 
-func (s *Server) AuditMCP(ctx context.Context, ip, device, result, detail string) {
-	_ = s.auditContext(ctx, ip, device, "mcp_denied", "", 0, 0, result+": "+detail)
+func (s *Server) AuditMCP(ctx context.Context, ip, device, tool, result, detail string) {
+	device = s.normalizeDevice(device)
+	_ = s.auditContext(ctx, ip, device, "mcp_denied", tool, 0, 0, result+": "+detail)
 }
 
 func (s *Server) audit(r *http.Request, device, action, command string, code int, ms int64, msg string) error {
-	return s.auditContext(r.Context(), clientIP(r), device, action, command, code, ms, msg)
+	return s.auditContext(r.Context(), auth.ClientIP(r), device, action, command, code, ms, msg)
 }
 
 func requireScope(scope string, next http.Handler) http.Handler {

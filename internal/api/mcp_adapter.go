@@ -306,6 +306,11 @@ func (b *MCPBackend) CallAgentMCP(ctx context.Context, clientIP, device, server,
 	return v, err
 }
 
+// AuditMCP forwards MCP authorization denials to the Hub audit store.
+func (b *MCPBackend) AuditMCP(ctx context.Context, clientIP, device, tool, result, detail string) {
+	b.server.AuditMCP(ctx, clientIP, device, tool, result, detail)
+}
+
 // AuthorizeMCP exposes the same Hub-side gate to the MCP transport layer.
 func (b *MCPBackend) AuthorizeMCP(device, action, clientIP string) error {
 	return b.authorize(device, action, clientIP)

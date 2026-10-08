@@ -70,7 +70,7 @@ func (m *Manager) PrincipalFromRequest(r *http.Request) (Principal, bool) {
 		return Principal{}, false
 	}
 	if m.validator != nil {
-		if p, ok := m.validator.ValidateAPIToken(got, clientIP(r)); ok {
+		if p, ok := m.validator.ValidateAPIToken(got, ClientIP(r)); ok {
 			return p, true
 		}
 		return Principal{}, false
@@ -130,18 +130,18 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-func clientIP(r *http.Request) string {
+func ClientIP(r *http.Request) string {
 	if strings.EqualFold(os.Getenv("VPS_COMMANDER_TRUST_PROXY"), "on") {
-		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
-			if i := strings.IndexByte(v, ','); i >= 0 {
-				v = v[:i]
-			}
-			if v = strings.TrimSpace(v); net.ParseIP(v) != nil {
-				return v
-			}
-		}
 		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
 			return v
+		}
+		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
+			parts := strings.Split(v, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if ip := strings.TrimSpace(parts[i]); net.ParseIP(ip) != nil {
+					return ip
+				}
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
