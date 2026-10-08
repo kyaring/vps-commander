@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,10 @@ func main() {
 	webPassword := os.Getenv("VPS_COMMANDER_WEB_PASSWORD")
 	adminToken := os.Getenv("VPS_COMMANDER_ADMIN_TOKEN")
 	installCommand := os.Getenv("VPS_COMMANDER_INSTALL_COMMAND")
+	auditRetentionDays := 90
+	if v, err := strconv.Atoi(os.Getenv("VPS_COMMANDER_AUDIT_RETENTION_DAYS")); err == nil && v > 0 {
+		auditRetentionDays = v
+	}
 	if adminToken == "" {
 		adminToken = webPassword
 	}
@@ -52,6 +57,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.DB.Close()
+	if err := store.CleanupAudits(auditRetentionDays); err != nil {
+		log.Printf("audit retention cleanup: %v", err)
+	}
 	if err := store.EnsureAPITokens(apiKey); err != nil {
 		log.Fatalf("ensure api tokens: %v", err)
 	}
@@ -139,6 +147,15 @@ func main() {
 		IdleTimeout:       90 * time.Second,
 	}
 	log.Printf("vps-commander-hub listening on %s as %s", *addr, local)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := store.CleanupAudits(auditRetentionDays); err != nil {
+				log.Printf("audit retention cleanup: %v", err)
+			}
+		}
+	}()
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()

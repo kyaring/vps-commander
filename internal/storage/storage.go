@@ -491,6 +491,13 @@ func (s *Store) QueryAudits(actor, device, action, result string, from, to, curs
 	return out, rows.Err()
 }
 
+func (s *Store) CleanupAudits(retentionDays int) error {
+	if retentionDays <= 0 { retentionDays = 90 }
+	cutoff:=time.Now().Add(-time.Duration(retentionDays)*24*time.Hour).Unix()
+	_,err:=s.DB.Exec("DELETE FROM audit_logs WHERE timestamp<?",cutoff)
+	return err
+}
+
 func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
 	if limit <= 0 {
 		limit = 100

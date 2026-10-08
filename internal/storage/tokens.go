@@ -110,6 +110,24 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS, maxSessions int, note string, expiresAt *int64) error {
+	if rateRPS <= 0 {
+		rateRPS = 10
+	}
+	if maxSessions <= 0 {
+		maxSessions = 10
+	}
+	r, err := s.DB.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,note=?,expires_at=? WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, note, expiresAt, id)
+	if err != nil {
+		return err
+	}
+	n, _ := r.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("token not found")
+	}
+	return nil
+}
+
 func (s *Store) RevokeAPIToken(id string) error {
 	now := time.Now().Unix()
 	r, err := s.DB.Exec("UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL", now, id)

@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+
+	"github.com/wjyhk/vps-commander/internal/auth"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,14 @@ type Runner interface {
 	PanelExec(http.ResponseWriter, *http.Request)
 	RotateAPIKey(http.ResponseWriter, *http.Request)
 	DeleteDevice(http.ResponseWriter, *http.Request)
+}
+
+type tokenRunner interface {
+	TokenListJSON(http.ResponseWriter, *http.Request)
+	TokenCreateJSON(http.ResponseWriter, *http.Request)
+	TokenRotateJSON(http.ResponseWriter, *http.Request)
+	TokenRevokeJSON(http.ResponseWriter, *http.Request)
+	TokenDeleteJSON(http.ResponseWriter, *http.Request)
 }
 
 type Panel struct {
@@ -47,6 +57,11 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
+	mux.HandleFunc("/panel/api/tokens", p.protected(p.tokenList))
+	mux.HandleFunc("/panel/api/tokens/create", p.protected(p.tokenCreate))
+	mux.HandleFunc("/panel/api/tokens/rotate", p.protected(p.tokenRotate))
+	mux.HandleFunc("/panel/api/tokens/revoke", p.protected(p.tokenRevoke))
+	mux.HandleFunc("/panel/api/tokens/delete", p.protected(p.tokenDelete))
 	mux.HandleFunc("/panel/api/mcp/services", p.protected(p.mcpServices))
 	mux.HandleFunc("/panel/api/mcp/service", p.protected(p.deleteMCPService))
 	mux.HandleFunc("/panel/api/mcp/list", p.protected(p.listAgentMCP))
@@ -272,13 +287,68 @@ func (p *Panel) valid(r *http.Request) bool {
 	return ok && time.Now().Before(expiry)
 }
 
+func (p *Panel) tokenRunner() (tokenRunner, bool) {
+	v, ok := p.Runner.(tokenRunner)
+	return v, ok
+}
+func (p *Panel) tokenList(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", 501)
+		return
+	}
+	v.TokenListJSON(w, r)
+}
+func (p *Panel) tokenCreate(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", 501)
+		return
+	}
+	v.TokenCreateJSON(w, r)
+}
+func (p *Panel) tokenRotate(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/tokens/" + id + "/rotate"
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", 501)
+		return
+	}
+	v.TokenRotateJSON(w, r2)
+}
+func (p *Panel) tokenRevoke(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/tokens/" + id + "/revoke"
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", 501)
+		return
+	}
+	v.TokenRevokeJSON(w, r2)
+}
+func (p *Panel) tokenDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/tokens/" + id
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", 501)
+		return
+	}
+	v.TokenDeleteJSON(w, r2)
+}
+
 func (p *Panel) protected(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !p.valid(r) {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
-		next(w, r)
+		ctx := auth.WithPrincipal(r.Context(), auth.Principal{Type: "panel", ID: "admin", Name: "panel:admin", Scopes: map[string]bool{"admin": true}})
+		next(w, r.WithContext(ctx))
 	}
 }
 

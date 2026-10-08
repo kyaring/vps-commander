@@ -631,8 +631,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/notifications/webhook/update", requireScope("admin", http.HandlerFunc(s.UpdateWebhookTargetJSON)))
 	mux.Handle("/api/v1/notifications/webhook/delete", requireScope("admin", http.HandlerFunc(s.DeleteWebhookTargetJSON)))
 	mux.Handle("/api/v1/notifications/webhook/test", requireScope("admin", http.HandlerFunc(s.TestWebhookJSON)))
+	mux.Handle("/api/v1/audits/export.csv", requireScope("admin", http.HandlerFunc(s.AuditExportCSV)))
+	mux.Handle("/api/v1/audits", requireScope("admin", http.HandlerFunc(s.AuditsJSON)))
 	mux.Handle("/api/v1/tokens", requireScope("admin", http.HandlerFunc(s.TokenListJSON)))
 	mux.Handle("/api/v1/tokens/", requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch { s.TokenPatchJSON(w,r); return }
 		if strings.HasSuffix(r.URL.Path, "/rotate") {
 			s.TokenRotateJSON(w, r)
 			return

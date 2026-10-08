@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +64,28 @@ func requireScope(scope string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	logs, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), from, to, 0, 500)
+	if err != nil {
+		http.Error(w, "audit query failed", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=audits.csv")
+	c := csv.NewWriter(w)
+	_ = c.Write([]string{"id", "timestamp", "actor_name", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"})
+	for _, v := range logs {
+		_ = c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), v.ActorName, v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg})
+	}
+	c.Flush()
 }
 
 func (s *Server) TokenListJSON(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +172,79 @@ func (s *Server) TokenCreateJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit(r, "", "token_create", name, 0, 0, "")
 	jsonOut(w, map[string]any{"id": id, "name": name, "token": token, "prefix": prefix, "scopes": scopes})
+}
+
+func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/")
+	tokens, err := s.Store.ListAPITokens()
+	if err != nil {
+		http.Error(w, "token lookup failed", 500)
+		return
+	}
+	var old *storage.APIToken
+	for i := range tokens {
+		if tokens[i].ID == id {
+			old = &tokens[i]
+			break
+		}
+	}
+	if old == nil {
+		http.Error(w, "token not found", 404)
+		return
+	}
+	var q map[string]any
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", 400)
+		return
+	}
+	name := old.Name
+	if x, ok := q["name"].(string); ok && strings.TrimSpace(x) != "" {
+		name = strings.TrimSpace(x)
+	}
+	scopesJSON := old.ScopesJSON
+	if a, ok := q["scopes"].([]any); ok {
+		sc := []string{}
+		for _, v := range a {
+			if x, ok := v.(string); ok {
+				sc = append(sc, x)
+			}
+		}
+		b, _ := json.Marshal(sc)
+		scopesJSON = string(b)
+	}
+	devicesJSON := old.DevicesJSON
+	if a, ok := q["devices"].([]any); ok {
+		ds := []string{}
+		for _, v := range a {
+			if x, ok := v.(string); ok {
+				ds = append(ds, x)
+			}
+		}
+		b, _ := json.Marshal(ds)
+		devicesJSON = string(b)
+	}
+	rate := old.RateRPS
+	if x, ok := q["rate_rps"].(float64); ok {
+		rate = int(x)
+	}
+	maxSessions := old.MaxSessions
+	if x, ok := q["max_sessions"].(float64); ok {
+		maxSessions = int(x)
+	}
+	note := old.Note
+	if x, ok := q["note"].(string); ok {
+		note = x
+	}
+	if err := s.Store.UpdateAPIToken(id, name, scopesJSON, devicesJSON, rate, maxSessions, note, old.ExpiresAt); err != nil {
+		http.Error(w, "token update failed", 500)
+		return
+	}
+	_ = s.audit(r, "", "token_update", name, 0, 0, "")
+	jsonOut(w, map[string]any{"ok": true})
 }
 
 func (s *Server) TokenRotateJSON(w http.ResponseWriter, r *http.Request) {

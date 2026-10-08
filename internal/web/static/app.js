@@ -104,6 +104,31 @@ async function loadDevices(){
   select.innerHTML = ds.map(d => `<option value="${esc(d.name)}" ${d.status==="offline" ? "disabled" : ""} ${d.name===selectedVal ? "selected" : ""}>${esc(d.name)}${d.status==="offline" ? " [离线]" : ""}</option>`).join("");
 }
 
+async function loadTokens(){
+  const a=await api("/tokens");
+  $("#tokens").innerHTML=a.map(x=>{
+    const status=x.revoked_at?"已吊销":"有效";
+    const ops=x.revoked_at?"":'<button type="button" onclick="revokeToken(\''+esc(x.id)+'\')">吊销</button>';
+    return '<tr><td>'+esc(x.name)+'</td><td><code>vpc_'+esc(x.prefix)+'</code></td><td>'+esc((x.scopes||[]).join(","))+'</td><td>'+status+'</td><td>'+ops+'</td></tr>';
+  }).join("");
+}
+async function revokeToken(id){
+  if(!confirm("确认吊销该令牌？"))return;
+  await api("/tokens/revoke?id="+encodeURIComponent(id),{method:"POST"});
+  await loadTokens();
+}
+$("#tokenRefresh").onclick=loadTokens;
+$("#tokenCreate").onclick=async()=>{
+  const name=$("#tokenName").value.trim();
+  if(!name){alert("请输入令牌名称");return}
+  try{
+    const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,scopes:["devices:read"]})});
+    $("#newToken").textContent="新令牌（仅本次显示）：\n"+x.token;
+    $("#tokenName").value="";
+    await loadTokens();
+  }catch(e){$("#newToken").textContent=e.message}
+};
+
 async function loadAudits(){
   let a=await api("/audits?limit=100");
   $("#audits").innerHTML=a.map(x=>'<tr><td>'+new Date(x.timestamp*1000).toLocaleString()+'</td><td>'+esc(x.device)+'</td><td>'+esc(x.action)+'</td><td><code>'+esc(x.command)+'</code></td><td>'+x.exit_code+'</td><td>'+x.duration_ms+'ms</td><td>'+esc(x.caller_ip)+'</td></tr>').join("")
@@ -136,7 +161,7 @@ $("#logout").onclick=async()=>{
   await fetch("/panel/logout",{method:"POST"});
   location.href="/panel/login"
 };
-loadDevices().then(loadAudits).catch(console.error);
+loadDevices().then(loadAudits).then(loadTokens).catch(console.error);
 
 let mcpEditingId="";
 function mcpFieldError(id,message){
