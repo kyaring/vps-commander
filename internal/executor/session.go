@@ -104,15 +104,12 @@ func StartSession(ctx context.Context, id, command, workdir, owner string, capac
 	}
 	stdout := NewRingBuffer(capacity)
 	stderr := NewRingBuffer(capacity)
+	// Assign writers directly so os/exec owns the output-copy lifecycle.
+	// WaitDelay bounds inherited pipes held open by background descendants.
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.WaitDelay = 2 * time.Second
 	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	errOut, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, err
 	}
@@ -127,17 +124,7 @@ func StartSession(ctx context.Context, id, command, workdir, owner string, capac
 		_ = stdin.Close()
 		return nil, err
 	}
-	var copyWG sync.WaitGroup
-	copyWG.Add(2)
-	go func() {
-		defer copyWG.Done()
-		s.copy(out, stdout)
-	}()
-	go func() {
-		defer copyWG.Done()
-		s.copy(errOut, stderr)
-	}()
-	go s.wait(&copyWG)
+	go s.wait()
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -148,17 +135,10 @@ func StartSession(ctx context.Context, id, command, workdir, owner string, capac
 	return s, nil
 }
 
-func (s *Session) copy(src io.Reader, dst io.Writer) {
-	_, _ = io.Copy(dst, src)
-}
-
-func (s *Session) wait(copyWG *sync.WaitGroup) {
+func (s *Session) wait() {
+	// cmd.Wait waits for os/exec's output-copy goroutines. WaitDelay prevents
+	// background descendants that inherit stdout/stderr from hanging forever.
 	err := s.cmd.Wait()
-	// The process may have exited before the stdout/stderr reader goroutines
-	// have finished draining their pipes. Do not publish the terminal state
-	// until both buffers are complete; otherwise a concurrent Status()+Output()
-	// can observe running=false with incomplete (or empty) output.
-	copyWG.Wait()
 	s.mu.Lock()
 	s.err = err
 	if err == nil {
