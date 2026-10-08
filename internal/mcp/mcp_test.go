@@ -31,6 +31,35 @@ func (m *mockBackend) EditBlock(ctx context.Context, clientIP, device, path, old
 	return map[string]any{"device": device, "path": path, "bytes_written": len(newText)}, nil
 }
 
+func TestMCPToolsListFiltersByScope(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", ID: "ro", Name: "readonly", Scopes: map[string]bool{"files:read": true}})
+	resp := srv.HandleDirectRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected result: %#v", resp.Result)
+	}
+	tools, ok := result["tools"].([]Tool)
+	if !ok {
+		t.Fatalf("unexpected tools result: %#v", result["tools"])
+	}
+	for _, tool := range tools {
+		if scope := mcpToolScope(tool.Name); scope != "" && scope != "files:read" {
+			t.Fatalf("scope-filtered tool leaked: %s", tool.Name)
+		}
+	}
+}
+
+func TestMCPUnknownToolErrorIsExplicit(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", ID: "ro", Name: "readonly", Scopes: map[string]bool{"files:read": true}})
+	resp := srv.HandleDirectRequest(ctx, JSONRPCRequest{JSONRPC: "2.0", ID: 2, Method: "tools/call", Params: []byte(`{"name":"does_not_exist","arguments":{}}`)})
+	result, ok := resp.Result.(CallToolResult)
+	if !ok || !result.IsError || !strings.Contains(result.Content[0].Text, "unknown tool: does_not_exist") {
+		t.Fatalf("unexpected unknown-tool response: %#v", resp)
+	}
+}
+
 func TestMCPInitializeAndListTools(t *testing.T) {
 	srv := NewServer(&mockBackend{}, nil)
 
@@ -140,7 +169,7 @@ type gatedMockBackend struct {
 	deniedAction string
 }
 
-func (g *gatedMockBackend) AuthorizeMCP(device, action, clientIP string) error {
+func (g *gatedMockBackend) AuthorizeMCP(ctx context.Context, device, action, clientIP string) error {
 	if action == g.deniedAction {
 		return fmt.Errorf("denied %s", action)
 	}

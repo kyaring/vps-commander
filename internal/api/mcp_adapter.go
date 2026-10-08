@@ -315,8 +315,8 @@ func (b *MCPBackend) AuditMCP(ctx context.Context, clientIP, device, tool, resul
 }
 
 // AuthorizeMCP exposes the same Hub-side gate to the MCP transport layer.
-func (b *MCPBackend) AuthorizeMCP(device, action, clientIP string) error {
-	return b.authorize(context.Background(), device, action, clientIP)
+func (b *MCPBackend) AuthorizeMCP(ctx context.Context, device, action, clientIP string) error {
+	return b.authorize(ctx, device, action, clientIP)
 }
 
 func (b *MCPBackend) ReadMultipleFiles(ctx context.Context, clientIP, device string, paths []string, limit int64) (any, error) {

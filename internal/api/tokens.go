@@ -62,6 +62,10 @@ func (s *Server) auditContext(ctx context.Context, ip, device, action, command s
 		result = "denied"
 		code = 0
 	}
+	if action == "scope_denied" {
+		result = "denied"
+		code = 0
+	}
 	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: command, Result: result})
 }
 
@@ -96,9 +100,10 @@ func (s *Server) audit(r *http.Request, device, action, command string, code int
 	return s.auditContext(r.Context(), auth.ClientIP(r), device, action, command, code, ms, msg)
 }
 
-func requireScope(scope string, next http.Handler) http.Handler {
+func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !principal(r).HasScope(scope) {
+			_ = s.auditContext(r.Context(), auth.ClientIP(r), "", "scope_denied", scope, 0, 0, "required scope denied")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"scope %s required"}`, scope)))

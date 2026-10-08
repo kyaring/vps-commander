@@ -100,7 +100,7 @@ type AuditSink interface {
 }
 
 type SecurityGate interface {
-	AuthorizeMCP(device, action, clientIP string) error
+	AuthorizeMCP(ctx context.Context, device, action, clientIP string) error
 }
 
 type session struct {
@@ -376,6 +376,15 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标 Agent 节点名称"}, "server": {Type: "string", Description: "MCP 服务 ID"}, "tool": {Type: "string", Description: "MCP 工具名称"}, "arguments": {Type: "object", Description: "MCP 工具参数 JSON 对象"}}, Required: []string{"device", "server", "tool"}},
 			},
 		}
+		if p, ok := auth.PrincipalFromContext(ctx); ok {
+			filtered := make([]Tool, 0, len(tools))
+			for _, tool := range tools {
+				if scope := mcpToolScope(tool.Name); scope != "" && p.HasScope(scope) {
+					filtered = append(filtered, tool)
+				}
+			}
+			tools = filtered
+		}
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -442,7 +451,9 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 	if !ok {
 		return fmt.Errorf("unauthorized")
 	}
-	if scope := mcpToolScope(name); scope == "" || !p.HasScope(scope) {
+	if scope := mcpToolScope(name); scope == "" {
+		return fmt.Errorf("unknown tool: %s", name)
+	} else if !p.HasScope(scope) {
 		return fmt.Errorf("scope denied: %s", scope)
 	}
 	if device != "" && !p.AllowsDevice(device) {
@@ -619,7 +630,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 			return map[string]string{"error": "agent MCP unavailable"}, true
 		}
 		if gate, ok := s.Backend.(SecurityGate); ok {
-			if err := gate.AuthorizeMCP(args.Device, "read", clientIP); err != nil {
+			if err := gate.AuthorizeMCP(ctx, args.Device, "read", clientIP); err != nil {
 				return map[string]string{"error": err.Error()}, true
 			}
 		}
@@ -646,7 +657,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 			_ = json.Unmarshal(args.Arguments, &av)
 		}
 		if gate, ok := s.Backend.(SecurityGate); ok {
-			if err := gate.AuthorizeMCP(args.Device, "mcp", clientIP); err != nil {
+			if err := gate.AuthorizeMCP(ctx, args.Device, "mcp", clientIP); err != nil {
 				return map[string]string{"error": err.Error()}, true
 			}
 		}
