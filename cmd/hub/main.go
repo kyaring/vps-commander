@@ -56,7 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer store.DB.Close()
+	defer store.Close()
 	var journalModeString string
 	var synchronous int
 	var busyTimeout, walAutoCheckpoint int
@@ -86,6 +86,10 @@ func main() {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		local = h
 	}
+	profileInterval := 5 * time.Minute
+	if seconds, err := strconv.Atoi(os.Getenv("VPS_COMMANDER_PROFILE_INTERVAL_SECONDS")); err == nil && seconds > 0 {
+		profileInterval = time.Duration(seconds) * time.Second
+	}
 	if err := store.UpsertLocal(local, runtime.GOARCH, runtime.GOOS); err != nil {
 		log.Fatal(err)
 	}
@@ -105,6 +109,8 @@ func main() {
 		SearchLimiter:  make(chan struct{}, 8),
 		LocalSessions:  executor.NewSessionManager(0),
 	}
+	s.Cluster.SetProfileInterval(profileInterval)
+	log.Printf("agent profile interval: %s", s.Cluster.ProfileInterval)
 	if err := s.LoadSecurityPolicySnapshot(); err != nil {
 		log.Fatalf("load security policy snapshot: %v", err)
 	}

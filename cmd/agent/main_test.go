@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/sysinfo"
 )
 
@@ -71,5 +72,19 @@ func TestProfileMaximumIntervalForcesReport(t *testing.T) {
 	}
 	if !shouldReportProfile(base, base, 5*time.Minute, 5*time.Minute) {
 		t.Fatal("unchanged profile must report at max interval")
+	}
+}
+
+func TestProfileIntervalHubConfigurationCompatibility(t *testing.T) {
+	if got := profileIntervalForMessage(5*time.Minute, cluster.Message{Event: "ping"}); got != 5*time.Minute {
+		t.Fatalf("legacy Hub ping changed interval: got %s", got)
+	}
+	if got := profileIntervalForMessage(5*time.Minute, cluster.Message{Event: "ping", ProfileIntervalSeconds: 600}); got != 10*time.Minute {
+		t.Fatalf("Hub interval not applied: got %s", got)
+	}
+	for _, seconds := range []int{1, 59, 3601} {
+		if got := profileIntervalForMessage(5*time.Minute, cluster.Message{ProfileIntervalSeconds: seconds}); got != 5*time.Minute {
+			t.Fatalf("invalid interval %d should preserve current interval, got %s", seconds, got)
+		}
 	}
 }

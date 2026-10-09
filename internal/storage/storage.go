@@ -6,15 +6,38 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB *sql.DB
+
+	auditMu        sync.Mutex
+	auditWriteMu   sync.Mutex
+	auditQueue     chan auditQueueItem
+	auditStop      chan struct{}
+	auditDone      chan struct{}
+	auditClosed    bool
+	auditCloseOnce sync.Once
+}
+
+type auditQueueItem struct {
+	entry   AuditEntry
+	barrier chan error
+}
+
+const (
+	auditQueueCapacity = 1024
+	auditBatchSize     = 100
+	auditFlushInterval = 500 * time.Millisecond
+)
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -26,7 +49,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{db}
+	s := &Store{DB: db}
 	if err := s.init(); err != nil {
 		db.Close()
 		return nil, err
@@ -410,7 +433,7 @@ func redactAudit(v string) string {
 	}
 	return v
 }
-func (s *Store) AuditEntry(e AuditEntry) error {
+func normalizeAuditEntry(e AuditEntry) AuditEntry {
 	if e.ActorName == "" {
 		e.ActorName = "unknown(legacy)"
 	}
@@ -424,10 +447,175 @@ func (s *Store) AuditEntry(e AuditEntry) error {
 			e.Result = "error"
 		}
 	}
+	e.Command = redactAudit(e.Command)
+	e.ErrorMsg = redactAudit(e.ErrorMsg)
+	e.ActorName = redactAudit(e.ActorName)
+	e.TargetType = redactAudit(e.TargetType)
+	e.Target = redactAudit(e.Target)
+	e.RequestID = redactAudit(e.RequestID)
+	e.SessionID = redactAudit(e.SessionID)
+	return e
+}
+
+func (s *Store) AuditEntry(e AuditEntry) error {
+	e = normalizeAuditEntry(e)
+	s.auditMu.Lock()
+	if s.auditClosed {
+		s.auditMu.Unlock()
+		return s.writeAuditEntry(e)
+	}
+	if s.auditQueue == nil {
+		s.auditQueue = make(chan auditQueueItem, auditQueueCapacity)
+		s.auditStop = make(chan struct{})
+		s.auditDone = make(chan struct{})
+		go s.auditWriter(s.auditQueue, s.auditStop, s.auditDone)
+	}
+	select {
+	case s.auditQueue <- auditQueueItem{entry: e}:
+		s.auditMu.Unlock()
+		return nil
+	default:
+		log.Printf("WARN audit queue full (capacity=%d); synchronously writing action=%q device=%q", auditQueueCapacity, e.Action, e.Device)
+		err := s.writeAuditEntry(e)
+		s.auditMu.Unlock()
+		return err
+	}
+}
+
+func (s *Store) writeAuditEntry(e AuditEntry) error {
+	s.auditWriteMu.Lock()
+	defer s.auditWriteMu.Unlock()
 	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		time.Now().Unix(), e.CallerIP, e.Device, e.Action, redactAudit(e.Command), e.ExitCode, e.DurationMS, redactAudit(e.ErrorMsg),
-		e.ActorType, e.ActorID, redactAudit(e.ActorName), e.Transport, redactAudit(e.TargetType), redactAudit(e.Target), e.Result, redactAudit(e.RequestID), redactAudit(e.SessionID))
+		time.Now().Unix(), e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
+		e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID)
 	return err
+}
+
+func (s *Store) writeAuditBatch(entries []AuditEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	s.auditWriteMu.Lock()
+	defer s.auditWriteMu.Unlock()
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, e := range entries {
+		if _, err = stmt.Exec(time.Now().Unix(), e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
+			e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID); err != nil {
+			break
+		}
+	}
+	_ = stmt.Close()
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) auditWriter(queue <-chan auditQueueItem, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(auditFlushInterval)
+	defer ticker.Stop()
+	batch := make([]AuditEntry, 0, auditBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		entries := append([]AuditEntry(nil), batch...)
+		if err := s.writeAuditBatch(entries); err != nil {
+			log.Printf("ERROR audit batch write failed (%d entries): %v; retrying without dropping entries", len(entries), err)
+			for _, entry := range entries {
+				for {
+					if err := s.writeAuditEntry(entry); err == nil {
+						break
+					}
+					log.Printf("ERROR audit write retry failed action=%q device=%q: %v", entry.Action, entry.Device, err)
+					time.Sleep(auditFlushInterval)
+				}
+			}
+		}
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case item := <-queue:
+			if item.barrier != nil {
+				flush()
+				item.barrier <- nil
+				continue
+			}
+			batch = append(batch, item.entry)
+			if len(batch) >= auditBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-stop:
+			for {
+				select {
+				case item := <-queue:
+					if item.barrier != nil {
+						flush()
+						item.barrier <- nil
+					} else {
+						batch = append(batch, item.entry)
+						if len(batch) >= auditBatchSize {
+							flush()
+						}
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		}
+	}
+}
+
+// FlushAudits waits until all audit entries accepted before the barrier are persisted.
+func (s *Store) FlushAudits() error {
+	s.auditMu.Lock()
+	if s.auditClosed {
+		done := s.auditDone
+		s.auditMu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return nil
+	}
+	if s.auditQueue == nil {
+		s.auditMu.Unlock()
+		return nil
+	}
+	ack := make(chan error, 1)
+	s.auditQueue <- auditQueueItem{barrier: ack}
+	s.auditMu.Unlock()
+	return <-ack
+}
+
+// Close stops the audit writer after it has persisted all queued entries.
+func (s *Store) Close() error {
+	s.auditCloseOnce.Do(func() {
+		s.auditMu.Lock()
+		s.auditClosed = true
+		stop, done := s.auditStop, s.auditDone
+		if stop != nil {
+			close(stop)
+		}
+		s.auditMu.Unlock()
+		if done != nil {
+			<-done
+		}
+	})
+	return s.DB.Close()
 }
 
 func (s *Store) Audit(ip, device, action, command string, code int, ms int64, msg string) error {
@@ -481,6 +669,9 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 }
 
 func (s *Store) QueryAudits(actor, device, action, result string, from, to, cursor int64, limit int) ([]AuditLog, error) {
+	if err := s.FlushAudits(); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 100
 	}
@@ -545,6 +736,9 @@ func (s *Store) CleanupAudits(retentionDays int) error {
 }
 
 func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
+	if err := s.FlushAudits(); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = 100
 	}

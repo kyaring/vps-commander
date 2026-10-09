@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestAuditConcurrent100NoLoss(t *testing.T) {
@@ -13,7 +14,7 @@ func TestAuditConcurrent100NoLoss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.DB.Close()
+	defer s.Close()
 
 	const n = 100
 	var wg sync.WaitGroup
@@ -34,6 +35,9 @@ func TestAuditConcurrent100NoLoss(t *testing.T) {
 		}
 	}
 
+	if err := s.FlushAudits(); err != nil {
+		t.Fatalf("flush audits: %v", err)
+	}
 	var count int
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM audit_logs").Scan(&count); err != nil {
 		t.Fatal(err)
@@ -144,5 +148,91 @@ func TestDeviceCredentialHashAndRotation(t *testing.T) {
 	valid, err = s.VerifyDeviceCredential("node-1", "secret-two")
 	if err != nil || !valid {
 		t.Fatal("rotated credential rejected")
+	}
+}
+
+func TestAuditCloseFlushesPendingEntries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "close-flush.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Audit("127.0.0.1", "node-a", "close_test", "queued", 0, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var count int
+	if err := reopened.DB.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action='close_test'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("close lost queued audit: got %d rows, want 1", count)
+	}
+}
+
+func TestAuditFlushBarrierPersistsQueuedEntries(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "flush-barrier.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 17; i++ {
+		if err := s.Audit("127.0.0.1", "node-a", "barrier_test", fmt.Sprint(i), 0, 1, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action='barrier_test'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 17 {
+		t.Fatalf("flush barrier persisted %d entries, want 17", count)
+	}
+}
+
+func TestAuditQueueFullFallsBackToSynchronousWrite(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "queue-full.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.auditWriteMu.Lock() // Hold the writer after its first batch starts, then fill all 1024 queue slots.
+	for i := 0; i < auditBatchSize; i++ {
+		if err := s.Audit("127.0.0.1", "node-a", "queue_full_test", fmt.Sprint(i), 0, 1, ""); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+	time.Sleep(20 * time.Millisecond) // Let the writer take the first batch and block on auditWriteMu.
+	for i := auditBatchSize; i < auditBatchSize+auditQueueCapacity; i++ {
+		if err := s.Audit("127.0.0.1", "node-a", "queue_full_test", fmt.Sprint(i), 0, 1, ""); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.Audit("127.0.0.1", "node-a", "queue_full_test", "sync-fallback", 0, 1, "") }()
+	time.Sleep(20 * time.Millisecond)
+	s.auditWriteMu.Unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("synchronous fallback failed: %v", err)
+	}
+	if err := s.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM audit_logs WHERE action='queue_full_test'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != auditQueueCapacity+auditBatchSize+1 {
+		t.Fatalf("queue-full path lost audits: got %d rows, want %d", count, auditQueueCapacity+auditBatchSize+1)
 	}
 }

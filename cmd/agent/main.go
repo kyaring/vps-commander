@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -71,6 +72,8 @@ func run(hub, name, token string, insecure bool) error {
 		return err
 	}
 	exec := executor.Local{MaxOutput: 1024 * 1024}
+	profileIntervalSeconds := atomic.Int64{}
+	profileIntervalSeconds.Store(300)
 	mcpRuntime := cluster.NewMCPRuntime()
 
 	// 初始握手附带画像
@@ -105,7 +108,7 @@ func run(hub, name, token string, insecure bool) error {
 			case <-t.C:
 				prof := sysinfo.Collect("APPLICATION")
 				now := time.Now()
-				if shouldReportProfile(last, prof, now.Sub(lastSent), 5*time.Minute) {
+				if shouldReportProfile(last, prof, now.Sub(lastSent), time.Duration(profileIntervalSeconds.Load())*time.Second) {
 					if err := writeJSON(cluster.Message{Event: "profile", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: now.Unix()}); err == nil {
 						last = prof
 						lastSent = now
@@ -155,6 +158,7 @@ func run(hub, name, token string, insecure bool) error {
 			return errors.New("revoked by admin")
 		}
 		if msg.Event == "ping" {
+			profileIntervalSeconds.Store(int64(profileIntervalForMessage(time.Duration(profileIntervalSeconds.Load())*time.Second, msg) / time.Second))
 			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, TS: msg.TS}); err != nil {
 				return err
 			}
@@ -170,6 +174,13 @@ func run(hub, name, token string, insecure bool) error {
 			}
 		}(msg)
 	}
+}
+
+func profileIntervalForMessage(current time.Duration, msg cluster.Message) time.Duration {
+	if msg.ProfileIntervalSeconds >= 60 && msg.ProfileIntervalSeconds <= 3600 {
+		return time.Duration(msg.ProfileIntervalSeconds) * time.Second
+	}
+	return current
 }
 
 func shouldReportProfile(previous, current sysinfo.Profile, sinceLastReport, maxInterval time.Duration) bool {

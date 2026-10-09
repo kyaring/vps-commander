@@ -172,6 +172,11 @@ wss://vpstool.kory.kdns.fr/agent/ws
 
 Agent 只主动连接 Hub，不需要公网入站端口。
 
+### Hub 运行参数
+
+- `VPS_COMMANDER_PROFILE_INTERVAL_SECONDS`：Agent 资源画像的最长上报间隔，默认 `300` 秒；Hub 会通过心跳消息下发给新版 Agent，范围限制为 `60–3600` 秒。旧版 Agent 忽略该可选协议字段，不影响原有心跳。
+- 审计日志由存储层单写协程异步批量持久化：队列容量 `1024`，每累计 `100` 条或每 `500ms` 刷写；队列满时告警并同步写入。Hub 正常退出时会等待队列刷写完成。
+
 生产发布顺序：
 `backup → clean build → 单节点灰度 → Hub restart recovery → rolling Agent → MCP/security/audit 验收`。
 

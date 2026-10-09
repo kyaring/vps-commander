@@ -34,6 +34,7 @@ type Manager struct {
 	profileFlushStop chan struct{}
 	profileFlushDone chan struct{}
 	profileFlusherOn atomic.Bool
+	ProfileInterval  time.Duration
 }
 
 type Node struct {
@@ -75,7 +76,7 @@ type FileResult struct {
 }
 
 func NewManager(secret string, store *storage.Store) *Manager {
-	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate), profileFlushStop: make(chan struct{}), profileFlushDone: make(chan struct{})}
+	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate), profileFlushStop: make(chan struct{}), profileFlushDone: make(chan struct{}), ProfileInterval: 5 * time.Minute}
 	if store != nil {
 		if records, err := store.ListDevices(); err == nil {
 			for _, d := range records {
@@ -102,6 +103,17 @@ func NewManager(secret string, store *storage.Store) *Manager {
 
 func (m *Manager) SetStore(s *storage.Store) {
 	m.Store = s
+}
+
+// SetProfileInterval configures the maximum interval between agent profile reports.
+func (m *Manager) SetProfileInterval(interval time.Duration) {
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	if interval > time.Hour {
+		interval = time.Hour
+	}
+	m.ProfileInterval = interval
 }
 
 func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
@@ -737,7 +749,7 @@ func (m *Manager) heartbeat(n *Node) {
 		if !current {
 			return
 		}
-		if err := n.write(Message{Event: "ping", TS: time.Now().Unix()}); err != nil {
+		if err := n.write(Message{Event: "ping", TS: time.Now().Unix(), ProfileIntervalSeconds: int(m.ProfileInterval / time.Second)}); err != nil {
 			_ = n.Conn.Close()
 			return
 		}

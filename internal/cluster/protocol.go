@@ -3,25 +3,26 @@ package cluster
 import "github.com/wjyhk/vps-commander/internal/sysinfo"
 
 type Message struct {
-	ID              string           `json:"id,omitempty"`
-	Event           string           `json:"event,omitempty"`
-	Action          string           `json:"action,omitempty"`
-	SubAction       string           `json:"sub_action,omitempty"`
-	Device          string           `json:"device,omitempty"`
-	Arch            string           `json:"arch,omitempty"`
-	OS              string           `json:"os,omitempty"`
-	Status          string           `json:"status,omitempty"`
-	Payload         any              `json:"payload,omitempty"`
-	Profile         *sysinfo.Profile `json:"profile,omitempty"`
-	ExitCode        int              `json:"exit_code,omitempty"`
-	Stdout          string           `json:"stdout,omitempty"`
-	Stderr          string           `json:"stderr,omitempty"`
-	DurationMS      int64            `json:"duration_ms,omitempty"`
-	Error           string           `json:"error,omitempty"`
-	TS              int64            `json:"ts,omitempty"`
-	ProtocolVersion string           `json:"protocol_version,omitempty"`
-	AgentVersion    string           `json:"agent_version,omitempty"`
-	Capabilities    []string         `json:"capabilities,omitempty"`
+	ID                     string           `json:"id,omitempty"`
+	Event                  string           `json:"event,omitempty"`
+	Action                 string           `json:"action,omitempty"`
+	SubAction              string           `json:"sub_action,omitempty"`
+	Device                 string           `json:"device,omitempty"`
+	Arch                   string           `json:"arch,omitempty"`
+	OS                     string           `json:"os,omitempty"`
+	Status                 string           `json:"status,omitempty"`
+	Payload                any              `json:"payload,omitempty"`
+	Profile                *sysinfo.Profile `json:"profile,omitempty"`
+	ProfileIntervalSeconds int              `json:"profile_interval_seconds,omitempty"`
+	ExitCode               int              `json:"exit_code,omitempty"`
+	Stdout                 string           `json:"stdout,omitempty"`
+	Stderr                 string           `json:"stderr,omitempty"`
+	DurationMS             int64            `json:"duration_ms,omitempty"`
+	Error                  string           `json:"error,omitempty"`
+	TS                     int64            `json:"ts,omitempty"`
+	ProtocolVersion        string           `json:"protocol_version,omitempty"`
+	AgentVersion           string           `json:"agent_version,omitempty"`
+	Capabilities           []string         `json:"capabilities,omitempty"`
 }
 
 type ExecPayload struct {
