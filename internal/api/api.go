@@ -414,12 +414,12 @@ func (s *Server) AuditsJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := 100
 	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
-		limit = v
+		limit = min(v, 500)
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
-	logs, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), from, to, cursor, limit)
+	logs, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), r.URL.Query().Get("transport"), from, to, cursor, min(limit, 500))
 	if err != nil {
 		http.Error(w, "audit query failed", 500)
 		return
@@ -1076,6 +1076,7 @@ func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 409)
 		return
 	}
+	_ = s.audit(r, req.Device, "file_list", req.Path, 0, 0, "")
 	jsonOut(w, v)
 }
 func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
@@ -1112,6 +1113,7 @@ func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 404)
 		return
 	}
+	_ = s.audit(r, req.Device, "file_info", req.Path, 0, 0, "")
 	jsonOut(w, v)
 }
 func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
@@ -1153,6 +1155,7 @@ func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 409)
 		return
 	}
+	_ = s.audit(r, req.Device, "file_search", req.Root, 0, 0, "")
 	jsonOut(w, v)
 }
 
@@ -1282,7 +1285,7 @@ func (s *Server) editBlock(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.audit(r, req.Device, "edit_block", req.Path, 0, 0, fmt.Sprintf("bytes_written=%d", result.BytesWritten)); err != nil {
+	if err := s.audit(r, req.Device, "edit_block", req.Path+fmt.Sprintf(" (bytes=%d)", len(req.NewText)), 0, 0, fmt.Sprintf("bytes_written=%d", result.BytesWritten)); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
@@ -1332,7 +1335,7 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		n = int64(len(req.Content))
 	}
-	if err := s.audit(r, req.Device, "file_write", req.Path, 0, 0, ""); err != nil {
+	if err := s.audit(r, req.Device, "file_write", req.Path+fmt.Sprintf(" (bytes=%d)", len(req.Content)), 0, 0, ""); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}

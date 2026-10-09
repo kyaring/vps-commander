@@ -132,7 +132,117 @@ type AgentMCPBackend interface {
 }
 
 type AuditSink interface {
-	AuditMCP(ctx context.Context, clientIP, device, tool, result, detail string)
+	AuditMCP(ctx context.Context, clientIP, device, tool, command, result, detail string)
+}
+
+type ActionAuditSink interface {
+	AuditMCPAction(ctx context.Context, clientIP, device, action, command string, code int, durationMS int64, detail string)
+}
+
+type transportContextKey struct{}
+type auditIntentContextKey struct{}
+type auditStateContextKey struct{}
+type auditState struct{ recorded atomic.Bool }
+
+// MarkAuditRecorded marks that a backend already persisted an audit row for this tool call.
+func MarkAuditRecorded(ctx context.Context) {
+	if state, ok := ctx.Value(auditStateContextKey{}).(*auditState); ok {
+		state.recorded.Store(true)
+	}
+}
+
+func auditAlreadyRecorded(ctx context.Context) bool {
+	state, ok := ctx.Value(auditStateContextKey{}).(*auditState)
+	return ok && state.recorded.Load()
+}
+
+func auditActionForTool(tool string) string {
+	switch tool {
+	case "exec_command":
+		return "exec"
+	case "read_file", "read_multiple_files":
+		return "file_read"
+	case "write_file":
+		return "file_write"
+	case "list_devices", "list_agent_mcp", "list_processes", "create_directory", "move_file", "edit_block", "diagnostic_command":
+		return tool
+	case "call_agent_mcp":
+		return "mcp_call"
+	default:
+		return tool
+	}
+}
+
+// WithAuditIntent attaches a sanitized description of the operation being attempted.
+func WithAuditIntent(ctx context.Context, intent string) context.Context {
+	return context.WithValue(ctx, auditIntentContextKey{}, truncateAuditIntent(intent))
+}
+
+// AuditIntentFromContext returns the sanitized operation intent when available.
+func AuditIntentFromContext(ctx context.Context) string {
+	intent, _ := ctx.Value(auditIntentContextKey{}).(string)
+	return intent
+}
+
+// WithTransport marks the concrete MCP transport for downstream audit records.
+func WithTransport(ctx context.Context, transport string) context.Context {
+	return context.WithValue(ctx, transportContextKey{}, transport)
+}
+
+// TransportFromContext returns the concrete MCP transport when available.
+func TransportFromContext(ctx context.Context) string {
+	transport, _ := ctx.Value(transportContextKey{}).(string)
+	return transport
+}
+
+func auditIntent(tool string, raw json.RawMessage) string {
+	var a map[string]any
+	_ = json.Unmarshal(raw, &a)
+	str := func(key string) string { v, _ := a[key].(string); return strings.TrimSpace(v) }
+	var intent string
+	switch tool {
+	case "exec_command":
+		intent = str("command")
+	case "read_file", "create_directory":
+		intent = str("path")
+	case "read_multiple_files":
+		if paths, ok := a["paths"].([]any); ok {
+			parts := make([]string, 0, len(paths))
+			for _, path := range paths {
+				if v, ok := path.(string); ok {
+					parts = append(parts, v)
+				}
+			}
+			intent = strings.Join(parts, ", ")
+		}
+	case "move_file":
+		intent = str("source") + " -> " + str("destination")
+	case "call_agent_mcp":
+		intent = str("server") + "/" + str("tool")
+	case "diagnostic_command":
+		intent = "action=" + str("action") + " target=" + str("target")
+	case "write_file":
+		content, _ := a["content"].(string)
+		intent = str("path") + fmt.Sprintf(" (bytes=%d)", len(content))
+	case "edit_block":
+		oldText, _ := a["old_text"].(string)
+		newText, _ := a["new_text"].(string)
+		intent = str("path") + fmt.Sprintf(" (bytes=%d)", len(newText))
+		_ = oldText // Never retain either file body in audit metadata.
+	case "list_processes", "list_devices", "list_agent_mcp":
+		intent = tool
+	default:
+		intent = tool
+	}
+	return truncateAuditIntent(intent)
+}
+
+func truncateAuditIntent(value string) string {
+	runes := []rune(value)
+	if len(runes) > 512 {
+		return string(runes[:511]) + "…"
+	}
+	return value
 }
 
 type SecurityGate interface {
@@ -283,6 +393,7 @@ func (s *Server) newSessionID() string {
 
 // SSE Handler: GET /mcp/sse (legacy compatibility transport).
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(WithTransport(r.Context(), "mcp-sse"))
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -365,6 +476,7 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 // queue is never silently ignored: the sender gets up to five seconds, after
 // which the affected SSE session is closed and the request fails explicitly.
 func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(WithTransport(r.Context(), "mcp-sse"))
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -482,6 +594,7 @@ func writeJSONRPCError(w http.ResponseWriter, code int, message string) {
 // responses. Session IDs are optional: clients can use stateless requests, or
 // retain the ID returned by initialize to bind later requests to the same token.
 func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(WithTransport(r.Context(), "mcp-http"))
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.Header().Set("Allow", "POST, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -770,9 +883,22 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 		}
 
 		clientIP := auth.ClientIP(r)
+		state := &auditState{}
+		ctx = context.WithValue(ctx, auditStateContextKey{}, state)
 		res, isErr := s.callTool(ctx, clientIP, params)
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
 		te, _ := res.(toolError)
+		if isErr && !te.rateLimited && !auditAlreadyRecorded(ctx) {
+			if sink, ok := s.Backend.(ActionAuditSink); ok {
+				device := ""
+				var args map[string]any
+				_ = json.Unmarshal(params.Arguments, &args)
+				if v, ok := args["device"].(string); ok {
+					device = v
+				}
+				sink.AuditMCPAction(ctx, clientIP, device, auditActionForTool(params.Name), auditIntent(params.Name, params.Arguments), 1, 0, te.msg)
+			}
+		}
 
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -835,6 +961,7 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 }
 
 func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolParams) (any, bool) {
+	ctx = WithAuditIntent(ctx, auditIntent(params.Name, params.Arguments))
 	device := ""
 	var rawDevice map[string]any
 	_ = json.Unmarshal(params.Arguments, &rawDevice)
@@ -846,7 +973,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 	}
 	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
 		if sink, ok := s.Backend.(AuditSink); ok {
-			sink.AuditMCP(ctx, clientIP, device, params.Name, "denied", err.Error())
+			sink.AuditMCP(ctx, clientIP, device, params.Name, auditIntent(params.Name, params.Arguments), "denied", err.Error())
 		}
 		return toolErrorFrom(err), true
 	}
@@ -855,6 +982,9 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		devs, err := s.Backend.ListDevices(ctx)
 		if err != nil {
 			return toolErrorFrom(err), true
+		}
+		if sink, ok := s.Backend.(ActionAuditSink); ok {
+			sink.AuditMCPAction(ctx, clientIP, device, "list_devices", "list_devices", 0, 0, "")
 		}
 		return devs, false
 
@@ -1009,6 +1139,9 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		res, err := b.ListAgentMCP(ctx, args.Device)
 		if err != nil {
 			return toolErrorFrom(err), true
+		}
+		if sink, ok := s.Backend.(ActionAuditSink); ok {
+			sink.AuditMCPAction(ctx, clientIP, args.Device, "list_agent_mcp", "list_agent_mcp", 0, 0, "")
 		}
 		return res, false
 

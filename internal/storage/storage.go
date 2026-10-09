@@ -441,6 +441,14 @@ func redactAudit(v string) string {
 	}
 	return v
 }
+func truncateAuditCommand(value string) string {
+	runes := []rune(value)
+	if len(runes) > 512 {
+		return string(runes[:511]) + "…"
+	}
+	return value
+}
+
 func normalizeAuditEntry(e AuditEntry) AuditEntry {
 	if e.Timestamp == 0 {
 		e.Timestamp = time.Now().Unix()
@@ -458,6 +466,7 @@ func normalizeAuditEntry(e AuditEntry) AuditEntry {
 			e.Result = "error"
 		}
 	}
+	e.Command = truncateAuditCommand(e.Command)
 	e.Command = redactAudit(e.Command)
 	e.ErrorMsg = redactAudit(e.ErrorMsg)
 	e.ActorName = redactAudit(e.ActorName)
@@ -759,7 +768,7 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) QueryAudits(actor, device, action, result string, from, to, cursor int64, limit int) ([]AuditLog, error) {
+func (s *Store) QueryAudits(actor, device, action, result, transport string, from, to, cursor int64, limit int) ([]AuditLog, error) {
 	if err := s.FlushAudits(); err != nil {
 		return nil, err
 	}
@@ -772,8 +781,15 @@ func (s *Store) QueryAudits(actor, device, action, result string, from, to, curs
 	q := "SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs WHERE 1=1"
 	args := []any{}
 	if actor != "" {
-		q += " AND actor_name=?"
-		args = append(args, actor)
+		switch actor {
+		case "legacy":
+			q += " AND (actor_name IN ('legacy','legacy-env','unknown(legacy)') OR actor_id='legacy-env')"
+		case "panel":
+			q += " AND (actor_type='panel' OR transport='panel')"
+		default:
+			q += " AND actor_name=?"
+			args = append(args, actor)
+		}
 	}
 	if device != "" {
 		q += " AND device=?"
@@ -786,6 +802,14 @@ func (s *Store) QueryAudits(actor, device, action, result string, from, to, curs
 	if result != "" {
 		q += " AND result=?"
 		args = append(args, result)
+	}
+	if transport != "" {
+		if transport == "mcp" {
+			q += " AND (transport LIKE 'mcp-%' OR transport='mcp')"
+		} else {
+			q += " AND transport=?"
+			args = append(args, transport)
+		}
 	}
 	if from > 0 {
 		q += " AND timestamp>=?"

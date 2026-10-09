@@ -21,6 +21,34 @@ async function api(path,opt={}){
 function esc(v){
   return String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))
 }
+let auditTokens=[];
+let auditDeviceOptions=[];
+let auditCursor=0;
+let auditHasMore=false;
+let auditActionOptions=new Set(["exec","file_read","file_write","file_list","file_info","file_search","edit_block","mcp_call","mcp_denied","scope_denied","device_denied","security_denied","rate_limited","list_processes","read_multiple_files","create_directory","move_file","token_create","token_update","token_rotate","token_revoke"]);
+
+function refreshAuditFilterOptions(){
+  const actor=$("#auditActor");
+  if(actor){
+    const selected=actor.value;
+    const options=['<option value="">全部令牌</option>','<option value="panel">面板</option>','<option value="legacy">legacy</option>'];
+    auditTokens.forEach(t=>{if(!t.is_legacy && t.name!=="legacy-env") options.push('<option value="'+esc(t.name)+'">'+esc(t.name)+(t.revoked_at?'（已吊销）':'')+'</option>')});
+    actor.innerHTML=options.join("");
+    if(Array.from(actor.options||[]).some(o=>o.value===selected)) actor.value=selected;
+  }
+  const device=$("#auditDevice");
+  if(device){
+    const selected=device.value;
+    device.innerHTML='<option value="">全部设备</option>'+auditDeviceOptions.map(d=>'<option value="'+esc(d)+'">'+esc(d)+'</option>').join("");
+    if(Array.from(device.options||[]).some(o=>o.value===selected)) device.value=selected;
+  }
+  const action=$("#auditAction");
+  if(action){
+    const selected=action.value;
+    action.innerHTML='<option value="">全部动作</option>'+Array.from(auditActionOptions).sort().map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join("");
+    if(Array.from(action.options||[]).some(o=>o.value===selected)) action.value=selected;
+  }
+}
 
 async function removeDevice(name){
   if(!confirm(`确认注销并踢出节点 [${name}] 吗？\n注销后该节点将被断开并禁止再次连入。`)) return;
@@ -70,6 +98,8 @@ function renderSingleCard(d) {
 
 async function loadDevices(){
   let all = await api("/devices");
+  auditDeviceOptions=Array.from(new Set(all.map(d=>d.name).filter(Boolean))).sort();
+  refreshAuditFilterOptions();
   let ds = all.filter(d => !d.is_local);
   // 严格固定名称字典序排列，杜绝乱跳
   ds.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
@@ -106,6 +136,8 @@ async function loadDevices(){
 
 async function loadTokens(){
   const a=await api("/tokens");
+  auditTokens=a;
+  refreshAuditFilterOptions();
   $("#tokens").innerHTML=a.map(x=>{
     const status=x.revoked_at?"已吊销":"有效";
     const ops=x.revoked_at?"":'<button type="button" onclick="revokeToken(\''+esc(x.id)+'\')">吊销</button>';
@@ -129,13 +161,27 @@ $("#tokenCreate").onclick=async()=>{
   }catch(e){$("#newToken").textContent=e.message}
 };
 
-async function loadAudits(){
-  let a=await api("/audits?limit=100");
-  $("#audits").innerHTML=a.map(x=>'<tr><td>'+new Date(x.timestamp*1000).toLocaleString()+'</td><td>'+esc(x.device)+'</td><td>'+esc(x.action)+'</td><td><code>'+esc(x.command)+'</code></td><td>'+x.exit_code+'</td><td>'+x.duration_ms+'ms</td><td>'+esc(x.caller_ip)+'</td></tr>').join("")
+function currentAuditFilters(){
+  return {actor:$("#auditActor").value,device:$("#auditDevice").value,action:$("#auditAction").value,result:$("#auditResult").value,transport:$("#auditTransport").value,from:$("#auditFrom").value,to:$("#auditTo").value};
+}
+async function loadAudits(reset=true){
+  if(reset){auditCursor=0;auditHasMore=false;$("#audits").innerHTML="";$("#auditStatus").textContent="加载中…";}
+  const params=AuditUI.buildAuditQuery(currentAuditFilters(),reset?0:auditCursor);
+  const rows=await api("/audits?"+params.toString());
+  rows.forEach(x=>{if(x.action)auditActionOptions.add(x.action);if(x.device&&!auditDeviceOptions.includes(x.device))auditDeviceOptions.push(x.device)});
+  refreshAuditFilterOptions();
+  $("#audits").insertAdjacentHTML("beforeend",rows.map(x=>AuditUI.renderAuditRow(x,auditTokens)).join(""));
+  if(rows.length){auditCursor=Number(rows[rows.length-1].id)||0;}
+  auditHasMore=rows.length===200;
+  $("#auditLoadMore").disabled=!auditHasMore;
+  $("#auditStatus").textContent=rows.length?`已加载 ${$("#audits").rows.length} 条${auditHasMore?'，可继续加载':''}`:"没有匹配的日志";
 }
 
 $("#refresh").onclick=loadDevices;
-$("#auditRefresh").onclick=loadAudits;
+$("#auditRefresh").onclick=()=>loadAudits(true);
+$("#auditLoadMore").onclick=()=>{if(auditHasMore)loadAudits(false).catch(e=>$("#auditStatus").textContent=e.message)};
+$("#auditExport").onclick=()=>{const params=AuditUI.buildAuditQuery(currentAuditFilters(),0);location.href="/panel/api/audits/export.csv?"+params.toString()};
+["#auditActor","#auditDevice","#auditAction","#auditResult","#auditTransport","#auditFrom","#auditTo"].forEach(id=>$(id).addEventListener("change",()=>loadAudits(true).catch(e=>$("#auditStatus").textContent=e.message)));
 $("#run").onclick=async()=>{
   let o=$("#output");
   o.textContent="执行中…";
@@ -161,7 +207,7 @@ $("#logout").onclick=async()=>{
   await fetch("/panel/logout",{method:"POST"});
   location.href="/panel/login"
 };
-loadDevices().then(loadAudits).then(loadTokens).catch(console.error);
+loadDevices().then(loadTokens).then(()=>loadAudits(true)).catch(console.error);
 
 let mcpEditingId="";
 function mcpFieldError(id,message){

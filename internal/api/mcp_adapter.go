@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
@@ -124,6 +125,10 @@ func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device str
 	if req.Action == "" {
 		return nil, errors.New("diagnostic action required")
 	}
+	var result any
+	var exitCode int
+	var durationMS int64
+	var detail string
 	if b.server.isRemote(device) {
 		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
 			return nil, fmt.Errorf("device %s is offline", device)
@@ -132,13 +137,18 @@ func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device str
 		if err != nil {
 			return nil, err
 		}
-		return res, nil
+		result, exitCode, durationMS, detail = res, res.ExitCode, res.DurationMS, res.Stderr
+	} else {
+		res, err := executor.Diagnostic(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		result, exitCode, durationMS, detail = res, res.ExitCode, res.DurationMS, res.Stderr
 	}
-	res, err := executor.Diagnostic(ctx, req)
-	if err != nil {
-		return nil, err
+	if b.server.Store != nil {
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "diagnostic_command", "action="+req.Action+" target="+req.Target, exitCode, durationMS, detail)
 	}
-	return res, nil
+	return result, nil
 }
 
 func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error) {
@@ -236,14 +246,14 @@ func (b *MCPBackend) EditBlock(ctx context.Context, clientIP, device, path, oldT
 		if err != nil {
 			return nil, err
 		}
-		_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path+fmt.Sprintf(" (bytes=%d)", len(newText)), 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
 		return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
 	}
 	res, err := executor.EditBlock(path, oldText, newText)
 	if err != nil {
 		return nil, err
 	}
-	_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path, 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
+	_ = b.server.auditMCPContext(ctx, clientIP, device, "edit_block", path+fmt.Sprintf(" (bytes=%d)", len(newText)), 0, 0, fmt.Sprintf("bytes_written=%d", res.BytesWritten))
 	return map[string]any{"device": device, "path": path, "bytes_written": res.BytesWritten}, nil
 }
 
@@ -280,7 +290,7 @@ func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, cont
 	}
 
 	if b.server.Store != nil {
-		_ = b.server.auditMCPContext(ctx, clientIP, device, "file_write", path, 0, 0, "")
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "file_write", path+fmt.Sprintf(" (bytes=%d)", len(content)), 0, 0, "")
 	}
 
 	return model.FileWriteResponse{
@@ -326,8 +336,16 @@ func (b *MCPBackend) CallAgentMCP(ctx context.Context, clientIP, device, server,
 }
 
 // AuditMCP forwards MCP authorization denials to the Hub audit store.
-func (b *MCPBackend) AuditMCP(ctx context.Context, clientIP, device, tool, result, detail string) {
-	b.server.AuditMCP(ctx, clientIP, device, tool, result, detail)
+func (b *MCPBackend) AuditMCP(ctx context.Context, clientIP, device, tool, command, result, detail string) {
+	b.server.AuditMCP(ctx, clientIP, device, tool, command, result, detail)
+}
+
+// AuditMCPAction records successful MCP tools that do not otherwise call an action backend.
+func (b *MCPBackend) AuditMCPAction(ctx context.Context, clientIP, device, action, command string, code int, durationMS int64, detail string) {
+	if b.server.Store == nil {
+		return
+	}
+	_ = b.server.auditMCPContext(ctx, clientIP, device, action, command, code, durationMS, detail)
 }
 
 // AuthorizeMCP exposes the same Hub-side gate to the MCP transport layer.
@@ -346,13 +364,23 @@ func (b *MCPBackend) ReadMultipleFiles(ctx context.Context, clientIP, device str
 	if len(paths) > 32 {
 		return nil, errors.New("too many paths")
 	}
+	var result any
 	if b.server.isRemote(device) {
 		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
 			return nil, fmt.Errorf("device %s is offline", device)
 		}
-		return b.server.Cluster.ReadMultipleFiles(ctx, device, cluster.ReadMultipleFilesPayload{Paths: paths, Limit: limit})
+		v, err := b.server.Cluster.ReadMultipleFiles(ctx, device, cluster.ReadMultipleFilesPayload{Paths: paths, Limit: limit})
+		if err != nil {
+			return nil, err
+		}
+		result = v
+	} else {
+		result = executor.ReadMultipleFiles(paths, limit)
 	}
-	return executor.ReadMultipleFiles(paths, limit), nil
+	if b.server.Store != nil {
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "file_read", strings.Join(paths, ", "), 0, 0, "")
+	}
+	return result, nil
 }
 func (b *MCPBackend) CreateDirectory(ctx context.Context, clientIP, device, path string) (any, error) {
 	device = b.server.normalizeDevice(device)
@@ -373,6 +401,9 @@ func (b *MCPBackend) CreateDirectory(ctx context.Context, clientIP, device, path
 		if err := executor.CreateDirectory(path); err != nil {
 			return nil, err
 		}
+	}
+	if b.server.Store != nil {
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "create_directory", path, 0, 0, "")
 	}
 	return map[string]any{"device": device, "path": path, "ok": true}, nil
 }
@@ -396,6 +427,9 @@ func (b *MCPBackend) MoveFile(ctx context.Context, clientIP, device, source, des
 			return nil, err
 		}
 	}
+	if b.server.Store != nil {
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "move_file", source+" -> "+destination, 0, 0, "")
+	}
 	return map[string]any{"device": device, "source": source, "destination": destination, "ok": true}, nil
 }
 func (b *MCPBackend) ListProcesses(ctx context.Context, clientIP, device string) (any, error) {
@@ -406,11 +440,18 @@ func (b *MCPBackend) ListProcesses(ctx context.Context, clientIP, device string)
 	if err := b.authorize(ctx, device, "read", clientIP); err != nil {
 		return nil, err
 	}
+	var result any
+	var err error
 	if b.server.isRemote(device) {
 		if b.server.Cluster == nil || !b.server.Cluster.Online(device) {
 			return nil, fmt.Errorf("device %s is offline", device)
 		}
-		return b.server.Cluster.ListProcesses(ctx, device)
+		result, err = b.server.Cluster.ListProcesses(ctx, device)
+	} else {
+		result, err = executor.ListProcesses()
 	}
-	return executor.ListProcesses()
+	if err == nil && b.server.Store != nil {
+		_ = b.server.auditMCPContext(ctx, clientIP, device, "list_processes", "list_processes", 0, 0, "")
+	}
+	return result, err
 }

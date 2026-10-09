@@ -42,7 +42,7 @@ func TestMCPAdapterAuditDeniedUsesRealHubBackend(t *testing.T) {
 	if got.Action != "mcp_denied" || got.Result != "denied" {
 		t.Fatalf("unexpected audit: %+v", got)
 	}
-	if got.Device != "wjyhk" || got.TargetType != "mcp_tool" || got.Target != "exec_command" {
+	if got.Device != "wjyhk" || got.TargetType != "device" || got.Target != "wjyhk" || got.Command != "id" {
 		t.Fatalf("unexpected target/device: %+v", got)
 	}
 	if got.Transport != "mcp" {

@@ -1,17 +1,20 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
@@ -33,8 +36,19 @@ func principal(r *http.Request) auth.Principal {
 	return p
 }
 
+func auditTargetValue(action, command string) string {
+	if (strings.Contains(action, "file") || action == "edit_block" || action == "create_directory") && strings.Contains(command, " (bytes=") {
+		return strings.SplitN(command, " (bytes=", 2)[0]
+	}
+	return command
+}
+
 func (s *Server) auditContext(ctx context.Context, ip, device, action, command string, code int, ms int64, msg string) error {
-	return s.auditContextTarget(ctx, ip, device, action, command, command, code, ms, msg)
+	target := device
+	if strings.HasPrefix(action, "token_") || strings.Contains(action, "file") || action == "edit_block" || strings.Contains(action, "webhook") || strings.Contains(action, "notification") {
+		target = auditTargetValue(action, command)
+	}
+	return s.auditContextTarget(ctx, ip, device, action, target, command, code, ms, msg)
 }
 
 func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, target, command string, code int, ms int64, msg string) error {
@@ -49,8 +63,11 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 	}
 	result := "ok"
 	transport := "rest"
-	if action == "mcp_denied" {
-		transport = "mcp"
+	if p.Type == "panel" {
+		transport = "panel"
+	}
+	if concrete := mcp.TransportFromContext(ctx); concrete != "" {
+		transport = concrete
 	}
 	if code != 0 {
 		result = "error"
@@ -63,29 +80,47 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 		code = 0
 	}
 	if action == "mcp_denied" {
-		targetType = "mcp_tool"
+		targetType = "device"
+		target = device
 		result = "denied"
 		code = 0
 	}
 	if action == "scope_denied" {
-		targetType = "scope"
+		if device == "" {
+			targetType = "scope"
+		} else {
+			targetType = "device"
+			target = device
+		}
 		result = "denied"
 		code = 0
 	}
-	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
+	mcp.MarkAuditRecorded(ctx)
+	return err
 }
 
-func (s *Server) AuditMCP(ctx context.Context, ip, device, tool, result, detail string) {
+func (s *Server) AuditMCP(ctx context.Context, ip, device, tool, command, result, detail string) {
 	device = s.normalizeDevice(device)
-	_ = s.auditMCPContext(ctx, ip, device, "mcp_denied", tool, 0, 0, result+": "+detail)
+	if command == "" {
+		command = tool
+	}
+	_ = s.auditMCPContext(ctx, ip, device, "mcp_denied", command, 0, 0, result+": "+detail)
 }
 
 func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, command string, code int, ms int64, msg string) error {
 	device = s.normalizeDevice(device)
+	if action == "security_denied" {
+		if intent := mcp.AuditIntentFromContext(ctx); intent != "" {
+			command = intent
+		}
+	}
 	p, _ := auth.PrincipalFromContext(ctx)
 	targetType := "device"
-	if action == "mcp_call" || action == "mcp_denied" {
+	if action == "mcp_call" {
 		targetType = "mcp_tool"
+	} else if strings.Contains(action, "file") || action == "edit_block" || action == "create_directory" || action == "move_file" {
+		targetType = "file"
 	}
 	result := "ok"
 	if code != 0 {
@@ -99,17 +134,89 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	if targetType == "mcp_tool" {
 		target = command
 	}
-	return s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: targetType, Target: target, Result: result})
+	if targetType == "file" {
+		target = auditTargetValue(action, command)
+	}
+	transport := mcp.TransportFromContext(ctx)
+	if transport == "" {
+		transport = "mcp"
+	}
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
+	mcp.MarkAuditRecorded(ctx)
+	return err
 }
 
 func (s *Server) audit(r *http.Request, device, action, command string, code int, ms int64, msg string) error {
 	return s.auditContext(r.Context(), auth.ClientIP(r), device, action, command, code, ms, msg)
 }
 
+func requestAuditIntent(r *http.Request) (device, targetType, target, command string) {
+	device, targetType = "", "device"
+	path := r.URL.Path
+	var body []byte
+	if r.Body != nil {
+		body, _ = io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+		r.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	var fields map[string]any
+	_ = json.Unmarshal(body, &fields)
+	get := func(key string) string { v, _ := fields[key].(string); return strings.TrimSpace(v) }
+	device = get("device")
+	switch {
+	case strings.HasSuffix(path, "/exec"):
+		command = get("command")
+	case strings.Contains(path, "/file/read"), strings.Contains(path, "/file/list"), strings.Contains(path, "/file/info"), strings.Contains(path, "/file/search"):
+		command = get("path")
+		if command == "" {
+			command = get("root")
+		}
+	case strings.Contains(path, "/file/write"):
+		command = get("path") + fmt.Sprintf(" (bytes=%d)", len(get("content")))
+	case strings.Contains(path, "/edit_block"):
+		command = get("path") + fmt.Sprintf(" (bytes=%d)", len(get("new_text")))
+	case strings.Contains(path, "/process/session"):
+		command = "session=" + get("session_id")
+	case strings.Contains(path, "/mcp/call"):
+		command = get("server") + "/" + get("tool")
+	case strings.Contains(path, "/mcp/list"):
+		command = "list_agent_mcp"
+	default:
+		command = path
+	}
+	if command == "" {
+		command = path
+	}
+	if device == "" {
+		target = scopeTarget(path)
+	} else {
+		target = device
+	}
+	return device, targetType, target, truncateAuditCommand(command)
+}
+
+func scopeTarget(path string) string { return path }
+
+func truncateAuditCommand(value string) string {
+	runes := []rune(value)
+	if len(runes) > 512 {
+		return string(runes[:511]) + "…"
+	}
+	return value
+}
+
 func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !principal(r).HasScope(scope) {
-			_ = s.auditContextTarget(r.Context(), auth.ClientIP(r), "", "scope_denied", scope, r.URL.Path, 0, 0, "required scope denied")
+			device, _, target, command := requestAuditIntent(r)
+			if device != "" {
+				device = s.normalizeDevice(device)
+			}
+			if device == "" {
+				target = scope
+			} else {
+				target = device
+			}
+			_ = s.auditContextTarget(r.Context(), auth.ClientIP(r), device, "scope_denied", target, command, http.StatusForbidden, 0, "required scope denied")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(fmt.Sprintf(`{"error":"scope %s required"}`, scope)))
@@ -119,6 +226,16 @@ func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	})
 }
 
+func auditActorLabel(v storage.AuditLog) string {
+	if v.ActorType == "panel" || v.Transport == "panel" {
+		return "面板"
+	}
+	if v.ActorID == "legacy-env" || v.ActorName == "legacy" || v.ActorName == "legacy-env" || v.ActorName == "unknown(legacy)" {
+		return "legacy"
+	}
+	return v.ActorName
+}
+
 func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)
@@ -126,17 +243,24 @@ func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
-	logs, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), from, to, 0, 500)
-	if err != nil {
-		http.Error(w, "audit query failed", 500)
-		return
-	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=audits.csv")
 	c := csv.NewWriter(w)
 	_ = c.Write([]string{"id", "timestamp", "actor_name", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"})
-	for _, v := range logs {
-		_ = c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), v.ActorName, v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg})
+	cursor := int64(0)
+	for {
+		page, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), r.URL.Query().Get("transport"), from, to, cursor, 500)
+		if err != nil {
+			return
+		}
+		for _, v := range page {
+			_ = c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), auditActorLabel(v), v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg})
+		}
+		c.Flush()
+		if len(page) < 500 {
+			break
+		}
+		cursor = page[len(page)-1].ID
 	}
 	c.Flush()
 }

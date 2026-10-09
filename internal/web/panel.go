@@ -69,6 +69,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/probe/summary", p.cachedHandler("probe-summary", p.probeSummary))
 	mux.HandleFunc("/static/", p.static)
 	mux.HandleFunc("/panel/api/devices", p.protected(p.cachedHandler("panel-devices", p.handleDevices)))
+	mux.HandleFunc("/panel/api/audits/export.csv", p.protected(p.auditExportCSV))
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
@@ -91,6 +92,18 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/notifications/webhook/test", p.protected(p.testWebhook))
 	mux.HandleFunc("/", p.probe)
 	return mux
+}
+
+type auditExportRunner interface {
+	AuditExportCSV(http.ResponseWriter, *http.Request)
+}
+
+func (p *Panel) auditExportCSV(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(auditExportRunner); ok {
+		v.AuditExportCSV(w, r)
+		return
+	}
+	http.Error(w, "audit export unavailable", http.StatusNotImplemented)
 }
 
 type securityPanelRunner interface {
