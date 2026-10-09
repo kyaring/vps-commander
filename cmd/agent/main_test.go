@@ -88,3 +88,19 @@ func TestProfileIntervalHubConfigurationCompatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestJitteredBackoffBounds(t *testing.T) {
+	base, max := 10*time.Second, 30*time.Second
+	if got := jitteredBackoff(base, max, 0); got != 8*time.Second {
+		t.Fatalf("minimum jitter=%s, want 8s", got)
+	}
+	if got := jitteredBackoff(base, max, 0.5); got != 10*time.Second {
+		t.Fatalf("midpoint jitter=%s, want 10s", got)
+	}
+	if got := jitteredBackoff(base, max, 1); got != 12*time.Second {
+		t.Fatalf("maximum jitter=%s, want 12s", got)
+	}
+	if got := jitteredBackoff(40*time.Second, max, 1); got != max {
+		t.Fatalf("capped jitter=%s, want %s", got, max)
+	}
+}

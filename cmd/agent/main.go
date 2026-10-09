@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"runtime"
@@ -33,17 +34,45 @@ func main() {
 	}
 	backoff := time.Second
 	for {
+		started := time.Now()
 		if err := run(*hub, *name, *token, *insecure); err != nil {
 			log.Printf("agent connection: %v", err)
 		}
-		time.Sleep(backoff)
-		if backoff < 30*time.Second {
+		stable := time.Since(started) >= 2*time.Minute
+		if stable {
+			backoff = time.Second
+		}
+		delay := jitteredBackoff(backoff, 30*time.Second, rand.Float64())
+		log.Printf("reconnecting in %s (base=%s)", delay, backoff)
+		time.Sleep(delay)
+		if !stable && backoff < 30*time.Second {
 			backoff *= 2
 			if backoff > 30*time.Second {
 				backoff = 30 * time.Second
 			}
 		}
 	}
+}
+
+func jitteredBackoff(base, max time.Duration, sample float64) time.Duration {
+	if base < 0 {
+		base = 0
+	}
+	if max > 0 && base > max {
+		base = max
+	}
+	if sample < 0 {
+		sample = 0
+	}
+	if sample > 1 {
+		sample = 1
+	}
+	// Bounded jitter in [0.8x, 1.2x] spreads simultaneous reconnects while preserving the backoff envelope.
+	delay := time.Duration(float64(base) * (0.8 + sample*0.4))
+	if max > 0 && delay > max {
+		delay = max
+	}
+	return delay
 }
 
 func run(hub, name, token string, insecure bool) error {

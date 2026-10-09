@@ -35,6 +35,7 @@ type Manager struct {
 	profileFlushDone chan struct{}
 	profileFlusherOn atomic.Bool
 	ProfileInterval  time.Duration
+	handshakeLimiter *handshakeLimiter
 }
 
 type Node struct {
@@ -58,6 +59,17 @@ type Node struct {
 	ProtocolVersion string
 	AgentVersion    string
 	Capabilities    map[string]bool
+	writeQueue      chan outboundMessage
+	writerDone      chan struct{}
+	writerStop      chan struct{}
+	writerOnce      sync.Once
+	writerStopOnce  sync.Once
+	readDone        chan struct{}
+}
+
+type outboundMessage struct {
+	message Message
+	result  chan error
 }
 
 type Result struct {
@@ -76,7 +88,7 @@ type FileResult struct {
 }
 
 func NewManager(secret string, store *storage.Store) *Manager {
-	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate), profileFlushStop: make(chan struct{}), profileFlushDone: make(chan struct{}), ProfileInterval: 5 * time.Minute}
+	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate), profileFlushStop: make(chan struct{}), profileFlushDone: make(chan struct{}), ProfileInterval: 5 * time.Minute, handshakeLimiter: newHandshakeLimiter(time.Now())}
 	if store != nil {
 		if records, err := store.ListDevices(); err == nil {
 			for _, d := range records {
@@ -117,6 +129,12 @@ func (m *Manager) SetProfileInterval(interval time.Duration) {
 }
 
 func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
+	clientIP := ExtractIPFromRequest(r)
+	if m.handshakeLimiter != nil && !m.handshakeLimiter.Allow(clientIP, time.Now()) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "too many agent handshakes", http.StatusTooManyRequests)
+		return
+	}
 	auth := r.Header.Get("Authorization")
 	provided := ""
 	if len(auth) >= 7 && auth[:7] == "Bearer " {
@@ -160,7 +178,6 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.startProfileFlusher()
-	clientIP := ExtractIPFromRequest(r)
 	cc, countryName := ResolveIP(clientIP)
 	n := &Node{
 		Name:         name,
@@ -171,7 +188,9 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 		Country:      countryName,
 		MCP:          NewMCPRuntime(),
 		Capabilities: make(map[string]bool),
+		readDone:     make(chan struct{}),
 	}
+	n.startWriter()
 	n.LastSeen.Store(time.Now().UnixNano())
 	n.LastHeartbeat.Store(time.Now().UnixNano())
 	n.Connected.Store(true)
@@ -188,16 +207,98 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	go m.readLoop(n)
 }
 
-func (n *Node) write(msg Message) error {
-	n.WriteMu.Lock()
-	defer n.WriteMu.Unlock()
-	if err := n.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		return err
+func (n *Node) startWriter() {
+	n.writerOnce.Do(func() {
+		n.writeQueue = make(chan outboundMessage, 128)
+		n.writerDone = make(chan struct{})
+		n.writerStop = make(chan struct{})
+		go n.writeLoop()
+	})
+}
+
+func (n *Node) stopWriter() {
+	if n.writerStop == nil {
+		return
 	}
-	return n.Conn.WriteJSON(msg)
+	n.writerStopOnce.Do(func() { close(n.writerStop) })
+}
+
+func (n *Node) writeLoop() {
+	defer close(n.writerDone)
+	failQueued := func(err error) {
+		for {
+			select {
+			case item := <-n.writeQueue:
+				item.result <- err
+			default:
+				return
+			}
+		}
+	}
+	for {
+		select {
+		case item := <-n.writeQueue:
+			if err := n.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				item.result <- err
+				_ = n.Conn.Close()
+				failQueued(err)
+				return
+			}
+			err := n.Conn.WriteJSON(item.message)
+			item.result <- err
+			if err != nil {
+				_ = n.Conn.Close()
+				failQueued(err)
+				return
+			}
+		case <-n.writerStop:
+			failQueued(errors.New("device disconnected"))
+			return
+		}
+	}
+}
+
+func (n *Node) write(msg Message) error {
+	if n.writeQueue == nil {
+		// Compatibility for tests and non-live nodes; active connections use the single writer goroutine.
+		n.WriteMu.Lock()
+		defer n.WriteMu.Unlock()
+		if n.Conn == nil {
+			return errors.New("device connection unavailable")
+		}
+		if err := n.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return err
+		}
+		return n.Conn.WriteJSON(msg)
+	}
+	select {
+	case <-n.writerDone:
+		return errors.New("device writer stopped")
+	default:
+	}
+	item := outboundMessage{message: msg, result: make(chan error, 1)}
+	select {
+	case n.writeQueue <- item:
+	case <-n.writerDone:
+		return errors.New("device writer stopped")
+	}
+	select {
+	case err := <-item.result:
+		return err
+	case <-n.writerDone:
+		select {
+		case err := <-item.result:
+			return err
+		default:
+			return errors.New("device writer stopped")
+		}
+	}
 }
 
 func (m *Manager) readLoop(n *Node) {
+	if n.readDone != nil {
+		defer close(n.readDone)
+	}
 	defer func() {
 		n.Connected.Store(false)
 		conn := n.Conn
@@ -207,6 +308,7 @@ func (m *Manager) readLoop(n *Node) {
 		if conn != nil {
 			_ = conn.Close()
 		}
+		n.stopWriter()
 		n.Pending.Range(func(key, v any) bool {
 			if ch, ok := v.(chan Message); ok {
 				select {
@@ -326,6 +428,35 @@ func (m *Manager) startProfileFlusher() {
 
 // Close stops the profile flusher and synchronously persists its final batch.
 func (m *Manager) Close() {
+	m.mu.RLock()
+	nodes := make([]*Node, 0, len(m.nodes))
+	for _, n := range m.nodes {
+		if n != nil && n.Conn != nil {
+			nodes = append(nodes, n)
+		}
+	}
+	m.mu.RUnlock()
+	for _, n := range nodes {
+		_ = n.Conn.Close()
+		n.stopWriter()
+	}
+	waitFor := func(done func(*Node) <-chan struct{}) {
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for _, n := range nodes {
+			ch := done(n)
+			if ch == nil {
+				continue
+			}
+			select {
+			case <-ch:
+			case <-timer.C:
+				return
+			}
+		}
+	}
+	waitFor(func(n *Node) <-chan struct{} { return n.readDone })
+	waitFor(func(n *Node) <-chan struct{} { return n.writerDone })
 	if m.profileFlusherOn.Load() {
 		m.profileStopOnce.Do(func() { close(m.profileFlushStop) })
 		<-m.profileFlushDone
