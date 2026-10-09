@@ -601,7 +601,7 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 				stats.mcpErrors.Add(1)
 			}
 			if responseDeniesExec(listResp) {
-				stats.mcpExecDenied.Add(1)
+				recordExecDenied(stats)
 			}
 			if !waitContext(ctx, cfg.interval) {
 				return
@@ -629,12 +629,12 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 				stats.mcpErrors.Add(1)
 			}
 			if responseDeniesExec(callResp) {
-				stats.mcpExecDenied.Add(1)
+				recordExecDenied(stats)
 			}
 		} else if toolResultIsError(callResp.Result) {
 			stats.mcpErrors.Add(1)
 			if responseDeniesExec(callResp) {
-				stats.mcpExecDenied.Add(1)
+				recordExecDenied(stats)
 			}
 		} else {
 			stats.mcpCallsOK.Add(1)
@@ -774,7 +774,7 @@ func runSSEClient(ctx context.Context, cfg config, index int, token string, agen
 			} else if callResp.Error != nil || toolResultIsError(callResp.Result) {
 				stats.mcpErrors.Add(1)
 				if responseDeniesExec(callResp) {
-					stats.mcpExecDenied.Add(1)
+					recordExecDenied(stats)
 				}
 			} else {
 				stats.mcpCallsOK.Add(1)
@@ -1217,4 +1217,14 @@ func scrapeMetrics(base *url.URL, token string, client *http.Client) map[string]
 		out["error"] = err.Error()
 	}
 	return out
+}
+
+// recordExecDenied treats an exec denial as a policy preflight failure only
+// before any tool call has succeeded. Once calls succeed, a denial is transient
+// (for example a fake Agent briefly offline during a Hub restart, which the Hub
+// reports as security mode "unknown") and is counted as an ordinary error.
+func recordExecDenied(stats *counters) {
+	if stats.mcpCallsOK.Load() == 0 {
+		stats.mcpExecDenied.Add(1)
+	}
 }

@@ -338,3 +338,16 @@ func TestResourceSummaryComputesCPUAndPeakRSS(t *testing.T) {
 		t.Fatalf("no samples should give nil cpu, got %v", empty["cpu_avg_cores"])
 	}
 }
+
+func TestExecDeniedOnlyCountsBeforeFirstSuccess(t *testing.T) {
+	stats := &counters{}
+	recordExecDenied(stats)
+	if stats.mcpExecDenied.Load() != 1 {
+		t.Fatalf("denial before success not counted")
+	}
+	stats.mcpCallsOK.Add(1)
+	recordExecDenied(stats)
+	if stats.mcpExecDenied.Load() != 1 {
+		t.Fatalf("transient denial after success must not trip preflight, got %d", stats.mcpExecDenied.Load())
+	}
+}
