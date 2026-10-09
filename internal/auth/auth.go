@@ -21,6 +21,7 @@ type Principal struct {
 	Devices     map[string]bool
 	TokenID     string
 	MaxSessions int
+	RateRPS     int
 }
 
 func (p Principal) HasScope(scope string) bool {
@@ -77,7 +78,7 @@ func (m *Manager) PrincipalFromRequest(r *http.Request) (Principal, bool) {
 	}
 	expected := m.Token()
 	if expected != "" && subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1 {
-		return Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env",
+		return Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env", RateRPS: 10,
 			Scopes: map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}}, true
 	}
 	return Principal{}, false
@@ -108,7 +109,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 					return
 				}
 			} else if m.Token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(m.Token)) == 1 {
-				p := Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env",
+				p := Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env", RateRPS: 10,
 					Scopes: map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}}
 				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 				return

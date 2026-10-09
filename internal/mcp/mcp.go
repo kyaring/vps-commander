@@ -307,6 +307,13 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if isRateLimitedResponse(resp) {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
 		http.Error(w, "failed to encode JSON-RPC response", http.StatusInternalServerError)
@@ -329,6 +336,19 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(respBytes)
+}
+
+func isRateLimitedResponse(resp JSONRPCResponse) bool {
+	result, ok := resp.Result.(CallToolResult)
+	if !ok || !result.IsError {
+		return false
+	}
+	for _, content := range result.Content {
+		if strings.Contains(content.Text, "rate_limited") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) decodeAndHandleRequest(w http.ResponseWriter, r *http.Request) (JSONRPCResponse, bool) {
@@ -408,6 +428,13 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := s.handleRequest(r.Context(), r, req)
+	if isRateLimitedResponse(resp) {
+		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
 	if req.Method == "initialize" {
 		if result, ok := resp.Result.(map[string]any); ok {
 			if v, ok := result["protocolVersion"].(string); ok && v != "" {

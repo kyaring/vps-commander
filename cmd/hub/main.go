@@ -32,6 +32,14 @@ func token() string {
 	return hex.EncodeToString(b)
 }
 
+func positiveEnvInt(name string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9521", "listen address")
 	dbPath := flag.String("db", "data/commander.db", "sqlite database")
@@ -80,7 +88,7 @@ func main() {
 		if err != nil || (legacyKeyOff && t.IsLegacy) {
 			return auth.Principal{}, false
 		}
-		return auth.Principal{Type: "api_token", ID: id, Name: name, TokenID: id, Scopes: scopes, Devices: devices, MaxSessions: t.MaxSessions}, true
+		return auth.Principal{Type: "api_token", ID: id, Name: name, TokenID: id, Scopes: scopes, Devices: devices, MaxSessions: t.MaxSessions, RateRPS: t.RateRPS}, true
 	}))
 	local := "local"
 	if h, err := os.Hostname(); err == nil && h != "" {
@@ -96,6 +104,9 @@ func main() {
 	notificationManager := notify.New(store)
 	notificationManager.Start()
 	defer notificationManager.Stop()
+	execConcurrency := positiveEnvInt("VPS_COMMANDER_EXEC_CONCURRENCY", 32)
+	searchConcurrency := positiveEnvInt("VPS_COMMANDER_SEARCH_CONCURRENCY", 8)
+	tokenExecConcurrency := positiveEnvInt("VPS_COMMANDER_TOKEN_EXEC_CONCURRENCY", 2)
 	s := &api.Server{
 		Auth:           authManager,
 		Exec:           executor.Local{MaxOutput: 1024 * 1024},
@@ -105,8 +116,9 @@ func main() {
 		Notify:         notificationManager,
 		AdminToken:     adminToken,
 		InstallCommand: installCommand,
-		ExecLimiter:    make(chan struct{}, 32),
-		SearchLimiter:  make(chan struct{}, 8),
+		ExecLimiter:    make(chan struct{}, execConcurrency),
+		SearchLimiter:  make(chan struct{}, searchConcurrency),
+		TokenLimiter:   api.NewTokenLimiter(tokenExecConcurrency),
 		LocalSessions:  executor.NewSessionManager(0),
 	}
 	s.Cluster.SetProfileInterval(profileInterval)
@@ -120,15 +132,15 @@ func main() {
 	mcpServer.SetLocalName(local)
 	s.MCP = mcpServer
 
-	protected := auth.Middleware{Manager: authManager}.Handler(s.Routes())
+	protected := auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(s.Routes()))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", protected)
 
 	// MCP Endpoints
 	// Flexible Auth: allows optional token on SSE connect, but enforces token on Message calls
-	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleStreamableHTTP)))
-	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleSSE)))
-	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleMessage)))
+	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
+	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleSSE))))
+	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleMessage))))
 
 	// OAuth Endpoints (For OpenAI OAuth auto-discovery)
 	mux.HandleFunc("/.well-known/oauth-authorization-server", mcpServer.HandleOAuthMetadata)

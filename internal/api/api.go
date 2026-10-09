@@ -51,6 +51,7 @@ type Server struct {
 	InstallCommand string
 	ExecLimiter    chan struct{}
 	SearchLimiter  chan struct{}
+	TokenLimiter   *TokenLimiter
 	LocalSessions  *executor.SessionManager
 }
 
@@ -835,6 +836,12 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	req.Device = s.normalizeDevice(req.Device)
 	if !s.requireSecurity(w, r, req.Device, "exec", req.Command) {
 		return
+	}
+	if releaseTokenExec, allowed := s.acquireTokenExec(principal(r)); !allowed {
+		s.rejectTokenExecLimit(w, r, principal(r))
+		return
+	} else {
+		defer releaseTokenExec()
 	}
 	releaseExec := s.acquireExec()
 	defer releaseExec()

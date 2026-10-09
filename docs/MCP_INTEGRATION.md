@@ -243,3 +243,11 @@ Agent MCP Service
 3. Capability-based Tool Advertisement。
 4. Principal Identity 纳入 MCP Audit Context。
 5. 长任务引入显式 Operation / Session Handle。
+
+## 令牌限流与并发执行（B4）
+
+- 每个 API 令牌使用独立的 `rate_rps` 令牌桶；超限返回 `429 Too Many Requests` 和 `Retry-After`，审计结果标记为 `denied`，错误为 `rate_limited`。
+- 每个令牌默认最多同时执行 2 个 exec；超限返回 429。全局并发限制仍然生效。
+- `VPS_COMMANDER_EXEC_CONCURRENCY`：全局 exec 并发上限，默认 `32`。
+- `VPS_COMMANDER_SEARCH_CONCURRENCY`：全局搜索并发上限，默认 `8`。
+- `VPS_COMMANDER_TOKEN_EXEC_CONCURRENCY`：每个令牌的并发 exec 上限，默认 `2`。
