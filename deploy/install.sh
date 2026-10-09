@@ -20,7 +20,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 [[ $EUID -ne 0 ]] && error "必须使用 root 权限运行此脚本 (例如: bash install.sh)"
 ARCH=$(uname -m)
-case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
+case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; armv7l|armv7|armhf) TARGET_ARCH="armv7" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
 command -v curl >/dev/null 2>&1 || (apt-get update && apt-get install -y curl || yum install -y curl)
 
 info "正在获取 VPS-Commander 最新版本信息..."

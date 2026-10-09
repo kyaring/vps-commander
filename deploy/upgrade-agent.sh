@@ -21,7 +21,7 @@ command -v curl >/dev/null 2>&1 || error "系统缺少 curl"
 command -v sha256sum >/dev/null 2>&1 || error "系统缺少 sha256sum，无法安全校验 Release"
 
 ARCH=$(uname -m)
-case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
+case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; armv7l|armv7|armhf) TARGET_ARCH="armv7" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
 
 info "正在获取最新正式 Release 版本信息..."
 LATEST_TAG=$(curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 30 \

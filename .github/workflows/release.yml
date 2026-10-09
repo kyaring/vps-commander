@@ -53,6 +53,8 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-amd64 ./cmd/agent
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-hub-linux-arm64 ./cmd/hub
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-arm64 ./cmd/agent
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-hub-linux-armv7 ./cmd/hub
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-agent-linux-armv7 ./cmd/agent
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/vps-commander-mcp-stdio-linux-amd64 ./cmd/mcp-stdio
 
           # Installer / upgrade scripts are part of the immutable release.

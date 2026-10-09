@@ -24,7 +24,7 @@ command -v curl >/dev/null 2>&1 || error "系统缺少 curl"
 command -v sha256sum >/dev/null 2>&1 || error "系统缺少 sha256sum，无法安全校验 Release"
 
 ARCH=$(uname -m)
-case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
+case "$ARCH" in x86_64|amd64) TARGET_ARCH="amd64" ;; aarch64|arm64) TARGET_ARCH="arm64" ;; armv7l|armv7|armhf) TARGET_ARCH="armv7" ;; *) error "暂不支持的系统架构: $ARCH" ;; esac
 
 SERVICE_FILE="/etc/systemd/system/vps-commander-hub.service"
 [ -f "$SERVICE_FILE" ] || error "未检测到 Hub systemd 服务"
