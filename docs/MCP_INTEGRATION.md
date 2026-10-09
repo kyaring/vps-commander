@@ -6,9 +6,10 @@
 
 ## 一、MCP 总体能力
 
-VPS-Commander 当前提供两种 MCP 接入模式：
+VPS-Commander 当前提供三种 MCP 接入方式：
 
-- **远程 HTTP SSE 模式**：适用于远程 MCP Client。
+- **远程 Streamable HTTP 模式**：新客户端优先使用，单端点 `POST /mcp`。
+- **远程 HTTP SSE 模式**：旧客户端兼容入口 `GET /mcp/sse` + `POST /mcp/message`。
 - **本地 stdio 模式**：适用于 Claude Desktop、Cursor、VS Code 等本地客户端。
 
 当前 MCP Server：
@@ -237,8 +238,8 @@ Agent MCP Service
 
 ## 十、后续演进
 
-1. Streamable HTTP。
-2. 保留 SSE fallback。
+1. Streamable HTTP 的 Kotlin SDK 端到端兼容验证。
+2. 保留并持续验证 SSE fallback。
 3. Capability-based Tool Advertisement。
 4. Principal Identity 纳入 MCP Audit Context。
 5. 长任务引入显式 Operation / Session Handle。

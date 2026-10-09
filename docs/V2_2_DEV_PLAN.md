@@ -127,6 +127,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device, timestamp);
 
 目标：单 Hub 支撑 **500 Agent + 50 个并发 MCP 客户端**。
 
+**执行门禁（用户确认，2026-10-09）：** B3 完成后按 B4 → B5 → B6 → B7 顺序开发。B1–B7 的整体验收统一等 B7 完成后，由用户使用 500 个 Agent + 50 个 MCP 客户端实测；此前的单元测试、构建和局部测试只作为开发验证，不提前标记 B 系列验收通过。
+
 ### B1. 心跳与写库
 
 - Agent：拆分 `ping`（15s，不带 profile）与 `profile`（默认 60s，可由 Hub 下发间隔；仅在变化超过阈值时上报完整字段）。
