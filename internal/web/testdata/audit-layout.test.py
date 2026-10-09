@@ -164,6 +164,8 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert scopes == ["devices:read","exec","files:read","files:write","mcp:call","process"], f"ops template scopes wrong: {scopes}"
         evaluate("(()=>{window.__confirmCalls=0;window.confirm=()=>{window.__confirmCalls++;return window.__confirmCalls===1};document.querySelector('#tokenName').value='must-not-create-admin';const t=document.querySelector('#tokenTemplate');t.value='all';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#tokenCreate').click()})()")
         assert evaluate("window.__confirmCalls===2 && document.querySelector('[data-token-scope=admin]').checked"), "admin create did not require two confirmations"
+        # Capture console calls before token creation to prove the new secret is never logged.
+        evaluate("window.__capturedConsole=[];['log','warn','error','debug','info'].forEach(k=>console[k]=(...args)=>window.__capturedConsole.push(args.map(String).join(' ')))")
         # Create a real named token through the wizard and test it against the temporary Hub.
         assert evaluate("document.querySelector('#wizardTokenTemplate').value") == "read", "wizard token template must default to read-only"
         evaluate("document.querySelector('#tokenTemplate').value='read';document.querySelector('#tokenTemplate').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardNewTokenName').value='layout-wizard-token';document.querySelector('#wizardCreateToken').click()")
@@ -174,7 +176,6 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
             time.sleep(.1)
         assert created.get("secret","").startswith("vpc_") and "layout-wizard-token" in created.get("selected",""), f"wizard did not create/select token: {created}"
         assert evaluate("!document.querySelector('#wizardNewTokenBox').hidden && document.querySelector('#wizardNewTokenValue').value") == created["secret"], "wizard secret box is hidden or does not contain the API token"
-        evaluate("window.__capturedConsole=[];['log','warn','error','debug','info'].forEach(k=>console[k]=(...args)=>window.__capturedConsole.push(args.map(String).join(' ')))")
         assert not evaluate("location.hash.includes("+json.dumps(created["secret"])+") || Object.keys(localStorage).some(k=>String(localStorage.getItem(k)).includes("+json.dumps(created["secret"])+")) || window.__capturedConsole.some(s=>s.includes("+json.dumps(created["secret"])+"))"), "token was written to hash/localStorage/console"
         for width in (1280, 390, 320):
             page_command("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000, "deviceScaleFactor": 1, "mobile": width <= 450})
@@ -214,6 +215,13 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').textContent") == "已复制", "copy success feedback did not appear"
         time.sleep(1.6)
         assert evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').textContent") == "复制", "copy button did not restore its original text"
+        # Force clipboard denial and execCommand failure: text must remain selected with manual-copy guidance.
+        evaluate("window.__savedClipboardWrite=navigator.clipboard.writeText;window.__savedExecCommand=document.execCommand;Object.defineProperty(navigator.clipboard,'writeText',{configurable:true,value:()=>Promise.reject(Error('clipboard denied'))});document.execCommand=()=>false;document.querySelector('[data-copy=wizardNewTokenValue]').click()")
+        time.sleep(.15)
+        assert evaluate("document.querySelector('#wizardTokenStatus').textContent.includes('请按 Ctrl/长按复制') && document.querySelector('#wizardNewTokenValue').selectionStart===0 && document.querySelector('#wizardNewTokenValue').selectionEnd===document.querySelector('#wizardNewTokenValue').value.length"), "clipboard failure did not keep secret selected and show manual-copy guidance"
+        evaluate("delete navigator.clipboard.writeText;document.execCommand=window.__savedExecCommand")
+        time.sleep(1.6)
+        assert evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').textContent") == "复制", "failed copy button did not restore its original text"
         # Every generic copy button must restore its own label, not a hard-coded generic label.
         for copy_id in ("wizardSchema", "wizardPrompt", "wizardMCPJSON", "wizardCurl", "newTokenValue", "wizardNewTokenValue"):
             label = evaluate("(()=>{const b=document.querySelector('[data-copy="+json.dumps(copy_id)+"]');const label=b.textContent;b.click();return label})()")
