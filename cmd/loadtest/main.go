@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,15 +29,16 @@ import (
 )
 
 const (
-	defaultAgents       = 500
-	defaultMCPClients   = 50
-	defaultDuration     = 10 * time.Minute
-	defaultAgentRamp    = 90 * time.Second
-	defaultMCPRamp      = 10 * time.Second
-	defaultStartupWait  = 2 * time.Minute
-	defaultMCPInterval  = 30 * time.Second
-	requestTimeout      = 10 * time.Second
-	maxReconnectBackoff = 30 * time.Second
+	defaultAgents         = 500
+	defaultMCPClients     = 50
+	defaultDuration       = 10 * time.Minute
+	defaultAgentRamp      = 110 * time.Second
+	defaultMCPRamp        = 10 * time.Second
+	defaultStartupWait    = 2 * time.Minute
+	defaultMCPInterval    = 30 * time.Second
+	defaultSampleInterval = 5 * time.Second
+	requestTimeout        = 10 * time.Second
+	maxReconnectBackoff   = 30 * time.Second
 )
 
 type config struct {
@@ -51,6 +53,7 @@ type config struct {
 	mcpRamp        time.Duration
 	startupTimeout time.Duration
 	interval       time.Duration
+	sampleInterval time.Duration
 	agentPrefix    string
 	tool           string
 	strict         bool
@@ -75,6 +78,7 @@ type counters struct {
 	mcpCallsOK            atomic.Int64
 	mcp429                atomic.Int64
 	mcpErrors             atomic.Int64
+	mcpExecDenied         atomic.Int64
 }
 
 type rpcRequest struct {
@@ -123,7 +127,7 @@ type sseClient struct {
 func main() {
 	var hubRaw, agentToken, mcpToken, mcpTokenFile, metricsToken string
 	var agents, mcpClients int
-	var duration, agentRamp, mcpRamp, startupTimeout, interval time.Duration
+	var duration, agentRamp, mcpRamp, startupTimeout, interval, sampleInterval time.Duration
 	var agentPrefix, tool string
 	var strict bool
 	flag.StringVar(&hubRaw, "hub", "", "Hub base URL (http:// or https://); required")
@@ -134,16 +138,17 @@ func main() {
 	flag.IntVar(&agents, "agents", defaultAgents, "number of fake Agent WebSocket clients")
 	flag.IntVar(&mcpClients, "mcp-clients", defaultMCPClients, "number of MCP clients (half SSE, half Streamable HTTP)")
 	flag.DurationVar(&duration, "duration", defaultDuration, "steady-state test duration")
-	flag.DurationVar(&agentRamp, "agent-ramp", defaultAgentRamp, "spread initial Agent connections across this duration")
+	flag.DurationVar(&agentRamp, "agent-ramp", defaultAgentRamp, "spread initial Agent connections across this duration (single IP: >= agents/5 seconds)")
 	flag.DurationVar(&mcpRamp, "mcp-ramp", defaultMCPRamp, "spread MCP client startup across this duration")
 	flag.DurationVar(&startupTimeout, "startup-timeout", defaultStartupWait, "maximum time to wait for all fake Agents to connect before starting MCP clients")
 	flag.DurationVar(&interval, "interval", defaultMCPInterval, "delay between each MCP tools/list + tools/call cycle")
+	flag.DurationVar(&sampleInterval, "sample-interval", defaultSampleInterval, "interval for /metrics and /api/v1/devices latency sampling")
 	flag.StringVar(&agentPrefix, "agent-prefix", "loadtest", "prefix for unique fake Agent names")
 	flag.StringVar(&tool, "tool", "exec_command", "safe tool to call: exec_command or list_devices")
 	flag.BoolVar(&strict, "strict", false, "exit nonzero if targets/sessions are missing at end or MCP calls made no progress")
 	flag.Parse()
 
-	cfg, err := buildConfig(hubRaw, agentToken, mcpToken, mcpTokenFile, metricsToken, agents, mcpClients, duration, agentRamp, mcpRamp, startupTimeout, interval, agentPrefix, tool, strict)
+	cfg, err := buildConfig(hubRaw, agentToken, mcpToken, mcpTokenFile, metricsToken, agents, mcpClients, duration, agentRamp, mcpRamp, startupTimeout, interval, sampleInterval, agentPrefix, tool, strict)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "loadtest:", err)
 		flag.Usage()
@@ -155,7 +160,7 @@ func main() {
 	}
 }
 
-func buildConfig(hubRaw, agentToken, mcpToken, tokenFile, metricsToken string, agents, clients int, duration, agentRamp, mcpRamp, startupTimeout, interval time.Duration, prefix, tool string, strict bool) (config, error) {
+func buildConfig(hubRaw, agentToken, mcpToken, tokenFile, metricsToken string, agents, clients int, duration, agentRamp, mcpRamp, startupTimeout, interval, sampleInterval time.Duration, prefix, tool string, strict bool) (config, error) {
 	if strings.TrimSpace(hubRaw) == "" {
 		return config{}, errors.New("-hub is required; point this at a test Hub, not production")
 	}
@@ -166,8 +171,8 @@ func buildConfig(hubRaw, agentToken, mcpToken, tokenFile, metricsToken string, a
 	if agents < 0 || clients < 0 || (agents == 0 && clients == 0) {
 		return config{}, errors.New("-agents and -mcp-clients must be nonnegative and not both zero")
 	}
-	if duration <= 0 || startupTimeout < 0 || agentRamp < 0 || mcpRamp < 0 || interval <= 0 {
-		return config{}, errors.New("duration/interval must be positive; ramp/startup timeout must be nonnegative")
+	if duration <= 0 || startupTimeout < 0 || agentRamp < 0 || mcpRamp < 0 || interval <= 0 || sampleInterval <= 0 {
+		return config{}, errors.New("duration/interval/sample-interval must be positive; ramp/startup timeout must be nonnegative")
 	}
 	if strings.TrimSpace(agentToken) == "" && agents > 0 {
 		return config{}, errors.New("-agent-token is required when -agents > 0")
@@ -177,6 +182,9 @@ func buildConfig(hubRaw, agentToken, mcpToken, tokenFile, metricsToken string, a
 	}
 	if tool == "exec_command" && agents == 0 && clients > 0 {
 		return config{}, errors.New("exec_command load requires at least one fake Agent; use -tool list_devices for MCP-only tests")
+	}
+	if agents > 0 && agentRamp < time.Duration(agents)*time.Second/5 {
+		fmt.Fprintf(os.Stderr, "[loadtest] warning: agent-ramp=%s is below agents/5=%s; a single source IP may hit the Hub handshake rate limit (5/s, burst 20)\n", agentRamp, time.Duration(agents)*time.Second/5)
 	}
 	if strings.TrimSpace(prefix) == "" {
 		return config{}, errors.New("-agent-prefix cannot be empty")
@@ -203,7 +211,7 @@ func buildConfig(hubRaw, agentToken, mcpToken, tokenFile, metricsToken string, a
 	if strings.TrimSpace(metricsToken) == "" && len(tokens) > 0 {
 		metricsToken = tokens[0]
 	}
-	return config{hub: hub, agentToken: agentToken, mcpTokens: tokens, metricsToken: strings.TrimSpace(metricsToken), agents: agents, mcpClients: clients, duration: duration, agentRamp: agentRamp, mcpRamp: mcpRamp, startupTimeout: startupTimeout, interval: interval, agentPrefix: prefix, tool: tool, strict: strict}, nil
+	return config{hub: hub, agentToken: agentToken, mcpTokens: tokens, metricsToken: strings.TrimSpace(metricsToken), agents: agents, mcpClients: clients, duration: duration, agentRamp: agentRamp, mcpRamp: mcpRamp, startupTimeout: startupTimeout, interval: interval, sampleInterval: sampleInterval, agentPrefix: prefix, tool: tool, strict: strict}, nil
 }
 
 func run(cfg config) error {
@@ -280,8 +288,13 @@ func run(cfg config) error {
 	}
 	fmt.Fprintf(os.Stderr, "[loadtest] target=%s agents=%d mcp_clients=%d steady_duration=%s tool=%s; names use run id %s\n", cfg.hub.String(), cfg.agents, cfg.mcpClients, cfg.duration, cfg.tool, runID)
 	steadyStarted = time.Now()
+	sampler := newHubSampler(cfg.hub, cfg.metricsToken, cfg.sampleInterval)
+	samplerCtx, stopSampler := context.WithCancel(ctx)
+	samplerDone := make(chan struct{})
+	go func() { defer close(samplerDone); sampler.run(samplerCtx) }()
 	testTimer := time.NewTimer(cfg.duration)
 	progressTicker := time.NewTicker(10 * time.Second)
+	checkTicker := time.NewTicker(time.Second)
 loop:
 	for {
 		select {
@@ -291,9 +304,15 @@ loop:
 			break loop
 		case <-progressTicker.C:
 			printProgress(stats, cfg)
+		case <-checkTicker.C:
+			if stats.mcpExecDenied.Load() > 0 {
+				fmt.Fprintln(os.Stderr, "[loadtest] preflight failed: Hub security policy denied exec; enable exec only on the disposable test Hub, then rerun")
+				break loop
+			}
 		}
 	}
 	progressTicker.Stop()
+	checkTicker.Stop()
 	if !testTimer.Stop() {
 		select {
 		case <-testTimer.C:
@@ -305,26 +324,39 @@ loop:
 	endSSE := stats.mcpSSESessions.Load()
 	endHTTP := stats.mcpStreamableSessions.Load()
 	mcpSessionsAtEnd := endSSE + endHTTP
+	stopSampler()
+	<-samplerDone
+	// Capture the final live-state sample before cancellation removes fake Agents and MCP sessions.
+	sampler.sample(context.Background())
 	cancel()
 	wg.Wait()
 	transport.CloseIdleConnections()
 
-	metrics := scrapeMetrics(cfg.hub, cfg.metricsToken, &http.Client{Timeout: 5 * time.Second})
+	metrics := sampler.lastMetrics()
+	deviceLatency := sampler.latencySummary()
 	summary := map[string]any{
-		"hub": cfg.hub.String(), "started_at": startedAt.UTC().Format(time.RFC3339), "duration_seconds": time.Since(startedAt).Seconds(), "steady_state_duration_seconds": time.Since(steadyStarted).Seconds(),
+		"hub": cfg.hub.String(), "run_id": runID, "agent_name_prefix": cfg.agentPrefix + "-" + runID, "started_at": startedAt.UTC().Format(time.RFC3339), "duration_seconds": time.Since(startedAt).Seconds(), "steady_state_duration_seconds": time.Since(steadyStarted).Seconds(),
 		"target_agents": cfg.agents, "agents_online_at_end": endAgents, "agent_dial_attempts": stats.agentDialAttempts.Load(), "agent_connects_total": stats.agentConnects.Load(), "agent_disconnects_total": stats.agentDisconnects.Load(), "agent_429_total": stats.agent429.Load(), "agent_errors_total": stats.agentErrors.Load(), "fake_agent_exec_responses": stats.agentExecResponses.Load(),
-		"target_mcp_clients": cfg.mcpClients, "mcp_clients_active_at_end": endMCP, "mcp_sse_sessions_at_end": endSSE, "mcp_streamable_sessions_at_end": endHTTP, "mcp_sessions_at_end": mcpSessionsAtEnd, "mcp_http_requests": stats.mcpHTTPRequests.Load(), "mcp_initialize_ok": stats.mcpInitializeOK.Load(), "mcp_tools_list_ok": stats.mcpToolsListOK.Load(), "mcp_tool_calls": stats.mcpCalls.Load(), "mcp_tool_calls_ok": stats.mcpCallsOK.Load(), "mcp_429_total": stats.mcp429.Load(), "mcp_errors_total": stats.mcpErrors.Load(), "hub_metrics": metrics,
+		"target_mcp_clients": cfg.mcpClients, "mcp_clients_active_at_end": endMCP, "mcp_sse_sessions_at_end": endSSE, "mcp_streamable_sessions_at_end": endHTTP, "mcp_sessions_at_end": mcpSessionsAtEnd, "mcp_http_requests": stats.mcpHTTPRequests.Load(), "mcp_initialize_ok": stats.mcpInitializeOK.Load(), "mcp_tools_list_ok": stats.mcpToolsListOK.Load(), "mcp_tool_calls": stats.mcpCalls.Load(), "mcp_tool_calls_ok": stats.mcpCallsOK.Load(), "mcp_429_total": stats.mcp429.Load(), "mcp_errors_total": stats.mcpErrors.Load(), "mcp_exec_denied_total": stats.mcpExecDenied.Load(), "hub_metrics": metrics, "hub_metrics_samples": sampler.metricsSamples(), "devices_latency_ms": deviceLatency,
 	}
 	encoded, _ := json.MarshalIndent(summary, "", "  ")
 	fmt.Println(string(encoded))
 
+	if stats.mcpExecDenied.Load() > 0 {
+		return errors.New("preflight failed: Hub security policy denied exec; enable exec only on the disposable test Hub and rerun")
+	}
 	if cfg.strict {
-		// Transient 429s and disconnects are expected signals under the configured
-		// handshake/token limits. Strict mode checks final capacity and that the
-		// MCP path made progress, while preserving those signals in the summary.
-		if endAgents < int64(cfg.agents) || endMCP < int64(cfg.mcpClients) || mcpSessionsAtEnd < int64(cfg.mcpClients) || (stats.mcpCalls.Load() > 0 && stats.mcpCallsOK.Load() == 0) {
-			return errors.New("strict acceptance failed; inspect JSON summary and Hub metrics")
+		if err := strictAcceptanceError(cfg, endAgents, endMCP, mcpSessionsAtEnd, stats.mcpCalls.Load(), stats.mcpCallsOK.Load(), stats.mcpExecDenied.Load()); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func strictAcceptanceError(cfg config, agents, clients, sessions, calls, callsOK, denied int64) error {
+	// 429s are reported but are not automatically failures; zero calls or zero successful calls is never a pass.
+	if agents < int64(cfg.agents) || clients < int64(cfg.mcpClients) || sessions < int64(cfg.mcpClients) || calls == 0 || callsOK == 0 || denied > 0 {
+		return errors.New("strict acceptance failed; inspect JSON summary and Hub metrics")
 	}
 	return nil
 }
@@ -565,6 +597,9 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 			if status != http.StatusTooManyRequests {
 				stats.mcpErrors.Add(1)
 			}
+			if responseDeniesExec(listResp) {
+				stats.mcpExecDenied.Add(1)
+			}
 			if !waitContext(ctx, cfg.interval) {
 				return
 			}
@@ -590,8 +625,14 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 			if status != http.StatusTooManyRequests {
 				stats.mcpErrors.Add(1)
 			}
+			if responseDeniesExec(callResp) {
+				stats.mcpExecDenied.Add(1)
+			}
 		} else if toolResultIsError(callResp.Result) {
 			stats.mcpErrors.Add(1)
+			if responseDeniesExec(callResp) {
+				stats.mcpExecDenied.Add(1)
+			}
 		} else {
 			stats.mcpCallsOK.Add(1)
 		}
@@ -647,6 +688,9 @@ func runSSEClient(ctx context.Context, cfg config, index int, token string, agen
 	for ctx.Err() == nil {
 		stream, err := openSSE(ctx, cfg.hub, token, streamClient, stats)
 		if err != nil {
+			if ctx.Err() == nil && !isHTTPStatusError(err, http.StatusTooManyRequests) {
+				stats.mcpErrors.Add(1)
+			}
 			if !waitContext(ctx, cfg.interval) {
 				return
 			}
@@ -707,6 +751,9 @@ func runSSEClient(ctx context.Context, cfg config, index int, token string, agen
 				}
 			} else if callResp.Error != nil || toolResultIsError(callResp.Result) {
 				stats.mcpErrors.Add(1)
+				if responseDeniesExec(callResp) {
+					stats.mcpExecDenied.Add(1)
+				}
 			} else {
 				stats.mcpCallsOK.Add(1)
 			}
@@ -956,6 +1003,127 @@ func printProgress(stats *counters, cfg config) {
 	fmt.Fprintf(os.Stderr, "[loadtest] agents=%d/%d connects=%d 429=%d errors=%d exec_responses=%d | mcp_active=%d/%d sse=%d streamable=%d calls=%d/%d 429=%d errors=%d\n",
 		stats.agentConnected.Load(), cfg.agents, stats.agentConnects.Load(), stats.agent429.Load(), stats.agentErrors.Load(), stats.agentExecResponses.Load(),
 		stats.mcpActive.Load(), cfg.mcpClients, stats.mcpSSESessions.Load(), stats.mcpStreamableSessions.Load(), stats.mcpCallsOK.Load(), stats.mcpCalls.Load(), stats.mcp429.Load(), stats.mcpErrors.Load())
+}
+
+func responseDeniesExec(resp *rpcResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.Error != nil && strings.Contains(strings.ToLower(resp.Error.Message), "denies exec") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(string(resp.Result)), "denies exec")
+}
+
+type hubSampler struct {
+	base      *url.URL
+	token     string
+	interval  time.Duration
+	client    *http.Client
+	mu        sync.Mutex
+	metrics   []map[string]string
+	latencies []float64
+}
+
+func newHubSampler(base *url.URL, token string, interval time.Duration) *hubSampler {
+	return &hubSampler{base: base, token: token, interval: interval, client: &http.Client{Timeout: 3 * time.Second}}
+}
+
+func (s *hubSampler) run(ctx context.Context) {
+	s.sample(ctx)
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.sample(ctx)
+		}
+	}
+}
+
+func (s *hubSampler) sample(ctx context.Context) {
+	if s.token == "" {
+		return
+	}
+	metrics := scrapeMetrics(s.base, s.token, s.client)
+	latency := s.devicesLatency(ctx)
+	s.mu.Lock()
+	if metrics != nil {
+		metrics["sampled_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+		s.metrics = append(s.metrics, metrics)
+	}
+	if latency >= 0 {
+		s.latencies = append(s.latencies, latency)
+	}
+	s.mu.Unlock()
+}
+
+func (s *hubSampler) devicesLatency(ctx context.Context) float64 {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpEndpoint(s.base, "/api/v1/devices"), nil)
+	if err != nil {
+		return -1
+	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
+	start := time.Now()
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return -1
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return -1
+	}
+	return float64(time.Since(start).Microseconds()) / 1000
+}
+
+func percentile(values []float64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	copyValues := append([]float64(nil), values...)
+	sort.Float64s(copyValues)
+	idx := int(float64(len(copyValues)-1)*p + 0.999999)
+	if idx >= len(copyValues) {
+		idx = len(copyValues) - 1
+	}
+	return copyValues[idx]
+}
+
+func (s *hubSampler) latencySummary() map[string]any {
+	s.mu.Lock()
+	values := append([]float64(nil), s.latencies...)
+	s.mu.Unlock()
+	return map[string]any{"samples": len(values), "p50_ms": percentile(values, .50), "p95_ms": percentile(values, .95), "p99_ms": percentile(values, .99), "max_ms": percentile(values, 1)}
+}
+
+func (s *hubSampler) metricsSamples() []map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]map[string]string, len(s.metrics))
+	for i, m := range s.metrics {
+		clone := make(map[string]string, len(m))
+		for k, v := range m {
+			clone[k] = v
+		}
+		out[i] = clone
+	}
+	return out
+}
+
+func (s *hubSampler) lastMetrics() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.metrics) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(s.metrics[len(s.metrics)-1]))
+	for k, v := range s.metrics[len(s.metrics)-1] {
+		out[k] = v
+	}
+	return out
 }
 
 func scrapeMetrics(base *url.URL, token string, client *http.Client) map[string]string {

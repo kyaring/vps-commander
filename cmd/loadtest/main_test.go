@@ -17,10 +17,10 @@ import (
 )
 
 func TestBuildConfigRequiresExplicitHubAndTokens(t *testing.T) {
-	if _, err := buildConfig("", "agent", "mcp", "", "", 1, 1, time.Minute, time.Second, time.Second, time.Second, time.Second, "loadtest", "exec_command", false); err == nil {
+	if _, err := buildConfig("", "agent", "mcp", "", "", 1, 1, time.Minute, time.Second, time.Second, time.Second, time.Second, time.Second, "loadtest", "exec_command", false); err == nil {
 		t.Fatal("expected empty Hub URL to fail")
 	}
-	if _, err := buildConfig("http://127.0.0.1:9521", "", "mcp", "", "", 1, 1, time.Minute, time.Second, time.Second, time.Second, time.Second, "loadtest", "exec_command", false); err == nil {
+	if _, err := buildConfig("http://127.0.0.1:9521", "", "mcp", "", "", 1, 1, time.Minute, time.Second, time.Second, time.Second, time.Second, time.Second, "loadtest", "exec_command", false); err == nil {
 		t.Fatal("expected missing Agent token to fail")
 	}
 }
@@ -36,6 +36,12 @@ func TestAgentWSURLUsesHubSchemeAndUniqueDeviceName(t *testing.T) {
 	}
 	if got.Scheme != "wss" || got.Path != "/agent/ws" || got.Query().Get("device_name") != "loadtest-001" {
 		t.Fatalf("unexpected WebSocket URL: %s", got)
+	}
+}
+
+func TestDefaultRampRespectsSingleIPHandshakeLimit(t *testing.T) {
+	if defaultAgentRamp < time.Duration(defaultAgents)*time.Second/5 {
+		t.Fatalf("default agent ramp %s is below single-IP average limit for %d agents", defaultAgentRamp, defaultAgents)
 	}
 }
 
@@ -239,5 +245,77 @@ func TestFakeAgentRespondsToHubPingAndExec(t *testing.T) {
 	}
 	if got := stats.agentExecResponses.Load(); got != 1 {
 		t.Fatalf("exec responses=%d want 1", got)
+	}
+}
+
+func TestResponseDeniesExec(t *testing.T) {
+	denied := &rpcResponse{Result: json.RawMessage(`{"isError":true,"content":[{"type":"text","text":"security mode medium denies exec"}]}`)}
+	if !responseDeniesExec(denied) {
+		t.Fatal("expected security denial to be detected")
+	}
+	allowed := &rpcResponse{Result: json.RawMessage(`{"isError":false,"content":[{"type":"text","text":"loadtest-ok"}]}`)}
+	if responseDeniesExec(allowed) {
+		t.Fatal("unexpected security denial")
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	values := []float64{50, 10, 40, 20, 30}
+	if got := percentile(values, .50); got != 30 {
+		t.Fatalf("p50=%v want 30", got)
+	}
+	if got := percentile(values, .99); got != 50 {
+		t.Fatalf("p99=%v want 50", got)
+	}
+	if got := percentile(nil, .99); got != 0 {
+		t.Fatalf("empty percentile=%v want 0", got)
+	}
+}
+
+func TestStrictAcceptanceRequiresSuccessfulCalls(t *testing.T) {
+	cfg := config{agents: 1, mcpClients: 1}
+	if err := strictAcceptanceError(cfg, 1, 1, 1, 0, 0, 0); err == nil {
+		t.Fatal("zero tool calls must fail strict mode")
+	}
+	if err := strictAcceptanceError(cfg, 1, 1, 1, 1, 0, 0); err == nil {
+		t.Fatal("zero successful tool calls must fail strict mode")
+	}
+	if err := strictAcceptanceError(cfg, 1, 1, 1, 1, 1, 0); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+}
+
+func TestHubSamplerCapturesMetricsAndDevicesLatency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer admin-test" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/metrics":
+			fmt.Fprintln(w, "vps_online_agents 5")
+		case "/api/v1/devices":
+			fmt.Fprintln(w, "[]")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	base, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampler := newHubSampler(base, "admin-test", time.Second)
+	sampler.sample(context.Background())
+	metrics := sampler.lastMetrics()
+	if metrics["vps_online_agents"] != "5" {
+		t.Fatalf("metrics=%v", metrics)
+	}
+	latency := sampler.latencySummary()
+	if latency["samples"] != 1 {
+		t.Fatalf("latency summary=%v", latency)
+	}
+	if len(sampler.metricsSamples()) != 1 {
+		t.Fatalf("metrics samples=%d", len(sampler.metricsSamples()))
 	}
 }
