@@ -232,8 +232,8 @@ docs/archive/             现有带日期的评审/交接文档全部移入
 
 ### D 部署安全说明
 
-- 生产反代后开启 `VPS_COMMANDER_TRUST_PROXY=on` 前，必须确认反代会覆盖客户端提供的 `X-Real-IP`，例如 Nginx 使用 `proxy_set_header X-Real-IP $remote_addr;`；否则该请求头可能被客户端伪造，不得直接信任。
-- 同时配置并验证 `X-Forwarded-For` 的代理链，Hub 仅在明确配置可信反代后才启用代理头解析。
+- `VPS_COMMANDER_TRUST_PROXY=on` 时，`auth.ClientIP` 只读取 `X-Forwarded-For` 最右侧的有效 IP，不再信任 `X-Real-IP`。因此 Lucky 必须覆盖或正确追加 XFF 中的实际客户端 IP；同时必须确保 Hub 后端不能被不经 Lucky 的不可信客户端直接访问，否则请求方仍可伪造 XFF。
+- 部署前通过 Lucky 的回显/诊断路径验证 XFF 最右侧确实是客户端公网 IP，并验证设备列表与限流归属一致；未完成此检查不得上线。
 - MCP 与 REST 统一使用 `auth.ClientIP` 记录 caller IP；MCP 审计 transport 统一为 `mcp`，device 使用 Hub 归一后的节点名。
 
 ### D 验收标准

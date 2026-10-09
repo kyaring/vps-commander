@@ -16,6 +16,17 @@ func TestClientIPTrustProxy(t *testing.T) {
 	}
 }
 
+func TestClientIPIgnoresSpoofableXRealIPAndUsesRightmostXFF(t *testing.T) {
+	t.Setenv("VPS_COMMANDER_TRUST_PROXY", "on")
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("X-Real-IP", "198.51.100.99") // untrusted client-supplied value
+	r.Header.Set("X-Forwarded-For", "203.0.113.10, 192.0.2.25")
+	if got := ClientIP(r); got != "192.0.2.25" {
+		t.Fatalf("ClientIP=%q, want rightmost XFF 192.0.2.25", got)
+	}
+}
+
 func TestClientIPIgnoresProxyHeadersWhenDisabled(t *testing.T) {
 	t.Setenv("VPS_COMMANDER_TRUST_PROXY", "off")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

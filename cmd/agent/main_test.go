@@ -123,6 +123,45 @@ func TestInitialReconnectDelayAddsZeroToTenSeconds(t *testing.T) {
 	}
 }
 
+func TestReconnectDelayResetsAfterEachStableSession(t *testing.T) {
+	backoff := time.Second
+	firstReconnect := true
+	for round := 1; round <= 2; round++ {
+		if !firstReconnect {
+			t.Fatalf("round %d should be treated as a first reconnect", round)
+		}
+		delay := initialReconnectDelay(backoff, 30*time.Second, 0.5, 0.5)
+		if delay < 5*time.Second || delay > 6*time.Second {
+			t.Fatalf("round %d delay=%s, want 0–10s initial spread plus full jitter", round, delay)
+		}
+		firstReconnect = false // the initial reconnect delay has been consumed
+		prepareReconnectAfterConnection(&backoff, &firstReconnect, true)
+		if backoff != time.Second {
+			t.Fatalf("round %d backoff=%s, want reset to 1s", round, backoff)
+		}
+	}
+}
+
+func TestStableReconnectCyclesReenableInitialDelay(t *testing.T) {
+	backoff := 30 * time.Second
+	firstReconnect := false
+	for cycle := 1; cycle <= 2; cycle++ {
+		// Simulate a connection lasting at least two minutes before it drops.
+		backoff, firstReconnect = resetReconnectAfterStable(true, backoff, firstReconnect)
+		if backoff != time.Second || !firstReconnect {
+			t.Fatalf("cycle %d: stable connection did not reset reconnect state: backoff=%s firstReconnect=%v", cycle, backoff, firstReconnect)
+		}
+		delay := initialReconnectDelay(backoff, 30*time.Second, 0.5, 0.5)
+		if delay < 0 || delay > 10*time.Second+backoff {
+			t.Fatalf("cycle %d: initial delay %s outside expected 0–10s plus full jitter", cycle, delay)
+		}
+		if delay != 5500*time.Millisecond {
+			t.Fatalf("cycle %d: deterministic initial delay=%s, want 5.5s", cycle, delay)
+		}
+		firstReconnect = false // consumed by the first failed reconnect attempt
+	}
+}
+
 func TestDialFailureHonorsRetryAfter(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"3"}}}
 	err := newDialFailure(errors.New("bad handshake"), resp)

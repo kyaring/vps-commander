@@ -42,9 +42,7 @@ func main() {
 			log.Printf("agent connection: %v", err)
 		}
 		stable := time.Since(started) >= 2*time.Minute
-		if stable {
-			backoff = time.Second
-		}
+		prepareReconnectAfterConnection(&backoff, &firstReconnect, stable)
 		var delay time.Duration
 		if firstReconnect {
 			// Spread the first wave independently of the exponential backoff.
@@ -63,6 +61,22 @@ func main() {
 			}
 		}
 	}
+}
+
+func prepareReconnectAfterConnection(backoff *time.Duration, firstReconnect *bool, stable bool) {
+	if stable {
+		*backoff = time.Second
+		// A stable session ending is a new reconnect episode; spread the next
+		// reconnect wave just like the process's first reconnect.
+		*firstReconnect = true
+	}
+}
+
+func resetReconnectAfterStable(stable bool, backoff time.Duration, firstReconnect bool) (time.Duration, bool) {
+	if stable {
+		return time.Second, true
+	}
+	return backoff, firstReconnect
 }
 
 func initialReconnectDelay(base, max time.Duration, backoffSample, initialSample float64) time.Duration {

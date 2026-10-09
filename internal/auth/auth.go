@@ -132,9 +132,9 @@ func bearer(r *http.Request) string {
 
 func ClientIP(r *http.Request) string {
 	if strings.EqualFold(os.Getenv("VPS_COMMANDER_TRUST_PROXY"), "on") {
-		if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); net.ParseIP(v) != nil {
-			return v
-		}
+		// X-Real-IP is often forwarded unchanged by reverse proxies and can be
+		// supplied by a direct client. Prefer the rightmost valid XFF entry,
+		// which must be appended by the trusted edge proxy.
 		if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
 			parts := strings.Split(v, ",")
 			for i := len(parts) - 1; i >= 0; i-- {

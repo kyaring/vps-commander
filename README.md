@@ -178,6 +178,7 @@ Agent 只主动连接 Hub，不需要公网入站端口。
 - 审计日志由存储层单写协程异步批量持久化：队列容量 `1024`，每累计 `100` 条或每 `500ms` 刷写；队列满时告警并同步写入。Hub 正常退出时会等待队列刷写完成。
 - Agent 断线重连使用 full jitter 指数退避（`rand(0, min(cap, base*2^n))`，起步 `1s`、上限 `30s`）；首次重连额外随机等待 `0–10s`，并遵守握手响应的 `Retry-After`。连接稳定运行 2 分钟后退避重置。
 - Agent WebSocket 握手使用令牌桶限流：全局 `50/s`、突发 `200`；单 IP `5/s`、突发 `20`。超过限额返回 HTTP `429` 和 `Retry-After: 1`。共享同一公网 IP/NAT 的 Agent 共用单 IP 限额，集体重连时可能触发 429。WebSocket 入站帧大小限制为 `8 MiB`。
+- 若 Hub 位于 Lucky 等反向代理之后，必须设置 `VPS_COMMANDER_TRUST_PROXY=on`，并在部署前确认代理会正确覆盖/追加 `X-Forwarded-For` 的客户端公网 IP。启用后 Hub 只信任 XFF 最右侧有效 IP，不信任 `X-Real-IP`；Hub 后端应限制为仅可由可信代理访问。
 
 生产发布顺序：
 `backup → clean build → 单节点灰度 → Hub restart recovery → rolling Agent → MCP/security/audit 验收`。
