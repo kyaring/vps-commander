@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +34,37 @@ type JSONRPCResponse struct {
 	ID      any           `json:"id,omitempty"`
 	Result  any           `json:"result,omitempty"`
 	Error   *JSONRPCError `json:"error,omitempty"`
+
+	// rateLimited is set when a tool call failed with ErrRateLimited. It is not
+	// serialized; transports use it to answer with HTTP 429 + Retry-After.
+	rateLimited bool
+}
+
+// ErrRateLimited is wrapped by backends when a per-token limit rejected a tool
+// call. Transports detect it with errors.Is instead of matching error text.
+var ErrRateLimited = errors.New("rate_limited")
+
+// toolError is the JSON body of a failed tool call ({"error": "..."}) and keeps
+// whether the failure was a rate limit.
+type toolError struct {
+	msg         string
+	rateLimited bool
+}
+
+func (e toolError) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{"error": e.msg})
+}
+
+func toolErrorFrom(err error) toolError {
+	return toolError{msg: err.Error(), rateLimited: errors.Is(err, ErrRateLimited)}
+}
+
+// shortSessionID keeps session identifiers out of logs in full.
+func shortSessionID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8] + "…"
 }
 
 type JSONRPCError struct {
@@ -178,7 +211,7 @@ func (s *Server) SessionCounts() (sse, streamableHTTP int) {
 	for id, sess := range s.streamSessions {
 		if now.Sub(sess.lastActivity) >= sseSessionIdleTimeout {
 			delete(s.streamSessions, id)
-			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", sess.ownerTokenID, "reason", "idle_timeout")
+			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(id), "actor", sess.ownerTokenID, "reason", "idle_timeout")
 		}
 	}
 	return len(s.sessions), len(s.streamSessions)
@@ -207,11 +240,11 @@ func (s *Server) CloseAllSessions(reason string) {
 	for id, sess := range s.sessions {
 		delete(s.sessions, id)
 		sess.close()
-		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", id, "actor", sess.ownerTokenID, "reason", reason)
+		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(id), "actor", sess.ownerTokenID, "reason", reason)
 	}
 	for id, sess := range s.streamSessions {
 		delete(s.streamSessions, id)
-		slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", sess.ownerTokenID, "reason", reason)
+		slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(id), "actor", sess.ownerTokenID, "reason", reason)
 	}
 }
 
@@ -297,7 +330,7 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 
 	endpointURI := fmt.Sprintf("/mcp/message?sessionId=%s", sessionID)
 	if err := writeSSE(w, flusher, "event: endpoint\ndata: %s\n\n", endpointURI); err != nil {
-		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", p.TokenID, "reason", "endpoint_write_failed", "error", err)
+		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(sessionID), "actor", p.TokenID, "reason", "endpoint_write_failed", "error", err)
 		return
 	}
 
@@ -311,17 +344,17 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		case msg := <-sess.ch:
 			if err := writeSSE(w, flusher, "event: message\ndata: %s\n\n", string(msg)); err != nil {
-				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "message_write_failed", "error", err)
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(sessionID), "actor", sess.ownerTokenID, "reason", "message_write_failed", "error", err)
 				return
 			}
 		case <-ticker.C:
 			if sess.idleFor() >= sseSessionIdleTimeout {
-				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "idle_timeout")
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(sessionID), "actor", sess.ownerTokenID, "reason", "idle_timeout")
 				s.removeSession(sessionID, sess)
 				return
 			}
 			if err := writeSSE(w, flusher, ": keepalive\n\n"); err != nil {
-				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "keepalive_write_failed", "error", err)
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(sessionID), "actor", sess.ownerTokenID, "reason", "keepalive_write_failed", "error", err)
 				return
 			}
 		}
@@ -358,49 +391,42 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if isRateLimitedResponse(resp) {
-		w.Header().Set("Retry-After", "1")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(resp)
-		return
-	}
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
 		http.Error(w, "failed to encode JSON-RPC response", http.StatusInternalServerError)
 		return
 	}
+	if resp.rateLimited {
+		w.Header().Set("Retry-After", "1")
+	}
 	if exists {
+		// The JSON-RPC response (including a rate-limit error) always goes to the
+		// SSE stream so legacy clients waiting on the stream see their request id.
 		timer := time.NewTimer(sseOutboundQueueWait)
 		defer timer.Stop()
 		select {
 		case sess.ch <- respBytes:
+			if resp.rateLimited {
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte("rate_limited"))
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_, _ = w.Write([]byte("accepted"))
 		case <-sess.done:
 			http.Error(w, "MCP SSE session is closed", http.StatusGone)
 		case <-timer.C:
-			slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "outbound_backpressure_timeout", "wait", sseOutboundQueueWait.String())
+			slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", shortSessionID(sessionID), "actor", sess.ownerTokenID, "reason", "outbound_backpressure_timeout", "wait", sseOutboundQueueWait.String())
 			s.removeSession(sessionID, sess)
 			http.Error(w, "MCP SSE outbound queue remained full for 5 seconds; session closed", http.StatusServiceUnavailable)
 		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if resp.rateLimited {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
 	_, _ = w.Write(respBytes)
-}
-
-func isRateLimitedResponse(resp JSONRPCResponse) bool {
-	result, ok := resp.Result.(CallToolResult)
-	if !ok || !result.IsError {
-		return false
-	}
-	for _, content := range result.Content {
-		if strings.Contains(content.Text, "rate_limited") {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) decodeAndHandleRequest(w http.ResponseWriter, r *http.Request) (JSONRPCResponse, bool) {
@@ -409,26 +435,65 @@ func (s *Server) decodeAndHandleRequest(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "read error", http.StatusBadRequest)
 		return JSONRPCResponse{}, false
 	}
-	var req JSONRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
-		http.Error(w, "invalid json-rpc", http.StatusBadRequest)
+	req, ok := decodeJSONRPCRequest(w, body)
+	if !ok {
 		return JSONRPCResponse{}, false
 	}
 	return s.handleRequest(r.Context(), r, req), true
+}
+
+// decodeJSONRPCRequest parses one JSON-RPC request. On failure it writes HTTP
+// 400 with a JSON-RPC error body: -32700 for unparseable JSON, -32600 for a
+// batch or a structurally invalid request.
+func decodeJSONRPCRequest(w http.ResponseWriter, body []byte) (JSONRPCRequest, bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if json.Valid(trimmed) {
+			writeJSONRPCError(w, -32600, "Invalid Request: batch requests are not supported")
+		} else {
+			writeJSONRPCError(w, -32700, "Parse error")
+		}
+		return JSONRPCRequest{}, false
+	}
+	var req JSONRPCRequest
+	if err := json.Unmarshal(trimmed, &req); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) {
+			writeJSONRPCError(w, -32600, "Invalid Request")
+		} else {
+			writeJSONRPCError(w, -32700, "Parse error")
+		}
+		return JSONRPCRequest{}, false
+	}
+	if req.JSONRPC != "2.0" || strings.TrimSpace(req.Method) == "" {
+		writeJSONRPCError(w, -32600, "Invalid Request")
+		return JSONRPCRequest{}, false
+	}
+	return req, true
+}
+
+func writeJSONRPCError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": nil, "error": JSONRPCError{Code: code, Message: message}})
 }
 
 // HandleStreamableHTTP implements MCP Streamable HTTP using ordinary JSON
 // responses. Session IDs are optional: clients can use stateless requests, or
 // retain the ID returned by initialize to bind later requests to the same token.
 func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "POST, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		s.deleteStreamSession(w, r, p)
 		return
 	}
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -446,9 +511,8 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request body too large or unreadable", http.StatusBadRequest)
 		return
 	}
-	var req JSONRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || strings.TrimSpace(req.Method) == "" {
-		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
+	req, ok := decodeJSONRPCRequest(w, body)
+	if !ok {
 		return
 	}
 
@@ -464,7 +528,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		stored, exists := s.streamSessions[clientSessionID]
 		if exists && time.Since(stored.lastActivity) >= sseSessionIdleTimeout {
 			delete(s.streamSessions, clientSessionID)
-			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", clientSessionID, "actor", stored.ownerTokenID, "reason", "idle_timeout")
+			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(clientSessionID), "actor", stored.ownerTokenID, "reason", "idle_timeout")
 			exists = false
 		}
 		if !exists {
@@ -486,7 +550,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := s.handleRequest(r.Context(), r, req)
-	if isRateLimitedResponse(resp) {
+	if resp.rateLimited {
 		w.Header().Set("Retry-After", "1")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -509,7 +573,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 			for id, stored := range s.streamSessions {
 				if now.Sub(stored.lastActivity) >= sseSessionIdleTimeout {
 					delete(s.streamSessions, id)
-					slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", stored.ownerTokenID, "reason", "idle_timeout")
+					slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(id), "actor", stored.ownerTokenID, "reason", "idle_timeout")
 				}
 			}
 			if len(s.streamSessions) >= 500 {
@@ -551,6 +615,32 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(responseBody)
+}
+
+// deleteStreamSession ends a Streamable HTTP session (MCP 2025-03-26 session
+// termination). Only the token that created the session may delete it.
+func (s *Server) deleteStreamSession(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	sessionID := strings.TrimSpace(r.Header.Get("Mcp-Session-Id"))
+	if sessionID == "" {
+		http.Error(w, "Mcp-Session-Id header required", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	stored, exists := s.streamSessions[sessionID]
+	if !exists {
+		s.mu.Unlock()
+		http.Error(w, "unknown or expired MCP session", http.StatusNotFound)
+		return
+	}
+	if stored.ownerTokenID != "" && stored.ownerTokenID != p.TokenID {
+		s.mu.Unlock()
+		http.Error(w, "session owner mismatch", http.StatusForbidden)
+		return
+	}
+	delete(s.streamSessions, sessionID)
+	s.mu.Unlock()
+	slog.Info("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(sessionID), "actor", stored.ownerTokenID, "reason", "client_delete")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPCRequest) JSONRPCResponse {
@@ -682,6 +772,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 		clientIP := auth.ClientIP(r)
 		res, isErr := s.callTool(ctx, clientIP, params)
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
+		te, _ := res.(toolError)
 
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
@@ -692,6 +783,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				},
 				IsError: isErr,
 			},
+			rateLimited: te.rateLimited,
 		}
 
 	default:
@@ -756,13 +848,13 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		if sink, ok := s.Backend.(AuditSink); ok {
 			sink.AuditMCP(ctx, clientIP, device, params.Name, "denied", err.Error())
 		}
-		return map[string]string{"error": err.Error()}, true
+		return toolErrorFrom(err), true
 	}
 	switch params.Name {
 	case "list_devices":
 		devs, err := s.Backend.ListDevices(ctx)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return devs, false
 
@@ -779,7 +871,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := s.Backend.ExecCommand(ctx, clientIP, args.Device, args.Command, args.Workdir, args.Timeout)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -796,7 +888,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := s.Backend.ReadFile(ctx, clientIP, args.Device, args.Path, args.Offset, args.Limit)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -813,7 +905,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := b.ReadMultipleFiles(ctx, clientIP, a.Device, a.Paths, a.Limit)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 	case "create_directory":
@@ -825,7 +917,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := b.CreateDirectory(ctx, clientIP, a.Device, a.Path)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 	case "move_file":
@@ -837,7 +929,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := b.MoveFile(ctx, clientIP, a.Device, a.Source, a.Destination)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 	case "diagnostic_command":
@@ -854,7 +946,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := b.DiagnosticCommand(ctx, clientIP, a.Device, executor.DiagnosticRequest{Action: a.Action, Target: a.Target, Lines: a.Lines})
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -869,7 +961,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := b.ListProcesses(ctx, clientIP, a.Device)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 	case "edit_block":
@@ -880,7 +972,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := s.Backend.EditBlock(ctx, clientIP, args.Device, args.Path, args.OldText, args.NewText)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -896,7 +988,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		res, err := s.Backend.WriteFile(ctx, clientIP, args.Device, args.Path, args.Content)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -911,12 +1003,12 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		if gate, ok := s.Backend.(SecurityGate); ok {
 			if err := gate.AuthorizeMCP(ctx, args.Device, "read", clientIP); err != nil {
-				return map[string]string{"error": err.Error()}, true
+				return toolErrorFrom(err), true
 			}
 		}
 		res, err := b.ListAgentMCP(ctx, args.Device)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 
@@ -938,12 +1030,12 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		}
 		if gate, ok := s.Backend.(SecurityGate); ok {
 			if err := gate.AuthorizeMCP(ctx, args.Device, "mcp", clientIP); err != nil {
-				return map[string]string{"error": err.Error()}, true
+				return toolErrorFrom(err), true
 			}
 		}
 		res, err := b.CallAgentMCP(ctx, clientIP, args.Device, args.Server, args.Tool, av)
 		if err != nil {
-			return map[string]string{"error": err.Error()}, true
+			return toolErrorFrom(err), true
 		}
 		return res, false
 

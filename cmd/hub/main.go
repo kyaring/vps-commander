@@ -167,7 +167,7 @@ func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struc
 			status = http.StatusOK
 		}
 		if shouldLogRequest(r.URL.Path, status) {
-			slog.Info("http_request", "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr, "status", status, "duration_ms", time.Since(started).Milliseconds(), "bytes", rw.bytes)
+			slog.Info("http_request", "method", r.Method, "path", r.URL.Path, "client_ip", auth.ClientIP(r), "status", status, "duration_ms", time.Since(started).Milliseconds(), "bytes", rw.bytes)
 		}
 	})
 }

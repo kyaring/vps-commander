@@ -66,6 +66,38 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "# HELP vps_commander_process_resident_memory_bytes Resident memory size of the Hub process in bytes.")
 	fmt.Fprintln(w, "# TYPE vps_commander_process_resident_memory_bytes gauge")
 	fmt.Fprintf(w, "vps_commander_process_resident_memory_bytes %d\n", processRSSBytes())
+	fmt.Fprintln(w, "# HELP vps_commander_process_cpu_seconds_total Total user and system CPU time spent by the Hub process in seconds.")
+	fmt.Fprintln(w, "# TYPE vps_commander_process_cpu_seconds_total counter")
+	fmt.Fprintf(w, "vps_commander_process_cpu_seconds_total %.2f\n", processCPUSeconds())
+}
+
+// processCPUSeconds reads utime+stime from /proc/self/stat. Linux reports them
+// in clock ticks; USER_HZ is 100 on all supported Linux targets.
+func processCPUSeconds() float64 {
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		return 0
+	}
+	return parseProcStatCPUSeconds(string(data))
+}
+
+func parseProcStatCPUSeconds(stat string) float64 {
+	// The comm field (2) may contain spaces; fields after the closing paren
+	// start at field 3 (state). utime and stime are fields 14 and 15.
+	end := strings.LastIndexByte(stat, ')')
+	if end < 0 {
+		return 0
+	}
+	fields := strings.Fields(stat[end+1:])
+	if len(fields) < 13 {
+		return 0
+	}
+	utime, err1 := strconv.ParseUint(fields[11], 10, 64)
+	stime, err2 := strconv.ParseUint(fields[12], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0
+	}
+	return float64(utime+stime) / 100
 }
 
 func processRSSBytes() uint64 {

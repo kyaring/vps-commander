@@ -337,7 +337,7 @@ loop:
 	summary := map[string]any{
 		"hub": cfg.hub.String(), "run_id": runID, "agent_name_prefix": cfg.agentPrefix + "-" + runID, "started_at": startedAt.UTC().Format(time.RFC3339), "duration_seconds": time.Since(startedAt).Seconds(), "steady_state_duration_seconds": time.Since(steadyStarted).Seconds(),
 		"target_agents": cfg.agents, "agents_online_at_end": endAgents, "agent_dial_attempts": stats.agentDialAttempts.Load(), "agent_connects_total": stats.agentConnects.Load(), "agent_disconnects_total": stats.agentDisconnects.Load(), "agent_429_total": stats.agent429.Load(), "agent_errors_total": stats.agentErrors.Load(), "fake_agent_exec_responses": stats.agentExecResponses.Load(),
-		"target_mcp_clients": cfg.mcpClients, "mcp_clients_active_at_end": endMCP, "mcp_sse_sessions_at_end": endSSE, "mcp_streamable_sessions_at_end": endHTTP, "mcp_sessions_at_end": mcpSessionsAtEnd, "mcp_http_requests": stats.mcpHTTPRequests.Load(), "mcp_initialize_ok": stats.mcpInitializeOK.Load(), "mcp_tools_list_ok": stats.mcpToolsListOK.Load(), "mcp_tool_calls": stats.mcpCalls.Load(), "mcp_tool_calls_ok": stats.mcpCallsOK.Load(), "mcp_429_total": stats.mcp429.Load(), "mcp_errors_total": stats.mcpErrors.Load(), "mcp_exec_denied_total": stats.mcpExecDenied.Load(), "hub_metrics": metrics, "hub_metrics_samples": sampler.metricsSamples(), "devices_latency_ms": deviceLatency,
+		"target_mcp_clients": cfg.mcpClients, "mcp_clients_active_at_end": endMCP, "mcp_sse_sessions_at_end": endSSE, "mcp_streamable_sessions_at_end": endHTTP, "mcp_sessions_at_end": mcpSessionsAtEnd, "mcp_http_requests": stats.mcpHTTPRequests.Load(), "mcp_initialize_ok": stats.mcpInitializeOK.Load(), "mcp_tools_list_ok": stats.mcpToolsListOK.Load(), "mcp_tool_calls": stats.mcpCalls.Load(), "mcp_tool_calls_ok": stats.mcpCallsOK.Load(), "mcp_429_total": stats.mcp429.Load(), "mcp_errors_total": stats.mcpErrors.Load(), "mcp_exec_denied_total": stats.mcpExecDenied.Load(), "hub_metrics": metrics, "hub_metrics_samples": sampler.metricsSamples(), "devices_latency_ms": deviceLatency, "hub_resources": sampler.resourceSummary(),
 	}
 	encoded, _ := json.MarshalIndent(summary, "", "  ")
 	fmt.Println(string(encoded))
@@ -557,6 +557,9 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 		if sessionCounted {
 			stats.mcpStreamableSessions.Add(-1)
 		}
+		if sessionID != "" {
+			deleteStreamableSession(cfg.hub, token, sessionID, client)
+		}
 	}()
 	for ctx.Err() == nil {
 		if sessionID == "" {
@@ -640,6 +643,25 @@ func runStreamableClient(ctx context.Context, cfg config, index int, token strin
 			return
 		}
 	}
+}
+
+// deleteStreamableSession ends the client's Streamable HTTP session so a run
+// does not leave idle sessions on the Hub until they time out.
+func deleteStreamableSession(base *url.URL, token, sessionID string, client *http.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, httpEndpoint(base, "/mcp"), nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Mcp-Session-Id", sessionID)
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
 }
 
 func streamableRPC(ctx context.Context, base *url.URL, token, sessionID, protocolVersion string, client *http.Client, request rpcRequest, stats *counters) (*rpcResponse, int, string, string, error) {
@@ -1071,12 +1093,14 @@ func (s *hubSampler) devicesLatency(ctx context.Context) float64 {
 	if err != nil {
 		return -1
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+	// Time the full response body: /api/v1/devices grows with the fleet.
+	_, copyErr := io.Copy(io.Discard, resp.Body)
+	elapsed := time.Since(start)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK || copyErr != nil {
 		return -1
 	}
-	return float64(time.Since(start).Microseconds()) / 1000
+	return float64(elapsed.Microseconds()) / 1000
 }
 
 func percentile(values []float64, p float64) float64 {
@@ -1097,6 +1121,40 @@ func (s *hubSampler) latencySummary() map[string]any {
 	values := append([]float64(nil), s.latencies...)
 	s.mu.Unlock()
 	return map[string]any{"samples": len(values), "p50_ms": percentile(values, .50), "p95_ms": percentile(values, .95), "p99_ms": percentile(values, .99), "max_ms": percentile(values, 1)}
+}
+
+// resourceSummary derives Hub CPU (cores, averaged over the sampled window)
+// and peak RSS from the periodic /metrics samples.
+func (s *hubSampler) resourceSummary() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]any{"samples": len(s.metrics)}
+	var firstCPU, lastCPU float64
+	var firstAt, lastAt time.Time
+	var maxRSS float64
+	cpuSamples := 0
+	for _, m := range s.metrics {
+		if v, err := strconv.ParseFloat(m["vps_commander_process_resident_memory_bytes"], 64); err == nil && v > maxRSS {
+			maxRSS = v
+		}
+		cpu, err1 := strconv.ParseFloat(m["vps_commander_process_cpu_seconds_total"], 64)
+		at, err2 := time.Parse(time.RFC3339Nano, m["sampled_at"])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if cpuSamples == 0 {
+			firstCPU, firstAt = cpu, at
+		}
+		lastCPU, lastAt = cpu, at
+		cpuSamples++
+	}
+	out["rss_max_mb"] = maxRSS / (1024 * 1024)
+	if cpuSamples >= 2 && lastAt.After(firstAt) && lastCPU >= firstCPU {
+		out["cpu_avg_cores"] = (lastCPU - firstCPU) / lastAt.Sub(firstAt).Seconds()
+	} else {
+		out["cpu_avg_cores"] = nil
+	}
+	return out
 }
 
 func (s *hubSampler) metricsSamples() []map[string]string {

@@ -13,6 +13,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
+	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/model"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
@@ -68,7 +69,7 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 		if b.server.Store != nil {
 			_ = b.server.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", ErrorMsg: "rate_limited", ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: "token", Target: p.Name, Result: "denied"})
 		}
-		return nil, fmt.Errorf("rate_limited: token concurrent exec limit reached")
+		return nil, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
 	defer releaseTokenExec()
 	releaseGlobalExec := b.server.acquireExec()

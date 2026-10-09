@@ -319,3 +319,22 @@ func TestHubSamplerCapturesMetricsAndDevicesLatency(t *testing.T) {
 		t.Fatalf("metrics samples=%d", len(sampler.metricsSamples()))
 	}
 }
+
+func TestResourceSummaryComputesCPUAndPeakRSS(t *testing.T) {
+	s := &hubSampler{}
+	s.metrics = []map[string]string{
+		{"sampled_at": "2026-10-09T09:00:00Z", "vps_commander_process_cpu_seconds_total": "10.00", "vps_commander_process_resident_memory_bytes": "104857600"},
+		{"sampled_at": "2026-10-09T09:00:10Z", "vps_commander_process_cpu_seconds_total": "12.50", "vps_commander_process_resident_memory_bytes": "209715200"},
+		{"sampled_at": "2026-10-09T09:00:20Z", "vps_commander_process_cpu_seconds_total": "15.00", "vps_commander_process_resident_memory_bytes": "157286400"},
+	}
+	got := s.resourceSummary()
+	if cores, ok := got["cpu_avg_cores"].(float64); !ok || cores < 0.249 || cores > 0.251 {
+		t.Fatalf("cpu_avg_cores = %v, want 0.25", got["cpu_avg_cores"])
+	}
+	if rss := got["rss_max_mb"].(float64); rss != 200 {
+		t.Fatalf("rss_max_mb = %v, want 200", rss)
+	}
+	if empty := (&hubSampler{}).resourceSummary(); empty["cpu_avg_cores"] != nil {
+		t.Fatalf("no samples should give nil cpu, got %v", empty["cpu_avg_cores"])
+	}
+}

@@ -73,3 +73,13 @@ func TestMetricsRequiresAdminScope(t *testing.T) {
 		t.Fatalf("status=%d want 403", w.Code)
 	}
 }
+
+func TestParseProcStatCPUSecondsHandlesSpacesInComm(t *testing.T) {
+	stat := "1234 (vps commander) S 1 1234 1234 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 8 0 100 1000 200"
+	if got := parseProcStatCPUSeconds(stat); got != 3.0 {
+		t.Fatalf("cpu seconds = %v, want 3.0", got)
+	}
+	if got := parseProcStatCPUSeconds("garbage"); got != 0 {
+		t.Fatalf("garbage cpu seconds = %v, want 0", got)
+	}
+}
