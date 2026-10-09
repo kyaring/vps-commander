@@ -181,6 +181,8 @@ $("#refresh").onclick=loadDevices;
 $("#auditRefresh").onclick=()=>loadAudits(true);
 $("#auditLoadMore").onclick=()=>{if(auditHasMore)loadAudits(false).catch(e=>$("#auditStatus").textContent=e.message)};
 $("#auditExport").onclick=()=>{const params=AuditUI.buildAuditQuery(currentAuditFilters(),0);location.href="/panel/api/audits/export.csv?"+params.toString()};
+$("#audits").addEventListener("click",event=>{const code=event.target.closest(".audit-command-text");if(!code)return;const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
+$("#audits").addEventListener("keydown",event=>{const code=event.target.closest(".audit-command-text");if(!code||!(event.key==="Enter"||event.key===" "))return;event.preventDefault();const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
 ["#auditActor","#auditDevice","#auditAction","#auditResult","#auditTransport","#auditFrom","#auditTo"].forEach(id=>$(id).addEventListener("change",()=>loadAudits(true).catch(e=>$("#auditStatus").textContent=e.message)));
 $("#run").onclick=async()=>{
   let o=$("#output");

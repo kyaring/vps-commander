@@ -16,7 +16,6 @@ import (
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/model"
-	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
 // MCPBackend implements mcp.ActionBackend
@@ -67,9 +66,12 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	p, _ := auth.PrincipalFromContext(ctx)
 	releaseTokenExec, allowed := b.server.acquireTokenExec(p)
 	if !allowed {
-		if b.server.Store != nil {
-			_ = b.server.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", ErrorMsg: "rate_limited", ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: "mcp", TargetType: "token", Target: p.Name, Result: "denied"})
+		transport := mcp.TransportFromContext(ctx)
+		if transport == "" {
+			transport = "mcp"
 		}
+		b.server.auditRateLimitedEntry(clientIP, device, "exec_command: "+command, transport, "", p)
+		mcp.MarkAuditRecorded(ctx)
 		return nil, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
 	defer releaseTokenExec()

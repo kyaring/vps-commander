@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +92,97 @@ func TestRateLimitedRequestIsAuditedAsDenied(t *testing.T) {
 	if err := store.DB.QueryRow("SELECT actor_name,result,error_msg,transport FROM audit_logs ORDER BY id DESC LIMIT 1").Scan(&actor, &result, &message, &transport); err != nil {
 		t.Fatal(err)
 	}
-	if actor != "client-one" || result != "denied" || message != "rate_limited" || transport != "mcp" {
+	if actor != "client-one" || result != "denied" || !strings.HasPrefix(message, "rate_limited (1 rejected") || transport != "mcp-http" {
 		t.Fatalf("audit = actor:%q result:%q message:%q transport:%q", actor, result, message, transport)
+	}
+}
+
+func TestRateLimitAuditCapturesMCPHTTPAndSSEIntent(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	limiter := NewTokenLimiter(1)
+	server := &Server{Store: store, TokenLimiter: limiter}
+	bodyFor := func(command string) []byte {
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "exec_command", "arguments": map[string]any{"device": "node-a", "command": command}}})
+		return b
+	}
+	for _, tc := range []struct{ path, token, transport, command string }{{"/mcp", "http-token", "mcp-http", "exec_command: uname -a"}, {"/mcp/message", "sse-token", "mcp-sse", "exec_command: cat /etc/hostname"}} {
+		p := auth.Principal{Type: "api_token", ID: tc.token, Name: tc.token, TokenID: tc.token, RateRPS: 1}
+		h := server.TokenRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+		call := func() *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(string(bodyFor(strings.TrimPrefix(tc.command, "exec_command: ")))))
+			req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			return rec
+		}
+		if got := call().Code; got != http.StatusOK {
+			t.Fatalf("%s first status=%d", tc.path, got)
+		}
+		if got := call().Code; got != http.StatusTooManyRequests {
+			t.Fatalf("%s limited status=%d", tc.path, got)
+		}
+	}
+	if err := store.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ token, transport, command string }{{"http-token", "mcp-http", "exec_command: uname -a"}, {"sse-token", "mcp-sse", "exec_command: cat /etc/hostname"}} {
+		var transport, device, command string
+		if err := store.DB.QueryRow("SELECT transport,device,command FROM audit_logs WHERE actor_name=? AND action='rate_limited' ORDER BY id DESC LIMIT 1", tc.token).Scan(&transport, &device, &command); err != nil {
+			t.Fatal(err)
+		}
+		if transport != tc.transport || device != "node-a" || command != tc.command {
+			t.Fatalf("%s audit transport=%q device=%q command=%q", tc.token, transport, device, command)
+		}
+	}
+	rows, err := store.QueryAudits("", "", "rate_limited", "denied", "mcp-sse", 0, 0, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ActorName != "sse-token" {
+		t.Fatalf("transport=mcp-sse filter returned %#v", rows)
+	}
+}
+
+func TestRateLimitAuditThrottlesPerTokenAndCountsDenials(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	limiter := NewTokenLimiter(1)
+	server := &Server{Store: store, TokenLimiter: limiter}
+	p := auth.Principal{Type: "api_token", ID: "tok", Name: "tok", TokenID: "tok"}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil)
+	server.auditRateLimited(req, p)
+	for i := 0; i < 4; i++ {
+		server.auditRateLimited(req, p)
+	}
+	if err := store.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.DB.QueryRow("SELECT count(*) FROM audit_logs WHERE action='rate_limited'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("wrote %d rows in one ten-second window", count)
+	}
+	limiter.mu.Lock()
+	limiter.states["tok"].rateAuditLast = time.Now().Add(-11 * time.Second)
+	limiter.mu.Unlock()
+	server.auditRateLimited(req, p)
+	if err := store.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var msg string
+	if err := store.DB.QueryRow("SELECT error_msg FROM audit_logs WHERE action='rate_limited' ORDER BY id DESC LIMIT 1").Scan(&msg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg, "5 rejected") {
+		t.Fatalf("expected suppressed denial count, got %q", msg)
 	}
 }

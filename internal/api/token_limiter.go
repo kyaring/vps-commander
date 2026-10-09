@@ -1,16 +1,23 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auditutil"
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
+
+var jsonRPCMethodPattern = regexp.MustCompile(`"method"\s*:\s*"([^"]+)"`)
 
 const (
 	defaultTokenRateRPS       = 10
@@ -19,10 +26,12 @@ const (
 )
 
 type tokenLimitState struct {
-	tokens     float64
-	lastRefill time.Time
-	lastSeen   time.Time
-	execSlots  chan struct{}
+	tokens         float64
+	lastRefill     time.Time
+	lastSeen       time.Time
+	execSlots      chan struct{}
+	rateAuditCount int
+	rateAuditLast  time.Time
 }
 
 // TokenLimiter applies independent token buckets and exec semaphores per API token.
@@ -109,6 +118,25 @@ func (l *TokenLimiter) AcquireExec(tokenID string, now time.Time) (func(), bool)
 	}
 }
 
+// rateLimitAuditDecision throttles audit writes to one per token per ten seconds.
+// The returned count includes all denials since the previous emitted audit row.
+func (l *TokenLimiter) rateLimitAuditDecision(tokenID string, now time.Time) (bool, int) {
+	if l == nil || tokenID == "" {
+		return true, 1
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.stateLocked(tokenID, defaultTokenRateRPS, now)
+	state.rateAuditCount++
+	if state.rateAuditLast.IsZero() || now.Sub(state.rateAuditLast) >= 10*time.Second {
+		count := state.rateAuditCount
+		state.rateAuditCount = 0
+		state.rateAuditLast = now
+		return true, count
+	}
+	return false, state.rateAuditCount
+}
+
 func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := auth.PrincipalFromContext(r.Context())
@@ -145,14 +173,79 @@ func (s *Server) auditRateLimited(r *http.Request, p auth.Principal) {
 		return
 	}
 	transport := "rest"
-	if strings.HasPrefix(r.URL.Path, "/mcp") {
-		transport = "mcp"
+	switch r.URL.Path {
+	case "/mcp":
+		transport = "mcp-http"
+	case "/mcp/sse", "/mcp/message":
+		transport = "mcp-sse"
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{
-		CallerIP: auth.ClientIP(r), Action: "rate_limited", ErrorMsg: "rate_limited",
-		ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport,
-		TargetType: "token", Target: p.Name, Result: "denied",
-	})
+	device, _, command, method := rateLimitIntent(r)
+	s.auditRateLimitedEntry(auth.ClientIP(r), device, command, transport, method, p)
+}
+
+func (s *Server) auditRateLimitedEntry(clientIP, device, command, transport, method string, p auth.Principal) {
+	if s.Store == nil {
+		return
+	}
+	count := 1
+	if s.TokenLimiter != nil {
+		shouldLog, n := s.TokenLimiter.rateLimitAuditDecision(p.TokenID, time.Now())
+		if !shouldLog {
+			return
+		}
+		count = n
+	}
+	command = auditutil.Truncate(auditutil.Redact(command))
+	message := fmt.Sprintf("rate_limited (%d rejected since previous audit; 10s throttle)", count)
+	if method != "" {
+		message += "; jsonrpc_method=" + method
+	}
+	targetType, target := "token", p.Name
+	if device != "" {
+		targetType, target = "device", device
+	}
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+}
+
+func rateLimitIntent(r *http.Request) (device, action, command, method string) {
+	if r.Body == nil || (r.URL.Path != "/mcp" && r.URL.Path != "/mcp/message") {
+		return "", "", "", ""
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+	r.Body = io.NopCloser(strings.NewReader(string(body)))
+	var req struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		match := jsonRPCMethodPattern.FindSubmatch(body)
+		if len(match) == 2 {
+			return "", "", "", string(match[1])
+		}
+		return "", "", "", ""
+	}
+	method = req.Method
+	if method != "tools/call" {
+		return "", "", "", method
+	}
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if json.Unmarshal(req.Params, &params) != nil {
+		return "", "", "", method
+	}
+	var args map[string]any
+	_ = json.Unmarshal(params.Arguments, &args)
+	device, _ = args["device"].(string)
+	command = mcp.AuditIntent(params.Name, params.Arguments)
+	if command == "" {
+		command = "tools/call"
+	} else {
+		command = params.Name + ": " + command
+	}
+	command = auditutil.Truncate(auditutil.Redact(command))
+	return device, params.Name, command, method
 }
 
 func (s *Server) rejectTokenExecLimit(w http.ResponseWriter, r *http.Request, p auth.Principal) {

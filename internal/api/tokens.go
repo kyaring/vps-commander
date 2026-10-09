@@ -8,11 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auditutil"
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/mcp"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -95,6 +98,10 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 		result = "denied"
 		code = 0
 	}
+	if !auditReadListEnabled() && code == 0 && isReadListAuditAction(action) {
+		mcp.MarkAuditRecorded(ctx)
+		return nil
+	}
 	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
 	mcp.MarkAuditRecorded(ctx)
 	return err
@@ -136,6 +143,10 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	}
 	if targetType == "file" {
 		target = auditTargetValue(action, command)
+	}
+	if !auditReadListEnabled() && code == 0 && isReadListAuditAction(action) {
+		mcp.MarkAuditRecorded(ctx)
+		return nil
 	}
 	transport := mcp.TransportFromContext(ctx)
 	if transport == "" {
@@ -191,18 +202,10 @@ func requestAuditIntent(r *http.Request) (device, targetType, target, command st
 	} else {
 		target = device
 	}
-	return device, targetType, target, truncateAuditCommand(command)
+	return device, targetType, target, auditutil.Truncate(auditutil.Redact(command))
 }
 
 func scopeTarget(path string) string { return path }
-
-func truncateAuditCommand(value string) string {
-	runes := []rune(value)
-	if len(runes) > 512 {
-		return string(runes[:511]) + "…"
-	}
-	return value
-}
 
 func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -241,28 +244,81 @@ func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
+	if s.Store == nil {
+		http.Error(w, "audit query failed", http.StatusInternalServerError)
+		return
+	}
 	from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
 	to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	maxRows := 50000
+	if raw := strings.TrimSpace(r.URL.Query().Get("max_rows")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n < maxRows {
+			maxRows = n
+		}
+	}
+	actor, device, action, result, transport := r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), r.URL.Query().Get("transport")
+	query := func(cursor int64, limit int) ([]storage.AuditLog, error) {
+		return s.Store.QueryAudits(actor, device, action, result, transport, from, to, cursor, limit)
+	}
+	page, err := query(0, min(500, maxRows))
+	if err != nil {
+		slog.Error("audit CSV export failed before first page", "error", err)
+		http.Error(w, "audit export query failed", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=audits.csv")
 	c := csv.NewWriter(w)
-	_ = c.Write([]string{"id", "timestamp", "actor_name", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"})
+	if err := c.Write([]string{"id", "timestamp", "actor_name", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"}); err != nil {
+		slog.Error("audit CSV header write failed", "error", err)
+		return
+	}
+	rowsWritten := 0
 	cursor := int64(0)
-	for {
-		page, err := s.Store.QueryAudits(r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), r.URL.Query().Get("transport"), from, to, cursor, 500)
-		if err != nil {
-			return
-		}
-		for _, v := range page {
-			_ = c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), auditActorLabel(v), v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg})
+	writeRows := func(rows []storage.AuditLog) error {
+		for _, v := range rows {
+			if err := c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), auditActorLabel(v), v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg}); err != nil {
+				return err
+			}
+			rowsWritten++
+			cursor = v.ID
 		}
 		c.Flush()
-		if len(page) < 500 {
-			break
-		}
-		cursor = page[len(page)-1].ID
+		return c.Error()
 	}
-	c.Flush()
+	for {
+		if err := writeRows(page); err != nil {
+			slog.Error("audit CSV export write failed", "error", err)
+			return
+		}
+		if rowsWritten >= maxRows {
+			more, queryErr := query(cursor, 1)
+			if queryErr != nil {
+				slog.Error("audit CSV export failed after streaming began", "error", queryErr, "rows", rowsWritten)
+				_ = c.Write([]string{"# error: export incomplete"})
+				c.Flush()
+				return
+			}
+			if len(more) > 0 {
+				_ = c.Write([]string{fmt.Sprintf("# truncated at %d rows", rowsWritten)})
+				c.Flush()
+			}
+			return
+		}
+		if len(page) < min(500, maxRows-rowsWritten) {
+			return
+		}
+		page, err = query(cursor, min(500, maxRows-rowsWritten))
+		if err != nil {
+			slog.Error("audit CSV export failed after streaming began", "error", err, "rows", rowsWritten)
+			_ = c.Write([]string{"# error: export incomplete"})
+			c.Flush()
+			return
+		}
+		if len(page) == 0 {
+			return
+		}
+	}
 }
 
 func (s *Server) TokenListJSON(w http.ResponseWriter, r *http.Request) {
@@ -533,4 +589,17 @@ func (s *Server) TokenDeleteJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.audit(r, "", "token_delete", id, 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true})
+}
+
+func auditReadListEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("VPS_COMMANDER_AUDIT_READ_LIST")), "on")
+}
+
+func isReadListAuditAction(action string) bool {
+	switch action {
+	case "list_devices", "list_agent_mcp", "list_processes", "file_list", "file_info", "file_search":
+		return true
+	default:
+		return false
+	}
 }

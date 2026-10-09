@@ -1040,6 +1040,7 @@ func (s *Server) processSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		_ = s.audit(r, "", "file_list", "", 405, 0, "method not allowed")
 		http.Error(w, "method not allowed", 405)
 		return
 	}
@@ -1049,6 +1050,7 @@ func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
 		MaxEntries   int  `json:"max_entries"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		_ = s.audit(r, "", "file_list", "", 400, 0, "bad json")
 		http.Error(w, "bad json", 400)
 		return
 	}
@@ -1073,6 +1075,7 @@ func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		_ = s.audit(r, req.Device, "file_list", req.Path, 409, 0, err.Error())
 		http.Error(w, err.Error(), 409)
 		return
 	}
@@ -1081,11 +1084,13 @@ func (s *Server) listDirectory(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		_ = s.audit(r, "", "file_info", "", 405, 0, "method not allowed")
 		http.Error(w, "method not allowed", 405)
 		return
 	}
 	var req struct{ Device, Path string }
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		_ = s.audit(r, "", "file_info", "", 400, 0, "bad json")
 		http.Error(w, "bad json", 400)
 		return
 	}
@@ -1110,6 +1115,7 @@ func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		_ = s.audit(r, req.Device, "file_info", req.Path, 404, 0, err.Error())
 		http.Error(w, err.Error(), 404)
 		return
 	}
@@ -1118,6 +1124,7 @@ func (s *Server) fileInfo(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		_ = s.audit(r, "", "file_search", "", 405, 0, "method not allowed")
 		http.Error(w, "method not allowed", 405)
 		return
 	}
@@ -1126,6 +1133,7 @@ func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
 		MaxResults          int `json:"max_results"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+		_ = s.audit(r, "", "file_search", "", 400, 0, "bad json")
 		http.Error(w, "bad json", 400)
 		return
 	}
@@ -1152,6 +1160,7 @@ func (s *Server) searchFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
+		_ = s.audit(r, req.Device, "file_search", req.Root, 409, 0, err.Error())
 		http.Error(w, err.Error(), 409)
 		return
 	}

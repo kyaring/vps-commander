@@ -23,6 +23,8 @@ for (const text of ['deploy-token','mcp-sse','node-a','exec','echo &lt;denied&gt
   assert.ok(row.includes(text), `audit row should display ${text}`);
 }
 assert.ok(!row.includes('echo <denied>'), 'command text must be HTML-escaped');
+assert.ok(row.includes('title="echo &lt;denied&gt;"'), 'tooltip must contain escaped full command');
+assert.ok(row.includes('aria-expanded="false"') && row.includes('audit-command-text'), 'command must be keyboard-focusable and collapsible');
 assert.equal(AuditUI.actorLabel({actor_name:'legacy-env',actor_type:'api_token'}, []), 'legacy');
 assert.equal(AuditUI.actorLabel({actor_name:'panel:admin',actor_type:'panel',transport:'panel'}, []), '面板');
 console.log('PASS audit-ui token filtering, date/result/transport/cursor query, added columns, denied styling, actor aliases, and HTML escaping');

@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auditutil"
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/executor"
 )
@@ -175,7 +176,7 @@ func auditActionForTool(tool string) string {
 
 // WithAuditIntent attaches a sanitized description of the operation being attempted.
 func WithAuditIntent(ctx context.Context, intent string) context.Context {
-	return context.WithValue(ctx, auditIntentContextKey{}, truncateAuditIntent(intent))
+	return context.WithValue(ctx, auditIntentContextKey{}, auditutil.Truncate(auditutil.Redact(intent)))
 }
 
 // AuditIntentFromContext returns the sanitized operation intent when available.
@@ -195,7 +196,7 @@ func TransportFromContext(ctx context.Context) string {
 	return transport
 }
 
-func auditIntent(tool string, raw json.RawMessage) string {
+func AuditIntent(tool string, raw json.RawMessage) string {
 	var a map[string]any
 	_ = json.Unmarshal(raw, &a)
 	str := func(key string) string { v, _ := a[key].(string); return strings.TrimSpace(v) }
@@ -234,15 +235,7 @@ func auditIntent(tool string, raw json.RawMessage) string {
 	default:
 		intent = tool
 	}
-	return truncateAuditIntent(intent)
-}
-
-func truncateAuditIntent(value string) string {
-	runes := []rune(value)
-	if len(runes) > 512 {
-		return string(runes[:511]) + "…"
-	}
-	return value
+	return auditutil.Truncate(auditutil.Redact(intent))
 }
 
 type SecurityGate interface {
@@ -896,7 +889,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				if v, ok := args["device"].(string); ok {
 					device = v
 				}
-				sink.AuditMCPAction(ctx, clientIP, device, auditActionForTool(params.Name), auditIntent(params.Name, params.Arguments), 1, 0, te.msg)
+				sink.AuditMCPAction(ctx, clientIP, device, auditActionForTool(params.Name), AuditIntent(params.Name, params.Arguments), 1, 0, te.msg)
 			}
 		}
 
@@ -961,7 +954,7 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 }
 
 func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolParams) (any, bool) {
-	ctx = WithAuditIntent(ctx, auditIntent(params.Name, params.Arguments))
+	ctx = WithAuditIntent(ctx, AuditIntent(params.Name, params.Arguments))
 	device := ""
 	var rawDevice map[string]any
 	_ = json.Unmarshal(params.Arguments, &rawDevice)
@@ -973,7 +966,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 	}
 	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
 		if sink, ok := s.Backend.(AuditSink); ok {
-			sink.AuditMCP(ctx, clientIP, device, params.Name, auditIntent(params.Name, params.Arguments), "denied", err.Error())
+			sink.AuditMCP(ctx, clientIP, device, params.Name, AuditIntent(params.Name, params.Arguments), "denied", err.Error())
 		}
 		return toolErrorFrom(err), true
 	}

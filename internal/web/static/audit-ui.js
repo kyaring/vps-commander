@@ -32,7 +32,8 @@
   function renderAuditRow(row,tokens){
     const target=row.target_type&&row.target?row.target_type+":"+row.target:"—";
     const result=row.result||((Number(row.exit_code)===0)?"ok":"error");
-    return '<tr data-audit-id="'+escapeHTML(row.id)+'"><td>'+escapeHTML(new Date(Number(row.timestamp)*1000).toLocaleString())+'</td><td>'+escapeHTML(actorLabel(row,tokens))+'</td><td>'+escapeHTML(row.transport||"legacy")+'</td><td>'+escapeHTML(row.device||"—")+'</td><td>'+escapeHTML(row.action||"—")+'</td><td class="audit-command"><code>'+escapeHTML(row.command||"")+'</code></td><td>'+escapeHTML(row.exit_code??"")+'</td><td>'+escapeHTML(row.duration_ms??0)+'ms</td><td><span class="audit-result '+escapeHTML(result)+'">'+escapeHTML(result)+'</span></td><td>'+escapeHTML(target)+'</td><td>'+escapeHTML(row.caller_ip||"")+'</td></tr>';
+    const command=String(row.command||"");
+    return '<tr data-audit-id="'+escapeHTML(row.id)+'"><td>'+escapeHTML(new Date(Number(row.timestamp)*1000).toLocaleString())+'</td><td>'+escapeHTML(actorLabel(row,tokens))+'</td><td>'+escapeHTML(row.transport||"legacy")+'</td><td>'+escapeHTML(row.device||"—")+'</td><td>'+escapeHTML(row.action||"—")+'</td><td class="audit-command"><code class="audit-command-text" tabindex="0" role="button" aria-expanded="false" title="'+escapeHTML(command)+'">'+escapeHTML(command)+'</code></td><td>'+escapeHTML(row.exit_code??"")+'</td><td>'+escapeHTML(row.duration_ms??0)+'ms</td><td><span class="audit-result '+escapeHTML(result)+'">'+escapeHTML(result)+'</span></td><td>'+escapeHTML(target)+'</td><td>'+escapeHTML(row.caller_ip||"")+'</td></tr>';
   }
   const api={buildAuditQuery,renderAuditRow,actorLabel};
   root.AuditUI=api;

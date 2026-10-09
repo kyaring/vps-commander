@@ -247,6 +247,7 @@ Agent MCP Service
 ## 令牌限流与并发执行（B4）
 
 - 每个 API 令牌使用独立的 `rate_rps` 令牌桶；超限返回 `429 Too Many Requests` 和 `Retry-After`，审计结果标记为 `denied`，错误为 `rate_limited`。
+- 只读列表类成功操作（`list_devices`、`list_agent_mcp`、`list_processes`、REST `file_list`/`file_info`/`file_search`）默认不写审计；设置 `VPS_COMMANDER_AUDIT_READ_LIST=on` 后记录成功操作。此开关不影响失败或拒绝记录。
 - 每个令牌默认最多同时执行 2 个 exec；超限返回 429。全局并发限制仍然生效。
 - `VPS_COMMANDER_EXEC_CONCURRENCY`：全局 exec 并发上限，默认 `32`。
 - `VPS_COMMANDER_SEARCH_CONCURRENCY`：全局搜索并发上限，默认 `8`。

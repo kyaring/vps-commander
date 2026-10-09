@@ -11,11 +11,12 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wjyhk/vps-commander/internal/auditutil"
 )
 
 type Store struct {
@@ -430,25 +431,6 @@ type AuditLog struct {
 	SessionID  string `json:"session_id"`
 }
 
-var auditSecretRE = regexp.MustCompile(`(?i)(authorization|bearer|token|api[_-]?key|password|secret|cookie)(\s*[:=]\s+)([^\s,;]+)`)
-
-func redactAudit(v string) string {
-	v = auditSecretRE.ReplaceAllString(v, `$1$2[REDACTED]`)
-	v = strings.ReplaceAll(v, "\r", " ")
-	v = strings.ReplaceAll(v, "\n", " ")
-	if len(v) > 8192 {
-		v = v[:8192]
-	}
-	return v
-}
-func truncateAuditCommand(value string) string {
-	runes := []rune(value)
-	if len(runes) > 512 {
-		return string(runes[:511]) + "…"
-	}
-	return value
-}
-
 func normalizeAuditEntry(e AuditEntry) AuditEntry {
 	if e.Timestamp == 0 {
 		e.Timestamp = time.Now().Unix()
@@ -466,14 +448,13 @@ func normalizeAuditEntry(e AuditEntry) AuditEntry {
 			e.Result = "error"
 		}
 	}
-	e.Command = truncateAuditCommand(e.Command)
-	e.Command = redactAudit(e.Command)
-	e.ErrorMsg = redactAudit(e.ErrorMsg)
-	e.ActorName = redactAudit(e.ActorName)
-	e.TargetType = redactAudit(e.TargetType)
-	e.Target = redactAudit(e.Target)
-	e.RequestID = redactAudit(e.RequestID)
-	e.SessionID = redactAudit(e.SessionID)
+	e.Command = auditutil.Truncate(auditutil.Redact(e.Command))
+	e.ErrorMsg = auditutil.Redact(e.ErrorMsg)
+	e.ActorName = auditutil.Redact(e.ActorName)
+	e.TargetType = auditutil.Redact(e.TargetType)
+	e.Target = auditutil.Redact(e.Target)
+	e.RequestID = auditutil.Redact(e.RequestID)
+	e.SessionID = auditutil.Redact(e.SessionID)
 	return e
 }
 
