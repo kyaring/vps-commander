@@ -170,6 +170,18 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 	}
 }
 
+func (s *Server) SessionCounts() (sse, streamableHTTP int) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.streamSessions {
+		if now.Sub(sess.lastActivity) >= sseSessionIdleTimeout {
+			delete(s.streamSessions, id)
+		}
+	}
+	return len(s.sessions), len(s.streamSessions)
+}
+
 func (s *Server) SetLocalName(name string) {
 	if name != "" {
 		s.LocalName = name

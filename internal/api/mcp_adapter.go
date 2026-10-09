@@ -71,6 +71,10 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 		return nil, fmt.Errorf("rate_limited: token concurrent exec limit reached")
 	}
 	defer releaseTokenExec()
+	releaseGlobalExec := b.server.acquireExec()
+	defer releaseGlobalExec()
+	finishExec := b.server.beginExec()
+	defer finishExec()
 	if timeout <= 0 {
 		timeout = 30
 	}

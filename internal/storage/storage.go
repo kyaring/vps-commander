@@ -21,15 +21,16 @@ import (
 type Store struct {
 	DB *sql.DB
 
-	auditMu            sync.Mutex
-	auditWriteMu       sync.Mutex
-	auditQueue         chan auditQueueItem
-	auditStop          chan struct{}
-	auditDone          chan struct{}
-	auditClosed        bool
-	auditCloseOnce     sync.Once
-	auditFallbackCount atomic.Uint64
-	auditCloseErr      error
+	auditMu              sync.Mutex
+	auditWriteMu         sync.Mutex
+	auditQueue           chan auditQueueItem
+	auditStop            chan struct{}
+	auditDone            chan struct{}
+	auditClosed          bool
+	auditCloseOnce       sync.Once
+	auditFallbackCount   atomic.Uint64
+	sqliteWriteLatencyNS atomic.Int64
+	auditCloseErr        error
 }
 
 type auditQueueItem struct {
@@ -505,9 +506,11 @@ func (s *Store) AuditEntry(e AuditEntry) error {
 func (s *Store) writeAuditEntry(e AuditEntry) error {
 	s.auditWriteMu.Lock()
 	defer s.auditWriteMu.Unlock()
+	started := time.Now()
 	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.Timestamp, e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
 		e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID)
+	s.sqliteWriteLatencyNS.Store(time.Since(started).Nanoseconds())
 	return err
 }
 
@@ -517,6 +520,8 @@ func (s *Store) writeAuditBatch(entries []AuditEntry) error {
 	}
 	s.auditWriteMu.Lock()
 	defer s.auditWriteMu.Unlock()
+	started := time.Now()
+	defer func() { s.sqliteWriteLatencyNS.Store(time.Since(started).Nanoseconds()) }()
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
@@ -1074,4 +1079,19 @@ func (s *Store) HasDeviceCredential(name string) (bool, error) {
 	var count int
 	err := s.DB.QueryRow("SELECT COUNT(*) FROM device_credentials WHERE name=?", name).Scan(&count)
 	return count > 0, err
+}
+
+// AuditQueueDepth reports the current buffered audit queue depth.
+func (s *Store) AuditQueueDepth() int {
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	if s.auditQueue == nil {
+		return 0
+	}
+	return len(s.auditQueue)
+}
+
+// LastSQLiteWriteLatency reports the most recent audit SQLite write duration.
+func (s *Store) LastSQLiteWriteLatency() time.Duration {
+	return time.Duration(s.sqliteWriteLatencyNS.Load())
 }

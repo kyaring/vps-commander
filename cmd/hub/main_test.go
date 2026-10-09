@@ -41,7 +41,7 @@ func TestCORSPreflightAndActualResponseUseAllowlist(t *testing.T) {
 	mux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	h := withRequestLoggingAndCORS(mux, map[string]struct{}{"https://allowed.example": {}})
+	h := withRequestLoggingAndCORS(mux, map[string]struct{}{"https://allowed.example": {}}, nil)
 
 	allowed := httptest.NewRequest(http.MethodOptions, "/api/v1/devices", nil)
 	allowed.Header.Set("Origin", "https://allowed.example")
@@ -65,5 +65,22 @@ func TestCORSPreflightAndActualResponseUseAllowlist(t *testing.T) {
 	h.ServeHTTP(actualW, actual)
 	if actualW.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Fatalf("unlisted origin got ACAO=%q", actualW.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestRequestLoggerReports429Status(t *testing.T) {
+	count := 0
+	h := withRequestLoggingAndCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}), nil, func(status int) {
+		if status == http.StatusTooManyRequests {
+			count++
+		}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests || count != 1 {
+		t.Fatalf("status=%d 429_count=%d", w.Code, count)
 	}
 }

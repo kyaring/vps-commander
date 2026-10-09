@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
@@ -53,6 +54,8 @@ type Server struct {
 	SearchLimiter  chan struct{}
 	TokenLimiter   *TokenLimiter
 	LocalSessions  *executor.SessionManager
+	inFlightExec   atomic.Int64
+	http429Count   atomic.Uint64
 }
 
 const (
@@ -656,6 +659,7 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/metrics", s.requireScope("admin", http.HandlerFunc(s.Metrics)))
 	mux.Handle("/api/v1/devices", s.requireScope("devices:read", http.HandlerFunc(s.devices)))
 	mux.Handle("/api/v1/exec", s.requireScope("exec", http.HandlerFunc(s.exec)))
 	mux.Handle("/api/v1/file/read", s.requireScope("files:read", http.HandlerFunc(s.fileRead)))
@@ -801,6 +805,19 @@ func (s *Server) agentWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) isRemote(device string) bool {
 	return device != "" && device != "local" && device != s.LocalName
 }
+func (s *Server) beginExec() func() {
+	s.inFlightExec.Add(1)
+	return func() { s.inFlightExec.Add(-1) }
+}
+
+func (s *Server) InFlightExec() int64  { return s.inFlightExec.Load() }
+func (s *Server) HTTP429Count() uint64 { return s.http429Count.Load() }
+func (s *Server) RecordHTTPStatus(status int) {
+	if status == http.StatusTooManyRequests {
+		s.http429Count.Add(1)
+	}
+}
+
 func (s *Server) acquireExec() func() {
 	if s.ExecLimiter == nil {
 		return func() {}
@@ -845,6 +862,8 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	releaseExec := s.acquireExec()
 	defer releaseExec()
+	finishExec := s.beginExec()
+	defer finishExec()
 	if req.Timeout <= 0 {
 		req.Timeout = 30
 	}

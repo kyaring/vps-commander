@@ -258,3 +258,7 @@ Agent MCP Service
 - 公共探针页与管理面板在浏览器标签页隐藏时暂停 5 秒轮询，恢复可见后立即刷新并重新开始轮询。
 - HTTP 请求日志使用 `log/slog` 结构化输出，默认级别 `info`；`/healthz`、`/static/` 和 `304` 响应不记录请求日志。可用 `VPS_COMMANDER_LOG_LEVEL=debug|info|warn|error` 调整级别。
 - CORS 使用 `VPS_COMMANDER_CORS_ORIGINS` 配置逗号分隔的精确 Origin 白名单，例如 `https://panel.example,https://admin.example`。未设置时不开放跨域浏览器访问；通配符 `*` 不被接受。
+
+## Prometheus 指标（B6）
+
+`GET /metrics` 要求 API 令牌具有 `admin` scope，返回 Prometheus text exposition。当前包含在线远程 Agent、按传输方式统计的 MCP 会话、in-flight exec、审计队列深度、最近一次 SQLite 审计写入耗时、Hub 观测到的 HTTP 429 总数、Go goroutine 数和进程 RSS。RSS 从 Linux `/proc/self/statm` 读取；无法读取时报告 `0`。SQLite 延迟指标反映最近一次审计写入/批次，不代表所有 SQLite 查询的分布统计。

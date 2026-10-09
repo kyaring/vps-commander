@@ -45,8 +45,9 @@ func positiveEnvInt(name string, fallback int) int {
 
 type requestLogWriter struct {
 	http.ResponseWriter
-	status int
-	bytes  int64
+	status   int
+	bytes    int64
+	onStatus func(int)
 }
 
 func (w *requestLogWriter) WriteHeader(status int) {
@@ -54,6 +55,9 @@ func (w *requestLogWriter) WriteHeader(status int) {
 		return
 	}
 	w.status = status
+	if w.onStatus != nil {
+		w.onStatus(status)
+	}
 	w.ResponseWriter.WriteHeader(status)
 }
 
@@ -135,10 +139,10 @@ func shouldLogRequest(path string, status int) bool {
 	return path != "/healthz" && !strings.HasPrefix(path, "/static/") && status != http.StatusNotModified
 }
 
-func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struct{}) http.Handler {
+func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struct{}, onStatus func(int)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
-		rw := &requestLogWriter{ResponseWriter: w}
+		rw := &requestLogWriter{ResponseWriter: w, onStatus: onStatus}
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		allowed := originAllowed(origin, allowedOrigins)
 		if allowed {
@@ -264,6 +268,7 @@ func main() {
 	protected := auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(s.Routes()))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", protected)
+	mux.Handle("/metrics", protected)
 
 	// MCP Endpoints
 	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
@@ -283,7 +288,7 @@ func main() {
 
 	// Structured request logging and an explicit CORS origin allowlist. An
 	// unset VPS_COMMANDER_CORS_ORIGINS means no cross-origin browser access.
-	rootHandler := withRequestLoggingAndCORS(mux, configuredCORSOrigins())
+	rootHandler := withRequestLoggingAndCORS(mux, configuredCORSOrigins(), s.RecordHTTPStatus)
 
 	server := &http.Server{
 		Addr:              *addr,

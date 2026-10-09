@@ -411,3 +411,13 @@ func TestStreamableHTTPRequiresPrincipal(t *testing.T) {
 		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }
+
+func TestSessionCountsByTransport(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	srv.sessions["sse-1"] = newSession("token")
+	srv.streamSessions["http-1"] = streamSession{ownerTokenID: "token", protocolVersion: "2025-03-26", lastActivity: time.Now()}
+	sse, streamable := srv.SessionCounts()
+	if sse != 1 || streamable != 1 {
+		t.Fatalf("session counts = (%d,%d), want (1,1)", sse, streamable)
+	}
+}
