@@ -72,13 +72,6 @@ func prepareReconnectAfterConnection(backoff *time.Duration, firstReconnect *boo
 	}
 }
 
-func resetReconnectAfterStable(stable bool, backoff time.Duration, firstReconnect bool) (time.Duration, bool) {
-	if stable {
-		return time.Second, true
-	}
-	return backoff, firstReconnect
-}
-
 func initialReconnectDelay(base, max time.Duration, backoffSample, initialSample float64) time.Duration {
 	if initialSample < 0 {
 		initialSample = 0
