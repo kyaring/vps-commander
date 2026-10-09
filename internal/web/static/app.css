@@ -793,3 +793,12 @@ tr:hover td {
 .rotation-confirm{display:flex;align-items:flex-start;gap:8px;margin:10px 0;color:var(--text-main);}
 .rotation-confirm input{margin-top:4px;flex:0 0 auto;}
 .danger-button:disabled{opacity:.45;cursor:not-allowed;}
+
+.secret-box{border:1px solid var(--border);border-radius:10px;padding:12px;margin:12px 0;background:var(--bg-sub);min-width:0;max-width:100%;box-sizing:border-box;}
+.secret-box[hidden]{display:none!important;}
+.secret-box p{margin:0 0 10px;overflow-wrap:anywhere;}
+.secret-value-row{display:flex;align-items:stretch;gap:8px;min-width:0;max-width:100%;}
+.secret-value-row input{flex:1 1 auto;width:100%;min-width:0;max-width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+.secret-value-row button,.secret-actions button{flex:0 0 auto;white-space:nowrap;}
+.secret-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px;}
+@media(max-width:380px){.secret-value-row{flex-wrap:wrap}.secret-value-row input{flex-basis:100%}.secret-value-row button{margin-left:auto}}

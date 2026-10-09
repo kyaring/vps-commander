@@ -141,6 +141,8 @@ async function loadDevices(){
 }
 
 let tokenEditingId = "";
+let createdToken = null;
+let secretCopied = false;
 const tokenTemplates = {
   read:["devices:read","files:read"],
   ops:["devices:read","files:read","exec","files:write","process","mcp:call"],
@@ -181,11 +183,19 @@ async function loadTokens(){
 }
 async function editToken(id){
   const x=auditTokens.find(t=>t.id===id);if(!x)return;
+  if(!clearCreatedSecret())return;
   tokenEditingId=id;$("#tokenName").value=x.name||"";$("#tokenNote").value=x.note||"";$("#tokenRate").value=x.rate_rps||10;$("#tokenSessions").value=x.max_sessions||10;$("#tokenTemplate").value="custom";setTokenScopes(x.scopes||[]);
   renderTokenDevices(x.devices||[]);$("#tokenCreate").textContent="保存令牌修改";$("#tokenCancelEdit").hidden=false;$("#tokenFormStatus").textContent=`正在编辑：${x.name}`;$("#tokenManagerCard").scrollIntoView({behavior:"smooth",block:"start"});
 }
 async function revokeToken(id){if(!confirm("确认吊销该令牌？"))return;await api("/tokens/revoke?id="+encodeURIComponent(id),{method:"POST"});await loadTokens()}
-$("#tokenRefresh").onclick=()=>loadTokens().catch(e=>$("#tokenFormStatus").textContent=e.message);
+$("#tokenRefresh").onclick=async()=>{
+  if(!clearCreatedSecret())return;
+  const button=$("#tokenRefresh"),oldText=button.textContent;
+  button.disabled=true;button.textContent="刷新中…";$("#tokenFormStatus").textContent="正在刷新令牌列表…";
+  try{await loadTokens();const now=new Date();$("#tokenFormStatus").textContent="已刷新 "+[now.getHours(),now.getMinutes(),now.getSeconds()].map(v=>String(v).padStart(2,"0")).join(":");}
+  catch(e){$("#tokenFormStatus").textContent="刷新失败："+e.message;}
+  finally{button.disabled=false;button.textContent=oldText;}
+};
 $("#tokenCancelEdit").onclick=resetTokenForm;
 $("#tokenCreate").onclick=async()=>{
   const name=$("#tokenName").value.trim(),scopes=selectedTokenScopes(),devices=[...$("#tokenDevices").querySelectorAll("input:checked")].map(x=>x.value);
@@ -195,11 +205,16 @@ $("#tokenCreate").onclick=async()=>{
   const rate=Math.max(1,Math.min(10000,Number($("#tokenRate").value)||10)),sessions=Math.max(1,Math.min(1000,Number($("#tokenSessions").value)||10));
   const body={name,note:$("#tokenNote").value.trim(),scopes,devices,rate_rps:rate,max_sessions:sessions};
   try{
-    const editingId=tokenEditingId;let createdToken=null;
+    const editingId=tokenEditingId;let newToken=null;
     if(editingId){await api("/tokens/update?id="+encodeURIComponent(editingId),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#tokenFormStatus").textContent="令牌配置已更新。";}
-    else {createdToken=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#newToken").textContent="新令牌（完整密钥仅本次显示，请立即保存）：\n"+createdToken.token;$("#wizardSecret").value=createdToken.token;$("#wizardNewTokenName").value=name;}
+    else {
+      if(!clearCreatedSecret())return;
+      newToken=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      showCreatedSecret(newToken,name,"manager");
+      $("#wizardSecret").value=newToken.token;$("#wizardNewTokenName").value=name;
+    }
     resetTokenForm();await loadTokens();
-    if(createdToken){$("#wizardToken").value=createdToken.id;$("#wizardSecret").value=createdToken.token;wizardSecretTokenID=createdToken.id;wizardGenerate();}
+    if(newToken){$("#wizardToken").value=newToken.id;$("#wizardSecret").value=newToken.token;wizardSecretTokenID=newToken.id;wizardGenerate();}
   }catch(e){$("#tokenFormStatus").textContent="保存失败："+e.message}
 };
 
@@ -258,11 +273,52 @@ $("#wizardAuth").addEventListener("change",()=>{$("#wizardAuthHint").textContent
 $("#wizardClient").addEventListener("change",wizardGenerate);
 $("#wizardToken").addEventListener("change",()=>{if(wizardSecretTokenID!==$("#wizardToken").value){$("#wizardSecret").value="";wizardSecretTokenID="";}const t=wizardSelectedToken();$("#wizardTokenStatus").textContent=t?`已选择：${t.name}（前缀 vpc_${t.prefix}）。请确认输入的是该令牌的完整密钥。`:"请选择一个有效的命名令牌。";wizardGenerate()});
 $("#wizardSecret").addEventListener("input",()=>{wizardSecretTokenID=$("#wizardToken").value;wizardGenerate()});
-document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",async()=>{const el=$("#"+button.dataset.copy);try{await navigator.clipboard.writeText(el.value);button.textContent="已复制";setTimeout(()=>button.textContent="复制",1500)}catch(e){el.focus();el.select()}}));
+function showCreatedSecret(token,name,surface){
+  createdToken={id:token.id,token:token.token,name};secretCopied=false;
+  const manager=surface==="manager";
+  $("#newTokenBox").hidden=!manager;$("#wizardNewTokenBox").hidden=manager;
+  $("#newTokenName").textContent=name;$("#newTokenValue").value=manager?token.token:"";
+  $("#wizardNewTokenName").textContent=name;$("#wizardNewTokenValue").value=manager?"":token.token;
+}
+function clearCreatedSecret(){
+  if(createdToken&&!secretCopied&&!confirm("密钥尚未复制，刷新后将无法再查看，确定继续？"))return false;
+  const oldID=createdToken?.id||"";
+  $("#newTokenBox").hidden=true;$("#newTokenValue").value="";$("#newTokenName").textContent="";
+  $("#wizardNewTokenBox").hidden=true;$("#wizardNewTokenValue").value="";$("#wizardNewTokenName").textContent="";
+  if(oldID&&wizardSecretTokenID===oldID){$("#wizardSecret").value="";wizardSecretTokenID="";wizardGenerate();}
+  createdToken=null;secretCopied=false;
+  return true;
+}
+$("#newTokenValue").addEventListener("click",event=>event.target.select());
+$("#wizardNewTokenValue").addEventListener("click",event=>event.target.select());
+$("#hideNewToken").onclick=()=>clearCreatedSecret();
+$("#wizardHideNewToken").onclick=()=>clearCreatedSecret();
+document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",async()=>{
+  const el=$("#"+button.dataset.copy);if(!el)return;
+  const originalText=button.dataset.originalText??button.textContent;button.dataset.originalText=originalText;
+  const value="value" in el?el.value:el.textContent;
+  let copied=false;
+  try{if(!navigator.clipboard?.writeText)throw Error("Clipboard API unavailable");await navigator.clipboard.writeText(value);copied=true;}catch(_){
+    try{
+      if(typeof el.select==="function"){el.focus();el.select();}
+      else{const range=document.createRange();range.selectNodeContents(el);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);}
+      copied=document.execCommand("copy");
+    }catch(__){copied=false;}
+  }
+  if(copied){button.textContent="已复制";if(createdToken&&value&&value===createdToken.token&&(el.id==="newTokenValue"||el.id==="wizardNewTokenValue"))secretCopied=true;}
+  else{
+    if(typeof el.select==="function"){el.focus();el.select();}else{const range=document.createRange();range.selectNodeContents(el);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);}
+    const message="复制失败，请按 Ctrl/长按复制（内容已选中）。";
+    if($("#tokenFormStatus"))$("#tokenFormStatus").textContent=message;
+    if($("#wizardTokenStatus"))$("#wizardTokenStatus").textContent=message;
+  }
+  setTimeout(()=>{button.textContent=originalText;delete button.dataset.originalText;},1500);
+}));
 $("#wizardCreateToken").onclick=async()=>{
   const name=$("#wizardNewTokenName").value.trim();if(!name){$("#wizardTokenStatus").textContent="请先输入新令牌名称。";return}
+  if(!clearCreatedSecret())return;
   const template=$("#wizardTokenTemplate").value,scopes=tokenTemplates[template]||tokenTemplates.read;
-  try{const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,note:"由 AI 接入向导创建",scopes,rate_rps:10,max_sessions:10})});$("#wizardSecret").value=x.token;wizardSecretTokenID=x.id;await loadTokens();$("#wizardToken").value=x.id;$("#wizardTokenStatus").textContent=`命名令牌已创建（${template==="ops"?"运维":"只读"}）。完整密钥仅显示在当前页面，请妥善保存。`;wizardGenerate();}catch(e){$("#wizardTokenStatus").textContent="创建失败："+e.message}
+  try{const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,note:"由 AI 接入向导创建",scopes,rate_rps:10,max_sessions:10})});showCreatedSecret(x,name,"wizard");$("#wizardSecret").value=x.token;wizardSecretTokenID=x.id;await loadTokens();$("#wizardToken").value=x.id;$("#wizardTokenStatus").textContent=`命名令牌已创建（${template==="ops"?"运维":"只读"}）。完整密钥仅显示在当前页面，请妥善保存。`;wizardGenerate();}catch(e){$("#wizardTokenStatus").textContent="创建失败："+e.message}
 };
 $("#wizardTest").onclick=async()=>{
   const secret=$("#wizardSecret").value.trim(),result=$("#wizardTestResult");

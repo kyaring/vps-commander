@@ -10,6 +10,15 @@ PASSWORD = "layout-test-panel-password"
 with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
     temp = Path(temp)
     binary, db, profile = temp / "hub", temp / "hub.db", temp / "chromium"
+    # Use a consistent SQLite backup of the production DB when available, never its live path.
+    source_db = Path(os.environ.get("VPC_TEST_PRODUCTION_DB", "/opt/vps-commander/data/commander.db"))
+    if source_db.is_file():
+        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10) as source, sqlite3.connect(db) as clone:
+            source.backup(clone)
+        # Keep the real schema/device/token data but isolate audit output to this temporary Hub.
+        with sqlite3.connect(db) as clone:
+            clone.execute("DELETE FROM audit_logs")
+            clone.commit()
     subprocess.run(["go", "build", "-o", str(binary), "./cmd/hub"], cwd=REPO, check=True)
     sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
     base = f"http://127.0.0.1:{port}"
@@ -36,6 +45,7 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         ]
         conn.executemany("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         conn.commit(); conn.close()
+        print("PASS temporary Hub database source: production DB copy (live DB is read-only and never passed to Hub)" if source_db.is_file() else "INFO temporary Hub database source: fresh test DB (production DB path unavailable)")
         chrome = subprocess.Popen(["/usr/bin/chromium", "--headless", "--no-sandbox", "--disable-gpu",
                                    "--disable-dev-shm-usage", "--remote-allow-origins=*", "--remote-debugging-port=0",
                                    f"--user-data-dir={profile}", "about:blank"],
@@ -67,6 +77,7 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
             time.sleep(.05)
         assert target, "could not find real Hub page"
         page = websocket.create_connection(target["webSocketDebuggerUrl"], timeout=8, origin=cdp)
+        browser_command("Browser.grantPermissions", {"origin": base, "permissions": ["clipboardReadWrite", "clipboardSanitizedWrite"]})
         page_seq = 0
         def page_command(method, params=None):
             nonlocal_page = None
@@ -162,6 +173,22 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
             if created.get("secret","").startswith("vpc_") and created.get("id"): break
             time.sleep(.1)
         assert created.get("secret","").startswith("vpc_") and "layout-wizard-token" in created.get("selected",""), f"wizard did not create/select token: {created}"
+        assert evaluate("!document.querySelector('#wizardNewTokenBox').hidden && document.querySelector('#wizardNewTokenValue').value") == created["secret"], "wizard secret box is hidden or does not contain the API token"
+        evaluate("window.__capturedConsole=[];['log','warn','error','debug','info'].forEach(k=>console[k]=(...args)=>window.__capturedConsole.push(args.map(String).join(' ')))")
+        assert not evaluate("location.hash.includes("+json.dumps(created["secret"])+") || Object.keys(localStorage).some(k=>String(localStorage.getItem(k)).includes("+json.dumps(created["secret"])+")) || window.__capturedConsole.some(s=>s.includes("+json.dumps(created["secret"])+"))"), "token was written to hash/localStorage/console"
+        for width in (1280, 390, 320):
+            page_command("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000, "deviceScaleFactor": 1, "mobile": width <= 450})
+            time.sleep(.15)
+            wizard_layout=evaluate("(()=>{const box=document.querySelector('#wizardNewTokenBox'),input=document.querySelector('#wizardNewTokenValue'),copy=document.querySelector('[data-copy=wizardNewTokenValue]'),hide=document.querySelector('#wizardHideNewToken'),r=e=>{const x=e.getBoundingClientRect();return {left:x.left,right:x.right,top:x.top,bottom:x.bottom,width:x.width}};return {doc:document.documentElement.scrollWidth,box:r(box),input:r(input),copy:r(copy),hide:r(hide)}})()")
+            assert wizard_layout["doc"] <= width and wizard_layout["box"]["width"] <= width, f"wizard secret box overflows at {width}px: {wizard_layout}"
+            for a,b in (("input","copy"),("copy","hide")):
+                x,y=wizard_layout[a],wizard_layout[b]
+                overlap=min(x["right"],y["right"])-max(x["left"],y["left"])>1 and min(x["bottom"],y["bottom"])-max(x["top"],y["top"])>1
+                assert not overlap, f"wizard secret controls overlap at {width}px ({a}/{b}): {wizard_layout}"
+        page_command("Emulation.setDeviceMetricsOverride", {"width": 1280, "height": 1000, "deviceScaleFactor": 1, "mobile": False})
+        # Refresh must warn and leave an un-copied secret intact when the user cancels.
+        evaluate("window.__refreshConfirmCalls=0;window.confirm=()=>{window.__refreshConfirmCalls++;return false};document.querySelector('#tokenRefresh').click()")
+        assert evaluate("window.__refreshConfirmCalls===1 && !document.querySelector('#wizardNewTokenBox').hidden && document.querySelector('#wizardNewTokenValue').value") == created["secret"], "cancelled refresh did not preserve the un-copied secret"
         evaluate("document.querySelector('#wizardClient').value='mcp';document.querySelector('#wizardClient').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardGenerate').click()")
         config = evaluate("JSON.parse(document.querySelector('#wizardMCPJSON').value)")
         assert config["mcpServers"]["vps-commander"]["type"] == "http" and config["mcpServers"]["vps-commander"]["url"].endswith("/mcp"), f"bad Streamable HTTP config: {config}"
@@ -174,6 +201,35 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok')"), "wizard MCP initialize/tools-list test failed: " + str(evaluate("document.querySelector('#wizardTestResult').textContent"))
         mcp_test_text = evaluate("document.querySelector('#wizardTestResult').textContent")
         assert "initialize + tools/list" in mcp_test_text and "list_devices" in mcp_test_text, f"MCP wizard did not show available tools: {mcp_test_text}"
+        # Clipboard permission is granted through CDP; copied text must match exactly and button text must restore.
+        evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').click()")
+        deadline = time.time() + 5
+        clipboard_text = ""
+        while time.time() < deadline:
+            try: clipboard_text = evaluate("navigator.clipboard.readText()", True)
+            except Exception: pass
+            if clipboard_text == created["secret"]: break
+            time.sleep(.1)
+        assert clipboard_text == created["secret"], f"wizard copy button clipboard mismatch: {clipboard_text!r}"
+        assert evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').textContent") == "已复制", "copy success feedback did not appear"
+        time.sleep(1.6)
+        assert evaluate("document.querySelector('[data-copy=wizardNewTokenValue]').textContent") == "复制", "copy button did not restore its original text"
+        # Every generic copy button must restore its own label, not a hard-coded generic label.
+        for copy_id in ("wizardSchema", "wizardPrompt", "wizardMCPJSON", "wizardCurl", "newTokenValue", "wizardNewTokenValue"):
+            label = evaluate("(()=>{const b=document.querySelector('[data-copy="+json.dumps(copy_id)+"]');const label=b.textContent;b.click();return label})()")
+            time.sleep(1.6)
+            assert evaluate("document.querySelector('[data-copy="+json.dumps(copy_id)+"]').textContent") == label, f"copy button {copy_id} did not restore original label {label!r}"
+        evaluate("window.confirm=()=>true;document.querySelector('#tokenRefresh').click()")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            refreshed = evaluate("({status:document.querySelector('#tokenFormStatus').textContent,box:!document.querySelector('#wizardNewTokenBox').hidden,secret:document.querySelector('#wizardSecret').value})")
+            if refreshed["status"].startswith("已刷新 "): break
+            time.sleep(.1)
+        assert refreshed["status"].startswith("已刷新 ") and len(refreshed["status"].split()) == 2, f"refresh status missing timestamp: {refreshed}"
+        assert not refreshed["box"] and refreshed["secret"] == "", f"refresh did not clear the wizard-created secret: {refreshed}"
+        assert not evaluate("document.body.innerHTML.includes("+json.dumps(created["secret"])+") || [...document.querySelectorAll('input')].some(x=>x.value.includes("+json.dumps(created["secret"])+"))"), "full token remained in DOM after refresh"
+        assert not evaluate("location.hash.includes("+json.dumps(created["secret"])+") || Object.keys(localStorage).some(k=>String(localStorage.getItem(k)).includes("+json.dumps(created["secret"])+")) || window.__capturedConsole.some(s=>s.includes("+json.dumps(created["secret"])+"))"), "cleared token remains in hash/localStorage/console"
+        assert evaluate("[...document.querySelectorAll('#tokens tr')].some(r=>r.textContent.includes('layout-wizard-token'))"), "token table was not refreshed"
         token = created["secret"]
         # Verify the wizard can also create an operational token with the requested scopes.
         evaluate("document.querySelector('#wizardTokenTemplate').value='ops';document.querySelector('#wizardNewTokenName').value='layout-wizard-ops-token';document.querySelector('#wizardCreateToken').click()")
@@ -190,7 +246,8 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert "result" in json.loads(streamable.stdout), f"Streamable HTTP initialize failed: {streamable.stdout[:300]}"
         sse = subprocess.run(["curl","-sS","--max-time","1",base+"/mcp/sse","-H",f"Authorization: Bearer {token}"],capture_output=True,text=True,timeout=4)
         assert "event: endpoint" in sse.stdout and "/mcp/message?sessionId=" in sse.stdout, f"SSE endpoint failed: {sse.stdout[:300]}"
-        print("PASS tab switching/hash reload, token templates/admin confirmation, wizard connectivity, generated MCP config, curl REST, Streamable HTTP initialize, and SSE endpoint")
+        assert evaluate("[...document.querySelectorAll('[data-copy]')].every(b=>b.dataset.originalText===undefined || b.textContent===b.dataset.originalText)"), "some data-copy button did not restore its original text"
+        print("PASS token one-time secret boxes, CDP clipboard copy/restore, cancelled and successful refresh clearing, responsive layout, wizard connectivity, generated MCP config, REST, Streamable HTTP, and SSE")
         # Device dashboard defaults to a collapsed summary and persists expansion.
         evaluate("document.querySelector('[data-tab=devices]').click()")
         deadline = time.time() + 10
@@ -215,14 +272,39 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         while time.time() < deadline:
             if evaluate("document.querySelector('#tokenDevices input')"): break
             time.sleep(.1)
-        device_name = evaluate("document.querySelector('#tokenDevices input').value")
-        evaluate("(()=>{document.querySelector('#tokenName').value='layout-ops-token';document.querySelector('#tokenNote').value='temporary end-to-end acceptance';const t=document.querySelector('#tokenTemplate');t.value='ops';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelectorAll('#tokenDevices input').forEach((e,i)=>e.checked=i===0);document.querySelector('#tokenCreate').click()})()")
+        device_name = evaluate("fetch('/panel/api/devices').then(r=>r.json()).then(ds=>ds.find(d=>d.is_local)?.name||document.querySelector('#tokenDevices input').value)", True)
+        assert evaluate("[...document.querySelectorAll('#tokenDevices input')].some(e=>e.value==="+json.dumps(device_name)+")"), f"local test device missing from whitelist options: {device_name}"
+        evaluate("(()=>{document.querySelector('#tokenName').value='layout-ops-token';document.querySelector('#tokenNote').value='temporary end-to-end acceptance';const t=document.querySelector('#tokenTemplate');t.value='ops';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelectorAll('#tokenDevices input').forEach(e=>e.checked=e.value==="+json.dumps(device_name)+");document.querySelector('#tokenCreate').click()})()")
         deadline = time.time() + 12
         while time.time() < deadline:
             ops_secret = evaluate("document.querySelector('#wizardSecret').value")
             if ops_secret.startswith("vpc_") and "layout-ops-token" in evaluate("document.querySelector('#wizardToken').selectedOptions[0]?.textContent||''"): break
             time.sleep(.1)
         assert ops_secret.startswith("vpc_"), "ops token was not created from the token form"
+        assert evaluate("!document.querySelector('#newTokenBox').hidden && document.querySelector('#newTokenValue').value") == ops_secret, "token-form secret box is hidden or does not contain the API token"
+        for width in (1280, 390, 320):
+            page_command("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000, "deviceScaleFactor": 1, "mobile": width <= 450})
+            time.sleep(.15)
+            secret_layout=evaluate("(()=>{const box=document.querySelector('#newTokenBox'),input=document.querySelector('#newTokenValue'),copy=document.querySelector('[data-copy=newTokenValue]'),hide=document.querySelector('#hideNewToken'),r=e=>{const x=e.getBoundingClientRect();return {left:x.left,right:x.right,top:x.top,bottom:x.bottom,width:x.width}};return {viewport:innerWidth,doc:document.documentElement.scrollWidth,box:r(box),input:r(input),copy:r(copy),hide:r(hide)}})()")
+            assert secret_layout["doc"] <= width and secret_layout["box"]["width"] <= width, f"secret box overflows at {width}px: {secret_layout}"
+            for a,b in (("input","copy"),("copy","hide")):
+                x,y=secret_layout[a],secret_layout[b]
+                overlap=min(x["right"],y["right"])-max(x["left"],y["left"])>1 and min(x["bottom"],y["bottom"])-max(x["top"],y["top"])>1
+                assert not overlap, f"secret box controls overlap at {width}px ({a}/{b}): {secret_layout}"
+        page_command("Emulation.setDeviceMetricsOverride", {"width": 1280, "height": 1000, "deviceScaleFactor": 1, "mobile": False})
+        evaluate("document.querySelector('[data-copy=newTokenValue]').click()")
+        deadline=time.time()+5
+        manager_clipboard=""
+        while time.time()<deadline:
+            try: manager_clipboard=evaluate("navigator.clipboard.readText()",True)
+            except Exception: pass
+            if manager_clipboard==ops_secret: break
+            time.sleep(.1)
+        assert manager_clipboard==ops_secret, "token-form copy button did not copy the exact key"
+        time.sleep(1.6)
+        assert evaluate("document.querySelector('[data-copy=newTokenValue]').textContent") == "复制", "token-form copy button did not restore its original label"
+        evaluate("document.querySelector('#hideNewToken').click()")
+        assert evaluate("document.querySelector('#newTokenBox').hidden && document.querySelector('#newTokenValue').value==='' && document.querySelector('#wizardSecret').value===''"), "hide-saved-secret did not clear the manager and wizard fields"
         ops_info=evaluate("(()=>{const t=auditTokens.find(t=>t.name==='layout-ops-token');return {devices:t?.devices,scopes:t?.scopes,name:t?.name}})()")
         assert device_name in (ops_info.get("devices") or []), f"ops token whitelist was not saved: selected={device_name} token={ops_info}"
         policy_status=evaluate("fetch('/panel/api/security/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global:'high'})}).then(r=>r.status)",True)
