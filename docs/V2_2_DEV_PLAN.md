@@ -222,6 +222,13 @@ docs/api.md               由 /openapi.json 生成
 docs/archive/             现有带日期的评审/交接文档全部移入
 ```
 
+### D 运维文档补充：执行器后台进程边界
+
+- 会话通过 `cmd.WaitDelay = 2s` 限制后台子进程继承 stdout/stderr 管道导致的等待。若 shell 退出时仍有后台子进程持有管道，会话完成最多额外等待约 2 秒；超过该等待窗口后，后台子进程的后续输出不保证被会话捕获。
+- 运维文档必须明确：**需要长期运行的后台命令应自行重定向 stdout/stderr**，例如 `nohup command > /var/log/command.log 2>&1 < /dev/null &`；不要依赖已结束会话继续收集后台进程输出。
+- 退出码以 shell 的 `ProcessState.ExitCode()` 为准；单纯因 `WaitDelay` 到期而产生的 `exec.ErrWaitDelay` 不应将 shell 的成功退出误记为失败。
+- 工程遗留（低风险）：会话结束后再次调用 `Kill()` 仍可能尝试向原进程组发送信号。后续可增加“会话已结束则跳过”的保护，降低进程组成员退出后 PID/PGID 被复用时误发信号的理论风险；当前不作为本阶段阻塞项。
+
 ### D 部署安全说明
 
 - 生产反代后开启 `VPS_COMMANDER_TRUST_PROXY=on` 前，必须确认反代会覆盖客户端提供的 `X-Real-IP`，例如 Nginx 使用 `proxy_set_header X-Real-IP $remote_addr;`；否则该请求头可能被客户端伪造，不得直接信任。
