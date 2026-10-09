@@ -14,9 +14,10 @@ VPS-Commander 当前提供两种 MCP 接入模式：
 当前 MCP Server：
 - JSON-RPC 2.0。
 - server version：`1.2.0`。
-- initialize protocolVersion：`2024-11-05`。
+- 旧 SSE initialize protocolVersion：`2024-11-05`。
+- Streamable HTTP initialize 支持 `2025-03-26`。
 
-当前远程 SSE 属于兼容 transport；后续新能力优先考虑 Streamable HTTP。
+新客户端优先使用 Streamable HTTP；旧 SSE 继续作为兼容 transport。
 
 ---
 
@@ -97,7 +98,28 @@ Authorization: Bearer <YOUR_API_KEY>
 
 ---
 
-## 五、本地 stdio 模式
+## 五、Streamable HTTP 模式（推荐新客户端）
+
+请求发送到单一端点：
+
+```http
+POST /mcp
+Authorization: Bearer <YOUR_API_KEY>
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"example-client","version":"1.0"}}}
+```
+
+- JSON-RPC 请求通过 `POST /mcp` 发送，响应为 `application/json`。
+- initialize 成功后返回 `Mcp-Session-Id`；后续请求携带该头，服务端会校验会话归属令牌。
+- 响应包含 `Mcp-Protocol-Version`。
+- 通知（没有 `id`）返回 `202 Accepted` 且不带响应正文。
+- 会话空闲 30 分钟后过期；请求体上限为 1 MiB；非 `application/json` 请求返回 `415`。
+
+旧 SSE 会话同样在空闲 30 分钟后自动关闭。向 SSE 会话发送响应时，队列满最多等待 5 秒；超时将关闭会话并返回 `503`，不再静默丢消息。
+
+## 六、本地 stdio 模式
 
 适用于 Claude Desktop、Cursor、VS Code 等本地客户端。
 
@@ -119,7 +141,7 @@ API Key 不应提交到 Git 仓库。
 
 ---
 
-## 六、主要工具参数
+## 七、主要工具参数
 
 ### 6.1 exec_command
 - `device`：目标节点，可选。
@@ -169,7 +191,7 @@ API Key 不应提交到 Git 仓库。
 
 ---
 
-## 七、一键安装与升级
+## 八、一键安装与升级
 
 ### 7.1 一键安装
 
@@ -193,7 +215,7 @@ curl -fsSL https://raw.githubusercontent.com/kyaring/vps-commander/main/deploy/u
 
 ---
 
-## 八、Agent MCP
+## 九、Agent MCP
 
 Hub 可以发现远程 Agent 暴露的 MCP Service。
 
@@ -213,7 +235,7 @@ Agent MCP Service
 
 ---
 
-## 八、后续演进
+## 十、后续演进
 
 1. Streamable HTTP。
 2. 保留 SSE fallback。

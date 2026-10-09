@@ -126,6 +126,7 @@ func main() {
 
 	// MCP Endpoints
 	// Flexible Auth: allows optional token on SSE connect, but enforces token on Message calls
+	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleStreamableHTTP)))
 	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleSSE)))
 	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(http.HandlerFunc(mcpServer.HandleMessage)))
 

@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
@@ -103,10 +105,49 @@ type SecurityGate interface {
 	AuthorizeMCP(ctx context.Context, device, action, clientIP string) error
 }
 
+const (
+	sseSessionIdleTimeout = 30 * time.Minute
+	sseOutboundQueueWait  = 5 * time.Second
+)
+
 type session struct {
 	ch           chan []byte
+	done         chan struct{}
 	ownerTokenID string
-	closeOnce    *sync.Once
+	closeOnce    sync.Once
+	lastActivity atomic.Int64
+}
+
+func newSession(ownerTokenID string) *session {
+	sess := &session{
+		ch:           make(chan []byte, 64),
+		done:         make(chan struct{}),
+		ownerTokenID: ownerTokenID,
+	}
+	sess.touch()
+	return sess
+}
+
+func (sess *session) touch() {
+	sess.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (sess *session) idleFor() time.Duration {
+	last := sess.lastActivity.Load()
+	if last == 0 {
+		return time.Duration(1<<63 - 1)
+	}
+	return time.Since(time.Unix(0, last))
+}
+
+func (sess *session) close() {
+	sess.closeOnce.Do(func() { close(sess.done) })
+}
+
+type streamSession struct {
+	ownerTokenID    string
+	protocolVersion string
+	lastActivity    time.Time
 }
 
 type Server struct {
@@ -114,16 +155,18 @@ type Server struct {
 	Auth      *auth.Manager
 	LocalName string
 
-	mu       sync.RWMutex
-	sessions map[string]session
+	mu             sync.RWMutex
+	sessions       map[string]*session
+	streamSessions map[string]streamSession
 }
 
 func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 	return &Server{
-		Backend:   backend,
-		Auth:      authMgr,
-		LocalName: "local",
-		sessions:  make(map[string]session),
+		Backend:        backend,
+		Auth:           authMgr,
+		LocalName:      "local",
+		sessions:       make(map[string]*session),
+		streamSessions: make(map[string]streamSession),
 	}
 }
 
@@ -133,15 +176,27 @@ func (s *Server) SetLocalName(name string) {
 	}
 }
 
+func (s *Server) removeSession(sessionID string, expected *session) {
+	s.mu.Lock()
+	if current, ok := s.sessions[sessionID]; ok && (expected == nil || current == expected) {
+		delete(s.sessions, sessionID)
+		current.close()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Server) CloseSessionsForToken(tokenID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, sess := range s.sessions {
 		if sess.ownerTokenID == tokenID {
-			if sess.closeOnce != nil {
-				sess.closeOnce.Do(func() { close(sess.ch) })
-			}
 			delete(s.sessions, id)
+			sess.close()
+		}
+	}
+	for id, sess := range s.streamSessions {
+		if sess.ownerTokenID == tokenID {
+			delete(s.streamSessions, id)
 		}
 	}
 }
@@ -152,7 +207,7 @@ func (s *Server) newSessionID() string {
 	return hex.EncodeToString(b)
 }
 
-// SSE Handler: GET /mcp/sse
+// SSE Handler: GET /mcp/sse (legacy compatibility transport).
 func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -164,16 +219,14 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-
-	sessionID := s.newSessionID()
-	msgCh := make(chan []byte, 64)
-	closeOnce := &sync.Once{}
 	p, ok := auth.PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	sessionID := s.newSessionID()
+	sess := newSession(p.TokenID)
 	s.mu.Lock()
 	if len(s.sessions) >= 500 {
 		s.mu.Unlock()
@@ -182,8 +235,8 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.MaxSessions > 0 && p.TokenID != "" {
 		count := 0
-		for _, sess := range s.sessions {
-			if sess.ownerTokenID == p.TokenID {
+		for _, current := range s.sessions {
+			if current.ownerTokenID == p.TokenID {
 				count++
 			}
 		}
@@ -193,48 +246,44 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.sessions[sessionID] = session{ch: msgCh, ownerTokenID: p.TokenID, closeOnce: closeOnce}
+	s.sessions[sessionID] = sess
 	s.mu.Unlock()
-
-	defer func() {
-		s.mu.Lock()
-		delete(s.sessions, sessionID)
-		closeOnce.Do(func() { close(msgCh) })
-		s.mu.Unlock()
-	}()
+	defer s.removeSession(sessionID, sess)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Endpoint event telling client where to send POST messages
 	endpointURI := fmt.Sprintf("/mcp/message?sessionId=%s", sessionID)
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURI)
 	flusher.Flush()
 
-	notify := r.Context().Done()
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
-
 	for {
 		select {
-		case <-notify:
+		case <-r.Context().Done():
 			return
-		case msg, ok := <-msgCh:
-			if !ok {
-				return
-			}
+		case <-sess.done:
+			return
+		case msg := <-sess.ch:
 			fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(msg))
 			flusher.Flush()
 		case <-ticker.C:
+			if sess.idleFor() >= sseSessionIdleTimeout {
+				s.removeSession(sessionID, sess)
+				return
+			}
 			fmt.Fprintf(w, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}
 }
 
-// Message Handler: POST /mcp/message
+// HandleMessage is the legacy POST /mcp/message endpoint. A full outbound
+// queue is never silently ignored: the sender gets up to five seconds, after
+// which the affected SSE session is closed and the request fails explicitly.
 func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -251,45 +300,188 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session owner mismatch", http.StatusForbidden)
 			return
 		}
+		sess.touch()
 	}
 
+	resp, ok := s.decodeAndHandleRequest(w, r)
+	if !ok {
+		return
+	}
+	respBytes, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "failed to encode JSON-RPC response", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		timer := time.NewTimer(sseOutboundQueueWait)
+		defer timer.Stop()
+		select {
+		case sess.ch <- respBytes:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("accepted"))
+		case <-sess.done:
+			http.Error(w, "MCP SSE session is closed", http.StatusGone)
+		case <-timer.C:
+			s.removeSession(sessionID, sess)
+			http.Error(w, "MCP SSE outbound queue remained full for 5 seconds; session closed", http.StatusServiceUnavailable)
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(respBytes)
+}
+
+func (s *Server) decodeAndHandleRequest(w http.ResponseWriter, r *http.Request) (JSONRPCResponse, bool) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024))
 	if err != nil {
 		http.Error(w, "read error", http.StatusBadRequest)
+		return JSONRPCResponse{}, false
+	}
+	var req JSONRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || req.Method == "" {
+		http.Error(w, "invalid json-rpc", http.StatusBadRequest)
+		return JSONRPCResponse{}, false
+	}
+	return s.handleRequest(r.Context(), r, req), true
+}
+
+// HandleStreamableHTTP implements MCP Streamable HTTP using ordinary JSON
+// responses. Session IDs are optional: clients can use stateless requests, or
+// retain the ID returned by initialize to bind later requests to the same token.
+func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	p, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+	accept := r.Header.Get("Accept")
+	if accept != "" && !strings.Contains(accept, "application/json") && !strings.Contains(accept, "*/*") {
+		http.Error(w, "Accept must allow application/json", http.StatusNotAcceptable)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024))
+	if err != nil {
+		http.Error(w, "request body too large or unreadable", http.StatusBadRequest)
+		return
+	}
+	var req JSONRPCRequest
+	if err := json.Unmarshal(body, &req); err != nil || req.JSONRPC != "2.0" || strings.TrimSpace(req.Method) == "" {
+		http.Error(w, "invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
 
-	var req JSONRPCRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		http.Error(w, "invalid json-rpc", http.StatusBadRequest)
-		return
+	clientSessionID := strings.TrimSpace(r.Header.Get("Mcp-Session-Id"))
+	protocolVersion := "2025-03-26"
+	if clientSessionID != "" {
+		s.mu.Lock()
+		stored, exists := s.streamSessions[clientSessionID]
+		if exists && time.Since(stored.lastActivity) > sseSessionIdleTimeout {
+			delete(s.streamSessions, clientSessionID)
+			exists = false
+		}
+		if !exists {
+			s.mu.Unlock()
+			http.Error(w, "unknown or expired MCP session", http.StatusNotFound)
+			return
+		}
+		if stored.ownerTokenID != "" && stored.ownerTokenID != p.TokenID {
+			s.mu.Unlock()
+			http.Error(w, "session owner mismatch", http.StatusForbidden)
+			return
+		}
+		stored.lastActivity = time.Now()
+		if stored.protocolVersion != "" {
+			protocolVersion = stored.protocolVersion
+		}
+		s.streamSessions[clientSessionID] = stored
+		s.mu.Unlock()
 	}
 
 	resp := s.handleRequest(r.Context(), r, req)
-
-	// If session exists, push response via SSE; otherwise reply directly via HTTP
-	respBytes, _ := json.Marshal(resp)
-	if exists && sess.ch != nil {
-		select {
-		case sess.ch <- respBytes:
-		default:
+	if req.Method == "initialize" {
+		if result, ok := resp.Result.(map[string]any); ok {
+			if v, ok := result["protocolVersion"].(string); ok && v != "" {
+				protocolVersion = v
+			}
 		}
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte("accepted"))
-	} else {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(respBytes)
+		if req.ID == nil {
+			http.Error(w, "initialize must be a JSON-RPC request", http.StatusBadRequest)
+			return
+		}
+		if clientSessionID == "" {
+			now := time.Now()
+			s.mu.Lock()
+			for id, stored := range s.streamSessions {
+				if now.Sub(stored.lastActivity) >= sseSessionIdleTimeout {
+					delete(s.streamSessions, id)
+				}
+			}
+			if len(s.streamSessions) >= 500 {
+				s.mu.Unlock()
+				http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
+				return
+			}
+			if p.MaxSessions > 0 && p.TokenID != "" {
+				count := 0
+				for _, stored := range s.streamSessions {
+					if stored.ownerTokenID == p.TokenID {
+						count++
+					}
+				}
+				if count >= p.MaxSessions {
+					s.mu.Unlock()
+					http.Error(w, "token MCP session limit reached", http.StatusTooManyRequests)
+					return
+				}
+			}
+			clientSessionID = s.newSessionID()
+			s.streamSessions[clientSessionID] = streamSession{ownerTokenID: p.TokenID, protocolVersion: protocolVersion, lastActivity: now}
+			s.mu.Unlock()
+		}
+		w.Header().Set("Mcp-Session-Id", clientSessionID)
 	}
+	w.Header().Set("Mcp-Protocol-Version", protocolVersion)
+	if req.ID == nil {
+		// JSON-RPC notifications have no response body.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	responseBody, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "failed to encode JSON-RPC response", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(responseBody)
 }
 
 func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPCRequest) JSONRPCResponse {
 	switch req.Method {
 	case "initialize":
+		protocolVersion := "2024-11-05"
+		var initParams struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		if json.Unmarshal(req.Params, &initParams) == nil && initParams.ProtocolVersion == "2025-03-26" {
+			protocolVersion = initParams.ProtocolVersion
+		}
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]any{
-				"protocolVersion": "2024-11-05",
+				"protocolVersion": protocolVersion,
 				"serverInfo": map[string]string{
 					"name":    "vps-commander",
 					"version": "1.2.0",

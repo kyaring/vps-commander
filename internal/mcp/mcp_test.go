@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
 )
@@ -263,5 +264,150 @@ func TestMCPListAgentUsesReadGate(t *testing.T) {
 	result, ok := resp.Result.(CallToolResult)
 	if !ok || !result.IsError || !strings.Contains(result.Content[0].Text, "denied read") {
 		t.Fatalf("expected MCP list denial, got %#v", resp)
+	}
+}
+
+func TestStreamableHTTPInitializeAndNotification(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	principal := auth.Principal{Type: "api_token", TokenID: "streamable-test", Scopes: map[string]bool{"files:read": true}}
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test-client","version":"1"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(initBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), principal))
+	w := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("initialize status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	var resp JSONRPCResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode initialize response: %v", err)
+	}
+	result, ok := resp.Result.(map[string]any)
+	if !ok || result["protocolVersion"] != "2025-03-26" {
+		t.Fatalf("initialize protocol version = %#v, want 2025-03-26", resp.Result)
+	}
+
+	notify := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	notify.Header.Set("Content-Type", "application/json")
+	notify.Header.Set("Accept", "application/json, text/event-stream")
+	notify = notify.WithContext(auth.WithPrincipal(notify.Context(), principal))
+	nw := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(nw, notify)
+	if nw.Code != http.StatusAccepted || nw.Body.Len() != 0 {
+		t.Fatalf("notification response = status %d body %q, want 202 with empty body", nw.Code, nw.Body.String())
+	}
+}
+
+func TestStreamableHTTPRejectsWrongContentType(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "t"}))
+	w := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(w, req)
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want 415", w.Code)
+	}
+}
+
+func TestSSESessionIdleDeadlineAndQueueFullClosesSession(t *testing.T) {
+	sess := newSession("token-a")
+	sess.lastActivity.Store(time.Now().Add(-31 * time.Minute).UnixNano())
+	if sess.idleFor() < sseSessionIdleTimeout {
+		t.Fatalf("session idle for %s, want at least %s", sess.idleFor(), sseSessionIdleTimeout)
+	}
+
+	srv := NewServer(&mockBackend{}, nil)
+	sessionID := "full-queue-session"
+	sess = newSession("token-a")
+	for i := 0; i < cap(sess.ch); i++ {
+		sess.ch <- []byte(`queued`)
+	}
+	srv.mu.Lock()
+	srv.sessions[sessionID] = sess
+	srv.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/message?sessionId="+sessionID, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "token-a"}))
+	w := httptest.NewRecorder()
+	srv.HandleMessage(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("full queue status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+	select {
+	case <-sess.done:
+	default:
+		t.Fatal("session was not closed after outbound queue timeout")
+	}
+	srv.mu.RLock()
+	_, exists := srv.sessions[sessionID]
+	srv.mu.RUnlock()
+	if exists {
+		t.Fatal("timed-out session remained registered")
+	}
+}
+
+func TestStreamableHTTPSessionOptionalAndTokenBound(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	principal := auth.Principal{Type: "api_token", TokenID: "streamable-owner", Scopes: map[string]bool{"devices:read": true}}
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(initBody))
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq = initReq.WithContext(auth.WithPrincipal(initReq.Context(), principal))
+	initW := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(initW, initReq)
+	if initW.Code != http.StatusOK {
+		t.Fatalf("initialize status = %d: %s", initW.Code, initW.Body.String())
+	}
+	sessionID := initW.Header().Get("Mcp-Session-Id")
+	if sessionID == "" {
+		t.Fatal("initialize did not return optional Mcp-Session-Id")
+	}
+
+	listBody := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
+	listReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody))
+	listReq.Header.Set("Content-Type", "application/json")
+	listReq.Header.Set("Mcp-Session-Id", sessionID)
+	listReq = listReq.WithContext(auth.WithPrincipal(listReq.Context(), principal))
+	listW := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("same-token session request status = %d: %s", listW.Code, listW.Body.String())
+	}
+
+	other := auth.Principal{Type: "api_token", TokenID: "different-token", Scopes: map[string]bool{"devices:read": true}}
+	crossReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody))
+	crossReq.Header.Set("Content-Type", "application/json")
+	crossReq.Header.Set("Mcp-Session-Id", sessionID)
+	crossReq = crossReq.WithContext(auth.WithPrincipal(crossReq.Context(), other))
+	crossW := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(crossW, crossReq)
+	if crossW.Code != http.StatusForbidden {
+		t.Fatalf("cross-token session status = %d, want 403", crossW.Code)
+	}
+
+	statelessReq := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(listBody))
+	statelessReq.Header.Set("Content-Type", "application/json")
+	statelessReq = statelessReq.WithContext(auth.WithPrincipal(statelessReq.Context(), principal))
+	statelessW := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(statelessW, statelessReq)
+	if statelessW.Code != http.StatusOK {
+		t.Fatalf("stateless request status = %d: %s", statelessW.Code, statelessW.Body.String())
+	}
+}
+
+func TestStreamableHTTPRequiresPrincipal(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
 	}
 }
