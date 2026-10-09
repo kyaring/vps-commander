@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	_ "modernc.org/sqlite"
 	"os"
@@ -13,19 +14,22 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Store struct {
 	DB *sql.DB
 
-	auditMu        sync.Mutex
-	auditWriteMu   sync.Mutex
-	auditQueue     chan auditQueueItem
-	auditStop      chan struct{}
-	auditDone      chan struct{}
-	auditClosed    bool
-	auditCloseOnce sync.Once
+	auditMu            sync.Mutex
+	auditWriteMu       sync.Mutex
+	auditQueue         chan auditQueueItem
+	auditStop          chan struct{}
+	auditDone          chan struct{}
+	auditClosed        bool
+	auditCloseOnce     sync.Once
+	auditFallbackCount atomic.Uint64
+	auditCloseErr      error
 }
 
 type auditQueueItem struct {
@@ -34,9 +38,11 @@ type auditQueueItem struct {
 }
 
 const (
-	auditQueueCapacity = 1024
-	auditBatchSize     = 100
-	auditFlushInterval = 500 * time.Millisecond
+	auditQueueCapacity   = 1024
+	auditBatchSize       = 100
+	auditFlushInterval   = 500 * time.Millisecond
+	auditWriteAttempts   = 3
+	auditShutdownTimeout = 20 * time.Second
 )
 
 func Open(path string) (*Store, error) {
@@ -383,6 +389,7 @@ func (s *Store) migrateAudit() error {
 }
 
 type AuditEntry struct {
+	Timestamp  int64 `json:"timestamp"`
 	CallerIP   string
 	Device     string
 	Action     string
@@ -434,6 +441,9 @@ func redactAudit(v string) string {
 	return v
 }
 func normalizeAuditEntry(e AuditEntry) AuditEntry {
+	if e.Timestamp == 0 {
+		e.Timestamp = time.Now().Unix()
+	}
 	if e.ActorName == "" {
 		e.ActorName = "unknown(legacy)"
 	}
@@ -458,11 +468,18 @@ func normalizeAuditEntry(e AuditEntry) AuditEntry {
 }
 
 func (s *Store) AuditEntry(e AuditEntry) error {
+	if e.Timestamp == 0 {
+		e.Timestamp = time.Now().Unix()
+	}
 	e = normalizeAuditEntry(e)
 	s.auditMu.Lock()
 	if s.auditClosed {
 		s.auditMu.Unlock()
-		return s.writeAuditEntry(e)
+		err := s.writeAuditEntry(e)
+		if err != nil {
+			s.writeAuditFallback(e, err)
+		}
+		return err
 	}
 	if s.auditQueue == nil {
 		s.auditQueue = make(chan auditQueueItem, auditQueueCapacity)
@@ -477,6 +494,9 @@ func (s *Store) AuditEntry(e AuditEntry) error {
 	default:
 		log.Printf("WARN audit queue full (capacity=%d); synchronously writing action=%q device=%q", auditQueueCapacity, e.Action, e.Device)
 		err := s.writeAuditEntry(e)
+		if err != nil {
+			s.writeAuditFallback(e, err)
+		}
 		s.auditMu.Unlock()
 		return err
 	}
@@ -486,7 +506,7 @@ func (s *Store) writeAuditEntry(e AuditEntry) error {
 	s.auditWriteMu.Lock()
 	defer s.auditWriteMu.Unlock()
 	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		time.Now().Unix(), e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
+		e.Timestamp, e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
 		e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID)
 	return err
 }
@@ -507,7 +527,7 @@ func (s *Store) writeAuditBatch(entries []AuditEntry) error {
 		return err
 	}
 	for _, e := range entries {
-		if _, err = stmt.Exec(time.Now().Unix(), e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
+		if _, err = stmt.Exec(e.Timestamp, e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
 			e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID); err != nil {
 			break
 		}
@@ -520,36 +540,68 @@ func (s *Store) writeAuditBatch(entries []AuditEntry) error {
 	return tx.Commit()
 }
 
+func (s *Store) writeAuditFallback(e AuditEntry, cause error) {
+	payload := struct {
+		Type      string     `json:"type"`
+		Timestamp int64      `json:"timestamp"`
+		Entry     AuditEntry `json:"entry"`
+		Error     string     `json:"persistence_error"`
+	}{Type: "vps_commander_audit_fallback", Timestamp: e.Timestamp, Entry: e, Error: cause.Error()}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("CRITICAL audit fallback JSON encode failed; timestamp=%d action=%q device=%q persistence_error=%q encode_error=%q", e.Timestamp, e.Action, e.Device, cause, err)
+		s.auditFallbackCount.Add(1)
+		return
+	}
+	if _, err := fmt.Fprintln(os.Stderr, string(b)); err != nil {
+		log.Printf("CRITICAL audit fallback stderr write failed; timestamp=%d action=%q device=%q persistence_error=%q stderr_error=%q", e.Timestamp, e.Action, e.Device, cause, err)
+	}
+	s.auditFallbackCount.Add(1)
+}
+
+// AuditFallbackCount reports the number of audit entries diverted to stderr after DB failure.
+func (s *Store) AuditFallbackCount() uint64 { return s.auditFallbackCount.Load() }
+
 func (s *Store) auditWriter(queue <-chan auditQueueItem, stop <-chan struct{}, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(auditFlushInterval)
 	defer ticker.Stop()
 	batch := make([]AuditEntry, 0, auditBatchSize)
-	flush := func() {
+	flush := func() error {
 		if len(batch) == 0 {
-			return
+			return nil
 		}
 		entries := append([]AuditEntry(nil), batch...)
-		if err := s.writeAuditBatch(entries); err != nil {
-			log.Printf("ERROR audit batch write failed (%d entries): %v; retrying without dropping entries", len(entries), err)
-			for _, entry := range entries {
-				for {
-					if err := s.writeAuditEntry(entry); err == nil {
-						break
-					}
-					log.Printf("ERROR audit write retry failed action=%q device=%q: %v", entry.Action, entry.Device, err)
-					time.Sleep(auditFlushInterval)
+		var err error
+		for attempt := 1; attempt <= auditWriteAttempts; attempt++ {
+			err = s.writeAuditBatch(entries)
+			if err == nil {
+				break
+			}
+			log.Printf("ERROR audit batch write attempt %d/%d failed (%d entries): %v", attempt, auditWriteAttempts, len(entries), err)
+			if attempt < auditWriteAttempts {
+				select {
+				case <-stop:
+					// During shutdown, do not spend the remaining retry budget on a failing DB.
+					attempt = auditWriteAttempts
+				default:
+					time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
 				}
 			}
 		}
+		if err != nil {
+			for _, entry := range entries {
+				s.writeAuditFallback(entry, err)
+			}
+		}
 		batch = batch[:0]
+		return err
 	}
 	for {
 		select {
 		case item := <-queue:
 			if item.barrier != nil {
-				flush()
-				item.barrier <- nil
+				item.barrier <- flush()
 				continue
 			}
 			batch = append(batch, item.entry)
@@ -563,8 +615,7 @@ func (s *Store) auditWriter(queue <-chan auditQueueItem, stop <-chan struct{}, d
 				select {
 				case item := <-queue:
 					if item.barrier != nil {
-						flush()
-						item.barrier <- nil
+						item.barrier <- flush()
 					} else {
 						batch = append(batch, item.entry)
 						if len(batch) >= auditBatchSize {
@@ -580,28 +631,47 @@ func (s *Store) auditWriter(queue <-chan auditQueueItem, stop <-chan struct{}, d
 	}
 }
 
-// FlushAudits waits until all audit entries accepted before the barrier are persisted.
+// FlushAudits waits for a queue barrier, but never blocks indefinitely.
 func (s *Store) FlushAudits() error {
 	s.auditMu.Lock()
 	if s.auditClosed {
 		done := s.auditDone
 		s.auditMu.Unlock()
-		if done != nil {
-			<-done
+		if done == nil {
+			return nil
 		}
-		return nil
+		select {
+		case <-done:
+			s.auditMu.Lock()
+			err := s.auditCloseErr
+			s.auditMu.Unlock()
+			return err
+		case <-time.After(auditShutdownTimeout):
+			return fmt.Errorf("timed out waiting for audit writer")
+		}
 	}
 	if s.auditQueue == nil {
 		s.auditMu.Unlock()
 		return nil
 	}
 	ack := make(chan error, 1)
-	s.auditQueue <- auditQueueItem{barrier: ack}
-	s.auditMu.Unlock()
-	return <-ack
+	select {
+	case s.auditQueue <- auditQueueItem{barrier: ack}:
+		s.auditMu.Unlock()
+	case <-time.After(auditShutdownTimeout):
+		s.auditMu.Unlock()
+		return fmt.Errorf("timed out queueing audit flush barrier")
+	}
+	select {
+	case err := <-ack:
+		return err
+	case <-time.After(auditShutdownTimeout):
+		return fmt.Errorf("timed out waiting for audit flush")
+	}
 }
 
-// Close stops the audit writer after it has persisted all queued entries.
+// Close stops the audit writer with a bounded wait. If it cannot stop in time,
+// the DB remains open so the writer is not raced by database closure.
 func (s *Store) Close() error {
 	s.auditCloseOnce.Do(func() {
 		s.auditMu.Lock()
@@ -612,10 +682,26 @@ func (s *Store) Close() error {
 		}
 		s.auditMu.Unlock()
 		if done != nil {
-			<-done
+			select {
+			case <-done:
+			case <-time.After(auditShutdownTimeout):
+				s.auditMu.Lock()
+				s.auditCloseErr = fmt.Errorf("timed out after %s waiting for audit writer; database left open to avoid racing the writer", auditShutdownTimeout)
+				err := s.auditCloseErr
+				s.auditMu.Unlock()
+				log.Printf("CRITICAL %v", err)
+				return
+			}
 		}
+		err := s.DB.Close()
+		s.auditMu.Lock()
+		s.auditCloseErr = err
+		s.auditMu.Unlock()
 	})
-	return s.DB.Close()
+	s.auditMu.Lock()
+	err := s.auditCloseErr
+	s.auditMu.Unlock()
+	return err
 }
 
 func (s *Store) Audit(ip, device, action, command string, code int, ms int64, msg string) error {

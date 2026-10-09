@@ -236,3 +236,47 @@ func TestAuditQueueFullFallsBackToSynchronousWrite(t *testing.T) {
 		t.Fatalf("queue-full path lost audits: got %d rows, want %d", count, auditQueueCapacity+auditBatchSize+1)
 	}
 }
+
+func TestAuditTimestampIsCapturedAtEnqueue(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "event-timestamp.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const eventTimestamp int64 = 1700000123
+	if err := s.AuditEntry(AuditEntry{Timestamp: eventTimestamp, Device: "node-a", Action: "timestamp_test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var got int64
+	if err := s.DB.QueryRow("SELECT timestamp FROM audit_logs WHERE action='timestamp_test'").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != eventTimestamp {
+		t.Fatalf("timestamp changed during async write: got %d, want %d", got, eventTimestamp)
+	}
+}
+
+func TestAuditWriteFailureFallsBackWithoutInfiniteRetry(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "audit-fallback.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("DROP TABLE audit_logs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AuditEntry(AuditEntry{Device: "node-a", Action: "fallback_test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FlushAudits(); err == nil {
+		t.Fatal("flush should report persistence failure")
+	}
+	if got := s.AuditFallbackCount(); got != 1 {
+		t.Fatalf("fallback count=%d, want 1", got)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
