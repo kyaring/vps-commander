@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,5 +76,45 @@ func TestCachedHandlerUsesETagAndTwoSecondCache(t *testing.T) {
 	fourth := request("")
 	if fourth.Code != http.StatusOK || calls != 2 {
 		t.Fatalf("expired cache status=%d calls=%d", fourth.Code, calls)
+	}
+}
+
+type tokenPatchTestRunner struct {
+	testRunner
+	method string
+	path   string
+	body   string
+}
+
+func (r *tokenPatchTestRunner) TokenListJSON(http.ResponseWriter, *http.Request)   {}
+func (r *tokenPatchTestRunner) TokenCreateJSON(http.ResponseWriter, *http.Request) {}
+func (r *tokenPatchTestRunner) TokenPatchJSON(w http.ResponseWriter, req *http.Request) {
+	b, _ := io.ReadAll(req.Body)
+	r.method = req.Method
+	r.path = req.URL.Path
+	r.body = string(b)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+func (r *tokenPatchTestRunner) TokenRotateJSON(http.ResponseWriter, *http.Request) {}
+func (r *tokenPatchTestRunner) TokenRevokeJSON(http.ResponseWriter, *http.Request) {}
+func (r *tokenPatchTestRunner) TokenDeleteJSON(http.ResponseWriter, *http.Request) {}
+
+func TestPanelTokenUpdateProxiesExistingPATCHRoute(t *testing.T) {
+	runner := &tokenPatchTestRunner{}
+	p := New("test-password", "admin", runner)
+	p.sessions["valid-session"] = time.Now().Add(time.Hour)
+	req := httptest.NewRequest(http.MethodPatch, "/panel/api/tokens/update?id=token-123", strings.NewReader(`{"scopes":["devices:read","exec"],"devices":["node-a"],"rate_rps":10}`))
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-session"})
+	rec := httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if runner.method != http.MethodPatch || runner.path != "/api/v1/tokens/token-123" {
+		t.Fatalf("proxy method/path=%s %s", runner.method, runner.path)
+	}
+	if !strings.Contains(runner.body, `"exec"`) || !strings.Contains(runner.body, `"node-a"`) {
+		t.Fatalf("body was not preserved: %s", runner.body)
 	}
 }

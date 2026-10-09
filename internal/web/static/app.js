@@ -22,6 +22,7 @@ function esc(v){
   return String(v??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))
 }
 let auditTokens=[];
+let knownTokenDevices=[];
 let auditDeviceOptions=[];
 let auditCursor=0;
 let auditHasMore=false;
@@ -98,12 +99,17 @@ function renderSingleCard(d) {
 
 async function loadDevices(){
   let all = await api("/devices");
+  knownTokenDevices=Array.from(new Set(all.map(d=>d.name).filter(Boolean))).sort();
   auditDeviceOptions=Array.from(new Set(all.map(d=>d.name).filter(Boolean))).sort();
   refreshAuditFilterOptions();
   let ds = all.filter(d => !d.is_local);
   // 严格固定名称字典序排列，杜绝乱跳
   ds.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
 
+  const summary = $("#deviceSummary");
+  const online = ds.filter(d => d.status === "online").length;
+  const offline = ds.filter(d => d.status !== "online").map(d => d.name);
+  if (summary) summary.innerHTML = `<strong>${ds.length} 台</strong>，<strong>${online} 在线</strong>，<strong class="${offline.length ? "offline-names" : ""}">${offline.length} 离线</strong>${offline.length ? ` · <span class="offline-names">${offline.map(esc).join("、")}</span>` : ""}`;
   const container = $("#devices");
   const currentCardElements = container.querySelectorAll(".device-card[data-node]");
   const currentNodes = Array.from(currentCardElements).map(el => el.getAttribute("data-node"));
@@ -134,31 +140,67 @@ async function loadDevices(){
   select.innerHTML = ds.map(d => `<option value="${esc(d.name)}" ${d.status==="offline" ? "disabled" : ""} ${d.name===selectedVal ? "selected" : ""}>${esc(d.name)}${d.status==="offline" ? " [离线]" : ""}</option>`).join("");
 }
 
+let tokenEditingId = "";
+const tokenTemplates = {
+  read:["devices:read","files:read"],
+  ops:["devices:read","files:read","exec","files:write","process","mcp:call"],
+  all:["devices:read","files:read","exec","files:write","process","mcp:call","admin"]
+};
+function selectedTokenScopes(){return [...document.querySelectorAll("[data-token-scope]:checked")].map(x=>x.dataset.tokenScope)}
+function setTokenScopes(scopes){document.querySelectorAll("[data-token-scope]").forEach(x=>x.checked=scopes.includes(x.dataset.tokenScope))}
+function setTokenTemplate(template, confirmAdmin=true){
+  if(template==="all" && confirmAdmin && !confirm("全部权限将包含 admin，可管理令牌、安全策略、MCP 和通知。确定要启用高权限模板吗？")){ $("#tokenTemplate").value="custom"; return false; }
+  if(tokenTemplates[template])setTokenScopes(tokenTemplates[template]);
+  return true;
+}
+$("#tokenTemplate").addEventListener("change",()=>setTokenTemplate($("#tokenTemplate").value));
+document.querySelectorAll("[data-token-scope]").forEach(x=>x.addEventListener("change",()=>{if($("#tokenTemplate").value!=="custom")$("#tokenTemplate").value="custom"}));
+$("[data-token-scope=admin]").addEventListener("change",event=>{if(event.target.checked&&!confirm("admin 是高危权限，允许管理令牌、安全策略、MCP 和通知。确认启用？")){event.target.checked=false;} });
+function resetTokenForm(){
+  tokenEditingId=""; $("#tokenName").value=""; $("#tokenNote").value=""; $("#tokenRate").value="10"; $("#tokenSessions").value="10"; $("#tokenTemplate").value="read"; setTokenScopes(tokenTemplates.read); $("#tokenCreate").textContent="创建命名令牌"; $("#tokenCancelEdit").hidden=true; $("#tokenFormStatus").textContent="";
+  $("#tokenDevices").querySelectorAll("input").forEach(x=>x.checked=false);
+}
+function renderTokenDevices(devices=null){
+  const selected=new Set(devices||[]); const box=$("#tokenDevices");
+  const old=devices===null?Array.from(box.querySelectorAll("input:checked")).map(x=>x.value):[];
+  const names=knownTokenDevices.length?knownTokenDevices:Array.from(auditDeviceOptions);
+  box.innerHTML=names.map(name=>`<label><input type="checkbox" value="${esc(name)}" ${selected.has(name)||old.includes(name)?"checked":""}>${esc(name)}</label>`).join("")||'<span class="muted">暂无设备；留空表示全部设备。</span>';
+}
 async function loadTokens(){
-  const a=await api("/tokens");
-  auditTokens=a;
-  refreshAuditFilterOptions();
+  const a=await api("/tokens"); auditTokens=a; refreshAuditFilterOptions();
+  const wizard=$("#wizardToken"), previous=wizard?.value;
+  if(wizard)wizard.innerHTML='<option value="">选择命名令牌</option>'+a.filter(x=>!x.is_legacy).map(x=>`<option value="${esc(x.id)}" ${x.revoked_at?'disabled':''}>${esc(x.name)} · vpc_${esc(x.prefix)}${x.revoked_at?'（已吊销）':''}</option>`).join("");
+  if(wizard && a.some(x=>x.id===previous&&!x.revoked_at))wizard.value=previous;
   $("#tokens").innerHTML=a.map(x=>{
     const status=x.revoked_at?"已吊销":"有效";
-    const ops=x.revoked_at?"":'<button type="button" onclick="revokeToken(\''+esc(x.id)+'\')">吊销</button>';
-    return '<tr><td>'+esc(x.name)+'</td><td><code>vpc_'+esc(x.prefix)+'</code></td><td>'+esc((x.scopes||[]).join(","))+'</td><td>'+status+'</td><td>'+ops+'</td></tr>';
+    const devices=Array.isArray(x.devices)&&x.devices.length?x.devices.join(", "):"全部设备";
+    const last=x.last_used_at?new Date(Number(x.last_used_at)*1000).toLocaleString()+` · ${x.last_used_ip||"IP 未知"}`:"从未使用";
+    const ops=x.revoked_at?"":`<button type="button" onclick="editToken('${esc(x.id)}')">编辑</button> <button type="button" onclick="revokeToken('${esc(x.id)}')">吊销</button>`;
+    return `<tr><td><strong>${esc(x.name)}</strong><div class="muted">${esc(x.note||"")}</div></td><td><code>vpc_${esc(x.prefix)}</code></td><td>${esc((x.scopes||[]).join(", "))}</td><td>${esc(devices)}</td><td>${Number(x.rate_rps)||10} rps / ${Number(x.max_sessions)||10}</td><td>${esc(last)}</td><td>${status}</td><td>${ops}</td></tr>`;
   }).join("");
 }
-async function revokeToken(id){
-  if(!confirm("确认吊销该令牌？"))return;
-  await api("/tokens/revoke?id="+encodeURIComponent(id),{method:"POST"});
-  await loadTokens();
+async function editToken(id){
+  const x=auditTokens.find(t=>t.id===id);if(!x)return;
+  tokenEditingId=id;$("#tokenName").value=x.name||"";$("#tokenNote").value=x.note||"";$("#tokenRate").value=x.rate_rps||10;$("#tokenSessions").value=x.max_sessions||10;$("#tokenTemplate").value="custom";setTokenScopes(x.scopes||[]);
+  renderTokenDevices(x.devices||[]);$("#tokenCreate").textContent="保存令牌修改";$("#tokenCancelEdit").hidden=false;$("#tokenFormStatus").textContent=`正在编辑：${x.name}`;$("#tokenManagerCard").scrollIntoView({behavior:"smooth",block:"start"});
 }
-$("#tokenRefresh").onclick=loadTokens;
+async function revokeToken(id){if(!confirm("确认吊销该令牌？"))return;await api("/tokens/revoke?id="+encodeURIComponent(id),{method:"POST"});await loadTokens()}
+$("#tokenRefresh").onclick=()=>loadTokens().catch(e=>$("#tokenFormStatus").textContent=e.message);
+$("#tokenCancelEdit").onclick=resetTokenForm;
 $("#tokenCreate").onclick=async()=>{
-  const name=$("#tokenName").value.trim();
-  if(!name){alert("请输入令牌名称");return}
+  const name=$("#tokenName").value.trim(),scopes=selectedTokenScopes(),devices=[...$("#tokenDevices").querySelectorAll("input:checked")].map(x=>x.value);
+  if(!name){$("#tokenFormStatus").textContent="请输入令牌名称。";return}
+  if(!scopes.length){$("#tokenFormStatus").textContent="至少选择一个权限。";return}
+  if(scopes.includes("admin")&&!confirm("即将创建或更新包含 admin 的高权限令牌。它可以管理令牌、安全策略、MCP 和通知。确定继续？"))return;
+  const rate=Math.max(1,Math.min(10000,Number($("#tokenRate").value)||10)),sessions=Math.max(1,Math.min(1000,Number($("#tokenSessions").value)||10));
+  const body={name,note:$("#tokenNote").value.trim(),scopes,devices,rate_rps:rate,max_sessions:sessions};
   try{
-    const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,scopes:["devices:read"]})});
-    $("#newToken").textContent="新令牌（仅本次显示）：\n"+x.token;
-    $("#tokenName").value="";
-    await loadTokens();
-  }catch(e){$("#newToken").textContent=e.message}
+    const editingId=tokenEditingId;let createdToken=null;
+    if(editingId){await api("/tokens/update?id="+encodeURIComponent(editingId),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#tokenFormStatus").textContent="令牌配置已更新。";}
+    else {createdToken=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#newToken").textContent="新令牌（完整密钥仅本次显示，请立即保存）：\n"+createdToken.token;$("#wizardSecret").value=createdToken.token;$("#wizardNewTokenName").value=name;}
+    resetTokenForm();await loadTokens();
+    if(createdToken){$("#wizardToken").value=createdToken.id;$("#wizardSecret").value=createdToken.token;wizardSecretTokenID=createdToken.id;wizardGenerate();}
+  }catch(e){$("#tokenFormStatus").textContent="保存失败："+e.message}
 };
 
 function currentAuditFilters(){
@@ -194,22 +236,53 @@ $("#run").onclick=async()=>{
     o.textContent=e.message
   }
 };
-$("#copySchema").onclick=()=>navigator.clipboard.writeText(location.origin+"/openapi.json");
-$("#copyPrompt").onclick=()=>navigator.clipboard.writeText("你是我的私有 VPS 运维助手。执行操作前确认目标设备；优先使用 list_devices 确认节点状态；高风险操作先向用户确认。");
+let wizardSecretTokenID="";
+let wizardConfigGenerated=false;
+const wizardPromptText="你是我的私有 VPS 运维助手。执行操作前先调用 list_devices 确认目标设备和状态；只使用当前令牌允许的权限；高风险操作或破坏性操作必须先向用户确认；不要猜测设备名、命令结果或成功状态。";
+function wizardSelectedToken(){return auditTokens.find(t=>t.id===$("#wizardToken").value&&!t.revoked_at)}
+function wizardGenerate(force=false){
+  const selectedToken=wizardSelectedToken();
+  if(force&&!selectedToken){$("#wizardTokenStatus").textContent="请先选择或新建一个有效的命名令牌。";return false;}
+  if(force)wizardConfigGenerated=true;
+  const client=$("#wizardClient").value, secret=$("#wizardSecret").value.trim()||"<在此填入命名令牌密钥>", origin=location.origin;
+  $("#wizardGPT").hidden=!wizardConfigGenerated||client!=="gpt";$("#wizardMCP").hidden=!wizardConfigGenerated||client!=="mcp";$("#wizardREST").hidden=!wizardConfigGenerated||client!=="rest";
+  $("#wizardSchema").value=origin+"/openapi.json";$("#wizardPrompt").value=wizardPromptText;
+  $("#wizardHTTPURL").value=origin+"/mcp";$("#wizardSSEURL").value=origin+"/mcp/sse";
+  $("#wizardMCPJSON").value=JSON.stringify({mcpServers:{"vps-commander":{url:origin+"/mcp",headers:{Authorization:"Bearer "+secret}}},sse:{url:origin+"/mcp/sse",headers:{Authorization:"Bearer "+secret}}},null,2);
+  $("#wizardCurl").value=`curl -fsS '${origin}/api/v1/devices' -H 'Authorization: Bearer ${secret}'`;
+  const selected=wizardSelectedToken();
+  $("#wizardTokenStatus").textContent=selected?( $("#wizardSecret").value.trim()?`已选择命名令牌：${selected.name}`:`已选择命名令牌：${selected.name}。请粘贴该令牌的完整密钥；Hub 无法恢复旧密钥。`):"请先选择一个命名令牌；已有令牌需粘贴创建时保存的完整密钥。";
+}
+$("#wizardGenerate").onclick=()=>wizardGenerate(true);
+$("#wizardAuth").addEventListener("change",()=>{$("#wizardAuthHint").textContent=$("#wizardAuth").value==="apikey"?"在 GPT Actions 的 Authentication 中选择 API Key，将 Auth Type 设为 Bearer，再粘贴命名令牌。":"在 GPT Actions 的 Authentication 中选择 Bearer，并粘贴命名令牌。"});
+$("#wizardClient").addEventListener("change",wizardGenerate);
+$("#wizardToken").addEventListener("change",()=>{if(wizardSecretTokenID!==$("#wizardToken").value){$("#wizardSecret").value="";wizardSecretTokenID="";}const t=wizardSelectedToken();$("#wizardTokenStatus").textContent=t?`已选择：${t.name}（前缀 vpc_${t.prefix}）。请确认输入的是该令牌的完整密钥。`:"请选择一个有效的命名令牌。";wizardGenerate()});
+$("#wizardSecret").addEventListener("input",()=>{wizardSecretTokenID=$("#wizardToken").value;wizardGenerate()});
+document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",async()=>{const el=$("#"+button.dataset.copy);try{await navigator.clipboard.writeText(el.value);button.textContent="已复制";setTimeout(()=>button.textContent="复制",1500)}catch(e){el.focus();el.select()}}));
+$("#wizardCreateToken").onclick=async()=>{
+  const name=$("#wizardNewTokenName").value.trim();if(!name){$("#wizardTokenStatus").textContent="请先输入新令牌名称。";return}
+  try{const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,note:"由 AI 接入向导创建",scopes:["devices:read"],rate_rps:10,max_sessions:10})});$("#wizardSecret").value=x.token;wizardSecretTokenID=x.id;await loadTokens();$("#wizardToken").value=x.id;$("#wizardTokenStatus").textContent="命名令牌已创建。完整密钥仅显示在当前页面，请妥善保存。";wizardGenerate();}catch(e){$("#wizardTokenStatus").textContent="创建失败："+e.message}
+};
+$("#wizardTest").onclick=async()=>{
+  const secret=$("#wizardSecret").value.trim(),result=$("#wizardTestResult");
+  if(!wizardConfigGenerated){result.textContent="请先完成第 3 步：生成配置。";result.className="test-fail";return}
+  if(!wizardSelectedToken()){result.textContent="失败：请先选择有效的命名令牌。";result.className="test-fail";return}
+  if(!secret){result.textContent="失败：Hub 不保存完整密钥，请粘贴令牌密钥后重试。";result.className="test-fail";return}
+  result.textContent="测试中…";result.className="";
+  try{const r=await fetch(location.origin+"/api/v1/devices",{headers:{Authorization:"Bearer "+secret},cache:"no-store"});const body=await r.text();if(!r.ok)throw Error(`HTTP ${r.status}: ${body.slice(0,240)}`);const data=JSON.parse(body);result.textContent=`成功：list_devices 返回 ${Array.isArray(data)?data.length:(data.devices||[]).length} 台设备。`;result.className="test-ok";}catch(e){result.textContent="失败："+e.message;result.className="test-fail"}
+};
+$("#confirmNamedTokenUse").addEventListener("change",()=>{$("#rotateKey").disabled=!$("#confirmNamedTokenUse").checked});
 $("#rotateKey").onclick=async()=>{
-  if(!confirm("轮换后旧 API Key 会立即失效，确认继续？"))return;
-  try{
-    let x=await api("/key/rotate",{method:"POST"});
-    $("#newKey").textContent="新 API Key（仅本次显示）：\n"+x.api_key
-  }catch(e){
-    $("#newKey").textContent=e.message
-  }
+  if(!$("#confirmNamedTokenUse").checked){alert("请先确认已切换到命名令牌并验证连通。 ");return}
+  if(!confirm("轮换 API Key 会让所有使用 legacy Key 的客户端立刻失效。请先将当前客户端切换到命名令牌。确定已完成切换？"))return;
+  if(prompt("二次确认：输入 ROTATE 才会继续。")!=="ROTATE")return;
+  try{const x=await api("/key/rotate",{method:"POST"});$("#newKey").textContent="新 API Key（仅本次显示）：\\n"+x.api_key;}catch(e){$("#newKey").textContent=e.message}
 };
 $("#logout").onclick=async()=>{
   await fetch("/panel/logout",{method:"POST"});
   location.href="/panel/login"
 };
-loadDevices().then(loadTokens).then(()=>loadAudits(true)).catch(console.error);
+
 
 let mcpEditingId="";
 function mcpFieldError(id,message){
@@ -284,7 +357,7 @@ $("#mcpTest").onclick=async()=>{
   }
 };
 $("#mcpTransport").onchange=()=>{const stdio=$("#mcpTransport").value==="stdio";$("#mcpCommand").parentElement.style.display=stdio?"":"none";$("#mcpArgs").parentElement.style.display=stdio?"":"none";$("#mcpUrl").parentElement.style.display=stdio?"none":""};
-loadMCPServices().catch(console.error);
+
 
 async function provisionDeviceCredential(){
   const result=$("#deviceProvisionResult");
@@ -307,7 +380,7 @@ $("#deviceProvisionCommand").onclick=e=>e.target.select();
 
 async function loadSecuritySettings(){const x=await api("/security/settings"),nodes=x.nodes||[],effective=x.effective||{},configured=new Map(nodes.map(n=>[n.node,n.mode])),devices=await api("/devices");$("#globalSecurity").value=x.global||"medium";$("#securityNodes").innerHTML=devices.map(d=>{const mode=configured.get(d.name)||"inherit",eff=effective[d.name]||x.global||"medium";return `<tr><td>${esc(d.name)}</td><td><select data-security-node="${esc(d.name)}"><option value="inherit" ${mode==='inherit'?'selected':''}>跟随全局</option><option value="low" ${mode==='low'?'selected':''}>低 · Low</option><option value="medium" ${mode==='medium'?'selected':''}>中 · Medium</option><option value="high" ${mode==='high'?'selected':''}>高 · High</option></select></td><td>${esc(eff)}</td><td><button type="button" onclick="saveNodeSecurity('${esc(d.name)}')">保存</button></td></tr>`}).join("")}
 async function saveNodeSecurity(node){const el=document.querySelector(`[data-security-node="${CSS.escape(node)}"]`);if(!el)return;try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node,mode:el.value})});$("#securityStatus").textContent=`${node} 策略已保存。`;await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}}
-$("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);loadSecuritySettings().catch(console.error);
+$("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);
 
 
 let webhookEditingId = "";
@@ -466,17 +539,44 @@ function stopDevicePolling() {
 }
 function startDevicePolling() {
   stopDevicePolling();
-  if (document.hidden) return;
+  if (document.hidden || !["devices","console"].includes(currentPanelTab)) return;
   devicePollTimer = setInterval(() => loadDevices().catch(console.error), 5000);
 }
-startDevicePolling();
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     stopDevicePolling();
   } else {
-    loadDevices().catch(console.error);
+    if (["devices","console"].includes(currentPanelTab)) loadDevices().catch(console.error);
     startDevicePolling();
   }
 });
-loadWebhooks().catch(console.error);
+
+
+const validPanelTabs=["devices","console","access","security","logs"];
+let currentPanelTab="";
+const loadedPanelTabs=new Set();
+async function activatePanelTab(tab, force=false){
+  if(!validPanelTabs.includes(tab))tab="devices";
+  if(currentPanelTab!==tab||force){currentPanelTab=tab;document.querySelectorAll("[data-tab]").forEach(b=>{const active=b.dataset.tab===tab;b.classList.toggle("active",active);b.setAttribute("aria-selected",String(active));b.tabIndex=active?0:-1});document.querySelectorAll("[data-tab-panel]").forEach(p=>{const active=p.dataset.tabPanel===tab;p.classList.toggle("active",active);p.hidden=!active});}
+  if(location.hash!=="#"+tab)history.replaceState(null,"",location.pathname+location.search+"#"+tab);
+  if(!force&&loadedPanelTabs.has(tab)){startDevicePolling();return}
+  try{
+    if(tab==="devices"||tab==="console"){await loadDevices();if(tab==="devices")renderTokenDevices();}
+    if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();wizardGenerate();}
+    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadWebhooks()]);}
+    if(tab==="logs"){await loadTokens();await loadAudits(true);}
+    loadedPanelTabs.add(tab);
+  }catch(e){console.error(e);const status=$("#tokenFormStatus");if(status&&tab==="access")status.textContent="加载失败："+e.message;const auditStatus=$("#auditStatus");if(auditStatus&&tab==="logs")auditStatus.textContent="加载失败："+e.message;}
+  startDevicePolling();
+}
+document.querySelectorAll("[data-tab]").forEach(button=>button.addEventListener("click",()=>activatePanelTab(button.dataset.tab)));
+document.addEventListener("keydown",event=>{if(!event.target.closest(".panel-tabs"))return;if(event.key!=="ArrowLeft"&&event.key!=="ArrowRight")return;event.preventDefault();const i=validPanelTabs.indexOf(currentPanelTab),next=(i+(event.key==="ArrowRight"?1:validPanelTabs.length-1))%validPanelTabs.length;activatePanelTab(validPanelTabs[next]);document.querySelector(`[data-tab="${validPanelTabs[next]}"]`)?.focus()});
+window.addEventListener("hashchange",()=>activatePanelTab(location.hash.slice(1)||"devices"));
+const deviceDetails=$("#deviceBoardDetails"),deviceToggle=$("#deviceBoardToggle");
+function setDeviceBoardExpanded(expanded){deviceDetails.hidden=!expanded;deviceToggle.setAttribute("aria-expanded",String(expanded));deviceToggle.textContent=expanded?"收起列表":"展开列表";try{localStorage.setItem("vpc_device_board_expanded",expanded?"1":"0")}catch(e){}}
+let boardExpanded=false;try{boardExpanded=localStorage.getItem("vpc_device_board_expanded")==="1"}catch(e){}
+setDeviceBoardExpanded(boardExpanded);deviceToggle.addEventListener("click",()=>setDeviceBoardExpanded(deviceDetails.hidden));
+setTokenTemplate("read",false);
+$("#addDeviceTop").addEventListener("click",()=>{activatePanelTab("devices");$("#deviceProvisionNew").click();setTimeout(()=>$("#provisionDeviceName").focus(),0)});
+activatePanelTab(location.hash.slice(1)||"devices",true);

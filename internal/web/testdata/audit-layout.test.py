@@ -87,13 +87,14 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         page_command("Page.navigate", {"url": base + "/panel/login"}); time.sleep(.2)
         login = evaluate("fetch('/panel/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:" + json.dumps(PASSWORD) + "})}).then(r=>r.status)", True)
         assert login == 204, f"panel login failed: {login}"
-        page_command("Page.navigate", {"url": base + "/panel"})
+        page_command("Page.navigate", {"url": base + "/panel#logs"})
         deadline = time.time() + 15
         while time.time() < deadline:
             state = evaluate("({path:location.pathname,rows:document.querySelectorAll('#audits tr').length})")
             if state.get("path") == "/panel" and state.get("rows", 0) >= 2: break
             time.sleep(.2)
         assert state.get("path") == "/panel" and state.get("rows", 0) >= 2, f"real panel did not render seeded rows: {state}"
+        assert evaluate("location.hash==='#logs' && document.querySelector('[data-tab=logs]').classList.contains('active')"), "direct #logs link did not select logs tab"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.textContent.includes('scope_denied')&&r.textContent.includes('denied'))"), "denied row is missing"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.querySelector('.audit-command-text')?.title.length===512)"), "512-character tooltip is missing"
         for width in (1280, 390, 320):
@@ -102,6 +103,8 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
             time.sleep(.25)
             metrics = evaluate("""(() => { const card=document.querySelector('.audit-card'),wrap=document.querySelector('.audit-tablewrap'),table=document.querySelector('.audit-table'),filters=document.querySelector('.audit-filters'),rows=[...document.querySelectorAll('#audits tr')],longRow=rows.find(r=>r.querySelector('.audit-command-text')?.title.length===512),normalRow=rows.find(r=>r!==longRow);return {viewport:innerWidth,documentWidth:document.documentElement.scrollWidth,cardWidth:card.getBoundingClientRect().width,wrapWidth:wrap.clientWidth,wrapScrollWidth:wrap.scrollWidth,tableWidth:table.scrollWidth,filters:[...filters.children].map(e=>({l:e.getBoundingClientRect().left,r:e.getBoundingClientRect().right,t:e.getBoundingClientRect().top,b:e.getBoundingClientRect().bottom})),longHeight:longRow?.getBoundingClientRect().height,normalHeight:normalRow?.getBoundingClientRect().height};})()""")
             assert metrics["viewport"] == width, f"viewport mismatch: {metrics}"
+            nav_metrics=evaluate("(()=>{const n=document.querySelector('.panel-tabs');return {width:n.clientWidth,scroll:n.scrollWidth,nowrap:[...n.children].every(b=>getComputedStyle(b).whiteSpace==='nowrap')}})()")
+            if width <= 390: assert nav_metrics["scroll"] > nav_metrics["width"] and nav_metrics["nowrap"], f"narrow tabs must scroll without wrapping: {nav_metrics}"
             assert metrics["documentWidth"] <= width, f"document overflows at {width}px: {metrics}"
             assert metrics["cardWidth"] <= width, f"card overflows at {width}px: {metrics}"
             assert metrics["wrapScrollWidth"] > metrics["wrapWidth"], f"table cannot scroll at {width}px: {metrics}"
@@ -117,6 +120,138 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
                 assert expanded["expanded"] == "true" and expanded["text"] == 512 and expanded["height"] > before, f"expand failed: {expanded}"
                 evaluate("[...document.querySelectorAll('.audit-command-text')].find(e=>e.title.length===512).click()")
             print(f"PASS real Hub audit layout {width}px: document={metrics['documentWidth']}, table={metrics['tableWidth']}, wrap={metrics['wrapWidth']}/{metrics['wrapScrollWidth']}, command={metrics['longHeight']:.0f}px")
+            for tab_name in ("devices","console","access","security","logs"):
+                evaluate("document.querySelector('[data-tab="+json.dumps(tab_name)+"]').click()")
+                time.sleep(.2)
+                panel_metrics=evaluate("(()=>({doc:document.documentElement.scrollWidth,viewport:innerWidth,active:document.querySelector('[data-tab].active')?.dataset.tab,tabScroll:document.querySelector('.panel-tabs').scrollWidth,tabWidth:document.querySelector('.panel-tabs').clientWidth}))()")
+                assert panel_metrics["doc"]<=width and panel_metrics["active"]==tab_name, f"tab {tab_name} overflows or did not activate at {width}px: {panel_metrics}"
+            evaluate("document.querySelector('[data-tab=logs]').click()")
+        # Verify tab switching and persistence through reload.
+        evaluate("document.querySelector('[data-tab=access]').click()")
+        assert evaluate("location.hash==='#access' && !document.querySelector('[data-tab-panel=access]').hidden"), "access tab did not switch"
+        evaluate("document.querySelector('[data-tab=console]').click()")
+        assert evaluate("location.hash==='#console' && !document.querySelector('[data-tab-panel=console]').hidden"), "console tab did not switch"
+        page_command("Page.reload", {})
+        time.sleep(.4)
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            try:
+                if evaluate("location.hash==='#console' && document.querySelector('[data-tab=console]').classList.contains('active')"): break
+            except Exception: pass
+            time.sleep(.1)
+        assert evaluate("location.hash==='#console' && document.querySelector('[data-tab=console]').classList.contains('active')"), "refresh did not preserve selected tab"
+        evaluate("document.querySelector('[data-tab=security]').click()")
+        assert evaluate("document.querySelector('#rotateKey').disabled && document.querySelector('.warning-text').textContent.includes('legacy Key')"), "legacy key rotation must warn and require named-token confirmation"
+        evaluate("document.querySelector('[data-tab=access]').click()")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if evaluate("document.querySelector('#tokenDevices input')"): break
+            time.sleep(.1)
+        # The ops template grants the six non-admin operational scopes.
+        evaluate("(()=>{const t=document.querySelector('#tokenTemplate');t.value='ops';t.dispatchEvent(new Event('change',{bubbles:true}))})()")
+        scopes = evaluate("[...document.querySelectorAll('[data-token-scope]:checked')].map(x=>x.dataset.tokenScope).sort()")
+        assert scopes == ["devices:read","exec","files:read","files:write","mcp:call","process"], f"ops template scopes wrong: {scopes}"
+        evaluate("(()=>{window.__confirmCalls=0;window.confirm=()=>{window.__confirmCalls++;return window.__confirmCalls===1};document.querySelector('#tokenName').value='must-not-create-admin';const t=document.querySelector('#tokenTemplate');t.value='all';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#tokenCreate').click()})()")
+        assert evaluate("window.__confirmCalls===2 && document.querySelector('[data-token-scope=admin]').checked"), "admin create did not require two confirmations"
+        # Create a real named token through the wizard and test it against the temporary Hub.
+        evaluate("document.querySelector('#tokenTemplate').value='read';document.querySelector('#tokenTemplate').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardNewTokenName').value='layout-wizard-token';document.querySelector('#wizardCreateToken').click()")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            created = evaluate("({secret:document.querySelector('#wizardSecret').value,id:document.querySelector('#wizardToken').value,selected:document.querySelector('#wizardToken').selectedOptions[0]?.textContent||''})")
+            if created.get("secret","").startswith("vpc_") and created.get("id"): break
+            time.sleep(.1)
+        assert created.get("secret","").startswith("vpc_") and "layout-wizard-token" in created.get("selected",""), f"wizard did not create/select token: {created}"
+        evaluate("document.querySelector('#wizardClient').value='mcp';document.querySelector('#wizardClient').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardGenerate').click()")
+        config = evaluate("JSON.parse(document.querySelector('#wizardMCPJSON').value)")
+        assert config["mcpServers"]["vps-commander"]["url"].endswith("/mcp"), f"bad Streamable HTTP config: {config}"
+        assert config["sse"]["url"].endswith("/mcp/sse"), f"bad SSE config: {config}"
+        evaluate("document.querySelector('#wizardTest').click()")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok') || document.querySelector('#wizardTestResult').classList.contains('test-fail')"): break
+            time.sleep(.1)
+        assert evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok')"), "wizard list_devices test failed: " + str(evaluate("document.querySelector('#wizardTestResult').textContent"))
+        token = created["secret"]
+        rest = subprocess.run(["curl","-fsS",base+"/api/v1/devices","-H",f"Authorization: Bearer {token}"],capture_output=True,text=True,timeout=8,check=True)
+        assert isinstance(json.loads(rest.stdout),list), "curl REST list_devices did not return a JSON array"
+        rpc = json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"panel-layout-test","version":"1"}}})
+        streamable = subprocess.run(["curl","-fsS",base+"/mcp","-H",f"Authorization: Bearer {token}","-H","Content-Type: application/json","-H","Accept: application/json","-d",rpc],capture_output=True,text=True,timeout=8,check=True)
+        assert "result" in json.loads(streamable.stdout), f"Streamable HTTP initialize failed: {streamable.stdout[:300]}"
+        sse = subprocess.run(["curl","-sS","--max-time","1",base+"/mcp/sse","-H",f"Authorization: Bearer {token}"],capture_output=True,text=True,timeout=4)
+        assert "event: endpoint" in sse.stdout and "/mcp/message?sessionId=" in sse.stdout, f"SSE endpoint failed: {sse.stdout[:300]}"
+        print("PASS tab switching/hash reload, token templates/admin confirmation, wizard connectivity, generated MCP config, curl REST, Streamable HTTP initialize, and SSE endpoint")
+        # Device dashboard defaults to a collapsed summary and persists expansion.
+        evaluate("document.querySelector('[data-tab=devices]').click()")
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            summary = evaluate("document.querySelector('#deviceSummary').textContent")
+            if "台" in summary: break
+            time.sleep(.1)
+        assert evaluate("document.querySelector('#deviceBoardDetails').hidden"), "device board should start collapsed"
+        evaluate("document.querySelector('#deviceBoardToggle').click()")
+        assert evaluate("!document.querySelector('#deviceBoardDetails').hidden && localStorage.getItem('vpc_device_board_expanded')==='1'"), "device board expansion was not persisted"
+        page_command("Page.reload", {}); time.sleep(.5)
+        deadline=time.time()+10
+        while time.time()<deadline:
+            try:
+                if evaluate("location.hash==='#devices' && !document.querySelector('#deviceBoardDetails').hidden"): break
+            except Exception: pass
+            time.sleep(.1)
+        assert evaluate("location.hash==='#devices' && !document.querySelector('#deviceBoardDetails').hidden"), "device board expansion did not survive refresh"
+        # Create an ops token scoped to one real device and verify allowed/denied exec.
+        evaluate("document.querySelector('[data-tab=access]').click()")
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            if evaluate("document.querySelector('#tokenDevices input')"): break
+            time.sleep(.1)
+        device_name = evaluate("document.querySelector('#tokenDevices input').value")
+        evaluate("(()=>{document.querySelector('#tokenName').value='layout-ops-token';document.querySelector('#tokenNote').value='temporary end-to-end acceptance';const t=document.querySelector('#tokenTemplate');t.value='ops';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelectorAll('#tokenDevices input').forEach((e,i)=>e.checked=i===0);document.querySelector('#tokenCreate').click()})()")
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            ops_secret = evaluate("document.querySelector('#wizardSecret').value")
+            if ops_secret.startswith("vpc_") and "layout-ops-token" in evaluate("document.querySelector('#wizardToken').selectedOptions[0]?.textContent||''"): break
+            time.sleep(.1)
+        assert ops_secret.startswith("vpc_"), "ops token was not created from the token form"
+        ops_info=evaluate("(()=>{const t=auditTokens.find(t=>t.name==='layout-ops-token');return {devices:t?.devices,scopes:t?.scopes,name:t?.name}})()")
+        assert device_name in (ops_info.get("devices") or []), f"ops token whitelist was not saved: selected={device_name} token={ops_info}"
+        policy_status=evaluate("fetch('/panel/api/security/settings/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({global:'high'})}).then(r=>r.status)",True)
+        assert policy_status==200, f"temporary Hub could not enable high security for exec acceptance: {policy_status}"
+        allowed_body = json.dumps({"device":device_name,"command":"echo whitelist-ok","timeout":5})
+        allowed = subprocess.run(["curl","-sS","-w","\n%{http_code}",base+"/api/v1/exec","-H",f"Authorization: Bearer {ops_secret}","-H","Content-Type: application/json","-d",allowed_body],capture_output=True,text=True,timeout=8,check=False)
+        allowed_body_text, allowed_status = allowed.stdout.rsplit("\n",1)
+        assert allowed_status=="200", f"exec on whitelisted device failed: HTTP {allowed_status}: {allowed_body_text[:300]} {allowed.stderr[:200]}"
+        assert json.loads(allowed_body_text).get("exit_code")==0, f"exec on whitelisted device failed: {allowed_body_text[:300]}"
+        denied_body = json.dumps({"device":"device-not-in-whitelist","command":"echo must-not-run","timeout":5})
+        denied = subprocess.run(["curl","-sS","-w","\n%{http_code}",base+"/api/v1/exec","-H",f"Authorization: Bearer {ops_secret}","-H","Content-Type: application/json","-d",denied_body],capture_output=True,text=True,timeout=8)
+        denied_body_text, denied_status = denied.stdout.rsplit("\n",1)
+        assert denied_status=="403", f"exec on unlisted device should be denied: HTTP {denied_status}: {denied_body_text} {denied.stderr}"
+        audited = 0; deadline=time.time()+4
+        while time.time()<deadline and audited<1:
+            conn = sqlite3.connect(db, timeout=5)
+            audited = conn.execute("SELECT count(*) FROM audit_logs WHERE action='device_denied' AND device='device-not-in-whitelist'").fetchone()[0]
+            conn.close()
+            if audited<1: time.sleep(.1)
+        if audited < 1:
+            conn=sqlite3.connect(db,timeout=5); recent=conn.execute("SELECT action,device,result,error_msg FROM audit_logs ORDER BY id DESC LIMIT 8").fetchall(); conn.close()
+            raise AssertionError(f"denied device access was not audited; response={denied_body_text}; recent={recent}")
+        evaluate("document.querySelector('#tokenRefresh').click()")
+        deadline=time.time()+8
+        while time.time()<deadline:
+            token_row=evaluate("[...document.querySelectorAll('#tokens tr')].find(r=>r.textContent.includes('layout-ops-token'))?.textContent||''")
+            if token_row and "从未使用" not in token_row: break
+            time.sleep(.1)
+        assert token_row and "从未使用" not in token_row and "127.0.0.1" in token_row, f"recent-use timestamp/IP not rendered: {token_row}"
+        token_id=evaluate("auditTokens.find(t=>t.name==='layout-ops-token')?.id")
+        evaluate("editToken("+json.dumps(token_id)+")")
+        evaluate("document.querySelector('#tokenRate').value='20';document.querySelector('#tokenCreate').click()")
+        deadline=time.time()+8
+        while time.time()<deadline:
+            token_row=evaluate("[...document.querySelectorAll('#tokens tr')].find(r=>r.textContent.includes('layout-ops-token'))?.textContent||''")
+            if "20 rps" in token_row: break
+            time.sleep(.1)
+        assert "20 rps" in token_row, f"editing token limit did not persist through PATCH: {token_row}"
+        print("PASS device board collapse persistence, ops-token whitelist, allowed/denied exec audit, recent-use IP/time, and token PATCH editing")
+
         page.close(); browser.close()
     finally:
         if chrome:

@@ -31,6 +31,7 @@ type Runner interface {
 type tokenRunner interface {
 	TokenListJSON(http.ResponseWriter, *http.Request)
 	TokenCreateJSON(http.ResponseWriter, *http.Request)
+	TokenPatchJSON(http.ResponseWriter, *http.Request)
 	TokenRotateJSON(http.ResponseWriter, *http.Request)
 	TokenRevokeJSON(http.ResponseWriter, *http.Request)
 	TokenDeleteJSON(http.ResponseWriter, *http.Request)
@@ -75,6 +76,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
 	mux.HandleFunc("/panel/api/tokens", p.protected(p.tokenList))
 	mux.HandleFunc("/panel/api/tokens/create", p.protected(p.tokenCreate))
+	mux.HandleFunc("/panel/api/tokens/update", p.protected(p.tokenUpdate))
 	mux.HandleFunc("/panel/api/tokens/rotate", p.protected(p.tokenRotate))
 	mux.HandleFunc("/panel/api/tokens/revoke", p.protected(p.tokenRevoke))
 	mux.HandleFunc("/panel/api/tokens/delete", p.protected(p.tokenDelete))
@@ -401,6 +403,26 @@ func (p *Panel) tokenCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	v.TokenCreateJSON(w, r)
 }
+func (p *Panel) tokenUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "token id required", http.StatusBadRequest)
+		return
+	}
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/tokens/" + id
+	v, ok := p.tokenRunner()
+	if !ok {
+		http.Error(w, "token API unavailable", http.StatusNotImplemented)
+		return
+	}
+	v.TokenPatchJSON(w, r2)
+}
+
 func (p *Panel) tokenRotate(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	r2 := r.Clone(r.Context())
