@@ -96,6 +96,20 @@ func TestUpdateRemoteProfilesBatchPreservesDeviceStatus(t *testing.T) {
 	if profile != `{"mem_percent":20}` {
 		t.Fatalf("profile=%s, want latest snapshot", profile)
 	}
+	// A queued profile from an older connection must not overwrite a newer hello.
+	if err := s.UpsertRemote("node-1", "online", "amd64", "linux", 300, `{"mem_percent":30}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateRemoteProfiles([]RemoteProfileUpdate{{Name: "node-1", LastHeartbeat: 250, Arch: "amd64", OS: "linux", ProfileJSON: `{"mem_percent":25}`}}); err != nil {
+		t.Fatal(err)
+	}
+	var heartbeat int64
+	if err := s.DB.QueryRow("SELECT last_heartbeat, profile_json FROM devices WHERE name=?", "node-1").Scan(&heartbeat, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat != 300 || profile != `{"mem_percent":30}` {
+		t.Fatalf("stale batch overwrote newer snapshot: heartbeat=%d profile=%s", heartbeat, profile)
+	}
 }
 
 func TestDeviceCredentialHashAndRotation(t *testing.T) {

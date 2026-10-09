@@ -30,6 +30,10 @@ type Manager struct {
 	profileMu        sync.Mutex
 	pendingProfiles  map[string]storage.RemoteProfileUpdate
 	profileFlushOnce sync.Once
+	profileStopOnce  sync.Once
+	profileFlushStop chan struct{}
+	profileFlushDone chan struct{}
+	profileFlusherOn atomic.Bool
 }
 
 type Node struct {
@@ -71,7 +75,7 @@ type FileResult struct {
 }
 
 func NewManager(secret string, store *storage.Store) *Manager {
-	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate)}
+	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate), profileFlushStop: make(chan struct{}), profileFlushDone: make(chan struct{})}
 	if store != nil {
 		if records, err := store.ListDevices(); err == nil {
 			for _, d := range records {
@@ -201,8 +205,11 @@ func (m *Manager) readLoop(n *Node) {
 			n.Pending.Delete(key)
 			return true
 		})
-		if current && m.Store != nil {
-			_ = m.Store.UpdateDeviceStatus(n.Name, "offline", n.LastHeartbeat.Load()/int64(time.Second))
+		if current {
+			m.dropPendingProfile(n.Name)
+			if m.Store != nil {
+				_ = m.Store.UpdateDeviceStatus(n.Name, "offline", n.LastHeartbeat.Load()/int64(time.Second))
+			}
 		}
 	}()
 	conn := n.Conn
@@ -247,8 +254,9 @@ func (m *Manager) readLoop(n *Node) {
 			b, _ := json.Marshal(msg.Profile)
 			if m.Store != nil {
 				if msg.Event == "hello" {
-					// Initial registration creates/marks the row online once. Later
-					// profiles are coalesced and flushed in batches.
+					// A fresh connection snapshot supersedes any queued profile from
+					// the previous connection.
+					m.dropPendingProfile(n.Name)
 					_ = m.Store.UpsertRemote(n.Name, "online", arch, osName, now/int64(time.Second), string(b))
 				} else {
 					m.queueProfile(storage.RemoteProfileUpdate{Name: n.Name, LastHeartbeat: now / int64(time.Second), Arch: arch, OS: osName, ProfileJSON: string(b)})
@@ -279,16 +287,38 @@ func (m *Manager) queueProfile(update storage.RemoteProfileUpdate) {
 	m.profileMu.Unlock()
 }
 
+func (m *Manager) dropPendingProfile(name string) {
+	m.profileMu.Lock()
+	delete(m.pendingProfiles, name)
+	m.profileMu.Unlock()
+}
+
 func (m *Manager) startProfileFlusher() {
 	m.profileFlushOnce.Do(func() {
+		m.profileFlusherOn.Store(true)
 		go func() {
+			defer close(m.profileFlushDone)
 			t := time.NewTicker(60 * time.Second)
 			defer t.Stop()
-			for range t.C {
-				m.flushProfiles()
+			for {
+				select {
+				case <-t.C:
+					m.flushProfiles()
+				case <-m.profileFlushStop:
+					return
+				}
 			}
 		}()
 	})
+}
+
+// Close stops the profile flusher and synchronously persists its final batch.
+func (m *Manager) Close() {
+	if m.profileFlusherOn.Load() {
+		m.profileStopOnce.Do(func() { close(m.profileFlushStop) })
+		<-m.profileFlushDone
+	}
+	m.flushProfiles()
 }
 
 func (m *Manager) flushProfiles() {

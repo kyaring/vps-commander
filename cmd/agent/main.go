@@ -8,6 +8,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
@@ -98,13 +99,16 @@ func run(hub, name, token string, insecure bool) error {
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
 		last := initProf
+		lastSent := time.Now()
 		for {
 			select {
 			case <-t.C:
 				prof := sysinfo.Collect("APPLICATION")
-				if profileChangedEnough(last, prof) {
-					if err := writeJSON(cluster.Message{Event: "profile", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: time.Now().Unix()}); err == nil {
+				now := time.Now()
+				if shouldReportProfile(last, prof, now.Sub(lastSent), 5*time.Minute) {
+					if err := writeJSON(cluster.Message{Event: "profile", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: now.Unix()}); err == nil {
 						last = prof
+						lastSent = now
 					}
 				}
 			case <-stopPing:
@@ -168,6 +172,13 @@ func run(hub, name, token string, insecure bool) error {
 	}
 }
 
+func shouldReportProfile(previous, current sysinfo.Profile, sinceLastReport, maxInterval time.Duration) bool {
+	if sinceLastReport >= maxInterval {
+		return true
+	}
+	return profileChangedEnough(previous, current)
+}
+
 func profileChangedEnough(previous, current sysinfo.Profile) bool {
 	abs := func(a, b int) int {
 		if a > b {
@@ -184,9 +195,23 @@ func profileChangedEnough(previous, current sysinfo.Profile) bool {
 		current.Load1M-previous.Load1M >= 0.5 || previous.Load1M-current.Load1M >= 0.5 {
 		return true
 	}
+	// Rates are bytes/second. Require both >=20% relative change and >1 Mbps
+	// absolute change to avoid noisy updates on low-throughput links.
+	rxDelta := math.Abs(current.NetRXRate - previous.NetRXRate)
+	txDelta := math.Abs(current.NetTXRate - previous.NetTXRate)
+	if rateChangedEnough(previous.NetRXRate, current.NetRXRate, rxDelta) || rateChangedEnough(previous.NetTXRate, current.NetTXRate, txDelta) {
+		return true
+	}
 	return false
 }
 
+func rateChangedEnough(previous, current, delta float64) bool {
+	if delta <= 125000 { // 1 Mbps expressed as bytes/second
+		return false
+	}
+	baseline := math.Max(math.Abs(previous), math.Abs(current))
+	return baseline > 0 && delta/baseline >= 0.20
+}
 func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, sessions *executor.SessionManager, msg cluster.Message) error {
 	switch msg.Action {
 	case "diagnostic_command":

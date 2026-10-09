@@ -235,7 +235,7 @@ func (s *Store) UpdateRemoteProfiles(updates []RemoteProfileUpdate) error {
 		return err
 	}
 	defer tx.Rollback()
-	stmt, err := tx.Prepare(`UPDATE devices SET arch=?, os=?, last_seen=?, last_heartbeat=?, profile_json=?, updated_at=? WHERE name=? AND is_local=0`)
+	stmt, err := tx.Prepare(`UPDATE devices SET arch=?, os=?, last_seen=?, last_heartbeat=?, profile_json=?, updated_at=? WHERE name=? AND is_local=0 AND last_heartbeat<=?`)
 	if err != nil {
 		return err
 	}
@@ -246,7 +246,7 @@ func (s *Store) UpdateRemoteProfiles(updates []RemoteProfileUpdate) error {
 		if heartbeat <= 0 {
 			heartbeat = now
 		}
-		if _, err := stmt.Exec(u.Arch, u.OS, heartbeat, heartbeat, u.ProfileJSON, now, u.Name); err != nil {
+		if _, err := stmt.Exec(u.Arch, u.OS, heartbeat, heartbeat, u.ProfileJSON, now, u.Name, heartbeat); err != nil {
 			return err
 		}
 	}

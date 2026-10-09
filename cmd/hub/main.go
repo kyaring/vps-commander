@@ -186,4 +186,7 @@ func main() {
 	if err := server.Shutdown(ctx); err != nil {
 		log.Printf("graceful shutdown: %v", err)
 	}
+	if s.Cluster != nil {
+		s.Cluster.Close()
+	}
 }
