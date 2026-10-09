@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -409,6 +410,97 @@ func TestStreamableHTTPRequiresPrincipal(t *testing.T) {
 	srv.HandleStreamableHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+type countingExecBackend struct {
+	mockBackend
+	execCalls int
+}
+
+func (b *countingExecBackend) ExecCommand(ctx context.Context, clientIP, device, command, workdir string, timeout int) (any, error) {
+	b.execCalls++
+	return b.mockBackend.ExecCommand(ctx, clientIP, device, command, workdir, timeout)
+}
+
+func TestStreamableHTTPRejectsNonNotificationWithoutID(t *testing.T) {
+	backend := &countingExecBackend{}
+	srv := NewServer(backend, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"exec_command","arguments":{"command":"touch /tmp/should-not-run"}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "test", Scopes: map[string]bool{"exec": true}, Devices: map[string]bool{"local": true}}))
+	w := httptest.NewRecorder()
+	srv.HandleStreamableHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if backend.execCalls != 0 {
+		t.Fatalf("exec ran %d times for notification-shaped tools/call", backend.execCalls)
+	}
+}
+
+func TestHandleMessageRejectsUnknownSessionID(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/message?sessionId=already-closed", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "test"}))
+	w := httptest.NewRecorder()
+	srv.HandleMessage(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+type failingSSEWriter struct {
+	header        http.Header
+	deadlineCalls int
+}
+
+func (w *failingSSEWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *failingSSEWriter) WriteHeader(int)                  {}
+func (w *failingSSEWriter) Write([]byte) (int, error)        { return 0, io.ErrClosedPipe }
+func (w *failingSSEWriter) Flush()                           {}
+func (w *failingSSEWriter) SetWriteDeadline(time.Time) error { w.deadlineCalls++; return nil }
+
+func TestSSEWriteFailureExitsHandlerAndRemovesSession(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/mcp/sse", nil)
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", TokenID: "slow-client"}))
+	w := &failingSSEWriter{}
+	done := make(chan struct{})
+	go func() { srv.HandleSSE(w, req); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler did not exit after write failure")
+	}
+	if w.deadlineCalls == 0 {
+		t.Fatal("SSE write deadline was not set")
+	}
+	sse, _ := srv.SessionCounts()
+	if sse != 0 {
+		t.Fatalf("SSE sessions = %d, want 0", sse)
+	}
+}
+
+func TestCloseAllSessionsClosesAndInvalidatesSessions(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	sess := newSession("token-a")
+	srv.sessions["sse-id"] = sess
+	srv.streamSessions["stream-id"] = streamSession{ownerTokenID: "token-a", lastActivity: time.Now()}
+	srv.CloseAllSessions("test_shutdown")
+	select {
+	case <-sess.done:
+	default:
+		t.Fatal("SSE session was not closed")
+	}
+	sse, stream := srv.SessionCounts()
+	if sse != 0 || stream != 0 {
+		t.Fatalf("session counts = (%d,%d), want (0,0)", sse, stream)
 	}
 }
 

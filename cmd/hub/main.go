@@ -296,6 +296,9 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
+	server.RegisterOnShutdown(func() {
+		mcpServer.CloseAllSessions("server_shutdown")
+	})
 	log.Printf("vps-commander-hub listening on %s as %s", *addr, local)
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)

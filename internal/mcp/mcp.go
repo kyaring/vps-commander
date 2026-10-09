@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -177,6 +178,7 @@ func (s *Server) SessionCounts() (sse, streamableHTTP int) {
 	for id, sess := range s.streamSessions {
 		if now.Sub(sess.lastActivity) >= sseSessionIdleTimeout {
 			delete(s.streamSessions, id)
+			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", sess.ownerTokenID, "reason", "idle_timeout")
 		}
 	}
 	return len(s.sessions), len(s.streamSessions)
@@ -195,6 +197,33 @@ func (s *Server) removeSession(sessionID string, expected *session) {
 		current.close()
 	}
 	s.mu.Unlock()
+}
+
+// CloseAllSessions releases legacy SSE handlers and invalidates Streamable HTTP
+// sessions during graceful shutdown. SSE handlers observe done and return.
+func (s *Server) CloseAllSessions(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, sess := range s.sessions {
+		delete(s.sessions, id)
+		sess.close()
+		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", id, "actor", sess.ownerTokenID, "reason", reason)
+	}
+	for id, sess := range s.streamSessions {
+		delete(s.streamSessions, id)
+		slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", sess.ownerTokenID, "reason", reason)
+	}
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, format string, args ...any) error {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("set SSE write deadline: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, format, args...); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 func (s *Server) CloseSessionsForToken(tokenID string) {
@@ -267,8 +296,10 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 
 	endpointURI := fmt.Sprintf("/mcp/message?sessionId=%s", sessionID)
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURI)
-	flusher.Flush()
+	if err := writeSSE(w, flusher, "event: endpoint\ndata: %s\n\n", endpointURI); err != nil {
+		slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", p.TokenID, "reason", "endpoint_write_failed", "error", err)
+		return
+	}
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -279,15 +310,20 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 		case <-sess.done:
 			return
 		case msg := <-sess.ch:
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(msg))
-			flusher.Flush()
+			if err := writeSSE(w, flusher, "event: message\ndata: %s\n\n", string(msg)); err != nil {
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "message_write_failed", "error", err)
+				return
+			}
 		case <-ticker.C:
 			if sess.idleFor() >= sseSessionIdleTimeout {
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "idle_timeout")
 				s.removeSession(sessionID, sess)
 				return
 			}
-			fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
+			if err := writeSSE(w, flusher, ": keepalive\n\n"); err != nil {
+				slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "keepalive_write_failed", "error", err)
+				return
+			}
 		}
 	}
 }
@@ -305,6 +341,10 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	sess, exists := s.sessions[sessionID]
 	s.mu.RUnlock()
+	if sessionID != "" && !exists {
+		http.Error(w, "unknown or closed MCP SSE session", http.StatusNotFound)
+		return
+	}
 	if exists {
 		p, _ := auth.PrincipalFromContext(r.Context())
 		if sess.ownerTokenID != "" && p.TokenID != sess.ownerTokenID {
@@ -340,6 +380,7 @@ func (s *Server) HandleMessage(w http.ResponseWriter, r *http.Request) {
 		case <-sess.done:
 			http.Error(w, "MCP SSE session is closed", http.StatusGone)
 		case <-timer.C:
+			slog.Warn("MCP session closed", "transport", "legacy_sse", "session_id", sessionID, "actor", sess.ownerTokenID, "reason", "outbound_backpressure_timeout", "wait", sseOutboundQueueWait.String())
 			s.removeSession(sessionID, sess)
 			http.Error(w, "MCP SSE outbound queue remained full for 5 seconds; session closed", http.StatusServiceUnavailable)
 		}
@@ -411,13 +452,19 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ID == nil && !strings.HasPrefix(req.Method, "notifications/") {
+		http.Error(w, "JSON-RPC messages without an id must be notifications/*", http.StatusBadRequest)
+		return
+	}
+
 	clientSessionID := strings.TrimSpace(r.Header.Get("Mcp-Session-Id"))
 	protocolVersion := "2025-03-26"
 	if clientSessionID != "" {
 		s.mu.Lock()
 		stored, exists := s.streamSessions[clientSessionID]
-		if exists && time.Since(stored.lastActivity) > sseSessionIdleTimeout {
+		if exists && time.Since(stored.lastActivity) >= sseSessionIdleTimeout {
 			delete(s.streamSessions, clientSessionID)
+			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", clientSessionID, "actor", stored.ownerTokenID, "reason", "idle_timeout")
 			exists = false
 		}
 		if !exists {
@@ -462,6 +509,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 			for id, stored := range s.streamSessions {
 				if now.Sub(stored.lastActivity) >= sseSessionIdleTimeout {
 					delete(s.streamSessions, id)
+					slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", id, "actor", stored.ownerTokenID, "reason", "idle_timeout")
 				}
 			}
 			if len(s.streamSessions) >= 500 {
