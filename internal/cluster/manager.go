@@ -26,6 +26,10 @@ type Manager struct {
 	Store  *storage.Store
 	mu     sync.RWMutex
 	nodes  map[string]*Node
+
+	profileMu        sync.Mutex
+	pendingProfiles  map[string]storage.RemoteProfileUpdate
+	profileFlushOnce sync.Once
 }
 
 type Node struct {
@@ -67,7 +71,7 @@ type FileResult struct {
 }
 
 func NewManager(secret string, store *storage.Store) *Manager {
-	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node)}
+	m := &Manager{Secret: secret, Store: store, nodes: make(map[string]*Node), pendingProfiles: make(map[string]storage.RemoteProfileUpdate)}
 	if store != nil {
 		if records, err := store.ListDevices(); err == nil {
 			for _, d := range records {
@@ -139,6 +143,7 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	m.startProfileFlusher()
 	clientIP := ExtractIPFromRequest(r)
 	cc, countryName := ResolveIP(clientIP)
 	n := &Node{
@@ -213,6 +218,7 @@ func (m *Manager) readLoop(n *Node) {
 		now := time.Now().UnixNano()
 		n.LastSeen.Store(now)
 		_ = conn.SetReadDeadline(time.Now().Add(75 * time.Second))
+		m.mu.Lock()
 		if msg.Arch != "" {
 			n.Arch = msg.Arch
 		}
@@ -233,16 +239,23 @@ func (m *Manager) readLoop(n *Node) {
 		}
 		if msg.Profile != nil {
 			n.LastProfile = msg.Profile
-			n.LastHeartbeat.Store(now)
+		}
+		arch, osName := n.Arch, n.OS
+		m.mu.Unlock()
+		n.LastHeartbeat.Store(now)
+		if msg.Profile != nil {
+			b, _ := json.Marshal(msg.Profile)
 			if m.Store != nil {
-				b, _ := json.Marshal(msg.Profile)
-				_ = m.Store.UpsertRemote(n.Name, "online", n.Arch, n.OS, now/int64(time.Second), string(b))
+				if msg.Event == "hello" {
+					// Initial registration creates/marks the row online once. Later
+					// profiles are coalesced and flushed in batches.
+					_ = m.Store.UpsertRemote(n.Name, "online", arch, osName, now/int64(time.Second), string(b))
+				} else {
+					m.queueProfile(storage.RemoteProfileUpdate{Name: n.Name, LastHeartbeat: now / int64(time.Second), Arch: arch, OS: osName, ProfileJSON: string(b)})
+				}
 			}
-		} else {
-			n.LastHeartbeat.Store(now)
-			if m.Store != nil {
-				_ = m.Store.UpdateDeviceStatus(n.Name, "online", now/int64(time.Second))
-			}
+		} else if msg.Event == "hello" && m.Store != nil {
+			_ = m.Store.UpsertRemote(n.Name, "online", arch, osName, now/int64(time.Second), "")
 		}
 		if msg.Event == "pong" || msg.Event == "ping" || msg.Event == "hello" || msg.Event == "profile" {
 			continue
@@ -257,6 +270,47 @@ func (m *Manager) readLoop(n *Node) {
 				}
 			}
 		}
+	}
+}
+
+func (m *Manager) queueProfile(update storage.RemoteProfileUpdate) {
+	m.profileMu.Lock()
+	m.pendingProfiles[update.Name] = update
+	m.profileMu.Unlock()
+}
+
+func (m *Manager) startProfileFlusher() {
+	m.profileFlushOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(60 * time.Second)
+			defer t.Stop()
+			for range t.C {
+				m.flushProfiles()
+			}
+		}()
+	})
+}
+
+func (m *Manager) flushProfiles() {
+	m.profileMu.Lock()
+	batch := make([]storage.RemoteProfileUpdate, 0, len(m.pendingProfiles))
+	for _, update := range m.pendingProfiles {
+		batch = append(batch, update)
+	}
+	m.pendingProfiles = make(map[string]storage.RemoteProfileUpdate)
+	m.profileMu.Unlock()
+	if len(batch) == 0 || m.Store == nil {
+		return
+	}
+	if err := m.Store.UpdateRemoteProfiles(batch); err != nil {
+		// Preserve the newest snapshot for retry; never silently lose it.
+		m.profileMu.Lock()
+		for _, update := range batch {
+			if current, ok := m.pendingProfiles[update.Name]; !ok || current.LastHeartbeat < update.LastHeartbeat {
+				m.pendingProfiles[update.Name] = update
+			}
+		}
+		m.profileMu.Unlock()
 	}
 }
 
@@ -346,7 +400,11 @@ func (m *Manager) call(ctx context.Context, name, action string, payload any) (M
 		return Message{}, errors.New("device offline")
 	}
 	capability := actionCapability(action)
-	if capability != "" && len(n.Capabilities) > 0 && !n.Capabilities[capability] {
+	m.mu.RLock()
+	capabilities := n.Capabilities
+	missingCapability := capability != "" && len(capabilities) > 0 && !capabilities[capability]
+	m.mu.RUnlock()
+	if missingCapability {
 		return Message{}, fmt.Errorf("capability missing: %s", capability)
 	}
 	release := n.acquireOperation(action)

@@ -80,14 +80,33 @@ func run(hub, name, token string, insecure bool) error {
 
 	stopPing := make(chan struct{})
 	defer close(stopPing)
+	// Keep liveness heartbeats lightweight. Full profiles are sampled separately
+	// and sent only when resource metrics change materially.
 	go func() {
 		t := time.NewTicker(15 * time.Second)
 		defer t.Stop()
 		for {
 			select {
 			case <-t.C:
+				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, TS: time.Now().Unix()})
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		last := initProf
+		for {
+			select {
+			case <-t.C:
 				prof := sysinfo.Collect("APPLICATION")
-				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: time.Now().Unix()})
+				if profileChangedEnough(last, prof) {
+					if err := writeJSON(cluster.Message{Event: "profile", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: time.Now().Unix()}); err == nil {
+						last = prof
+					}
+				}
 			case <-stopPing:
 				return
 			}
@@ -132,8 +151,7 @@ func run(hub, name, token string, insecure bool) error {
 			return errors.New("revoked by admin")
 		}
 		if msg.Event == "ping" {
-			prof := sysinfo.Collect("APPLICATION")
-			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, Profile: &prof, TS: msg.TS}); err != nil {
+			if err := writeJSON(cluster.Message{Event: "pong", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, TS: msg.TS}); err != nil {
 				return err
 			}
 			continue
@@ -148,6 +166,25 @@ func run(hub, name, token string, insecure bool) error {
 			}
 		}(msg)
 	}
+}
+
+func profileChangedEnough(previous, current sysinfo.Profile) bool {
+	abs := func(a, b int) int {
+		if a > b {
+			return a - b
+		}
+		return b - a
+	}
+	if previous.CPUCores != current.CPUCores || previous.Docker != current.Docker || previous.BootTime != current.BootTime {
+		return true
+	}
+	if abs(previous.CPUUsagePercent, current.CPUUsagePercent) >= 5 ||
+		abs(previous.MemPercent, current.MemPercent) >= 3 ||
+		abs(previous.DiskPercent, current.DiskPercent) >= 1 ||
+		current.Load1M-previous.Load1M >= 0.5 || previous.Load1M-current.Load1M >= 0.5 {
+		return true
+	}
+	return false
 }
 
 func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRuntime *cluster.MCPRuntime, sessions *executor.SessionManager, msg cluster.Message) error {

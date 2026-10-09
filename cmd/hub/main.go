@@ -57,6 +57,14 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.DB.Close()
+	var journalModeString string
+	var synchronous int
+	var busyTimeout, walAutoCheckpoint int
+	_ = store.DB.QueryRow("PRAGMA journal_mode").Scan(&journalModeString)
+	_ = store.DB.QueryRow("PRAGMA synchronous").Scan(&synchronous)
+	_ = store.DB.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout)
+	_ = store.DB.QueryRow("PRAGMA wal_autocheckpoint").Scan(&walAutoCheckpoint)
+	log.Printf("sqlite pragmas: journal_mode=%s synchronous=%d busy_timeout=%d wal_autocheckpoint=%d", journalModeString, synchronous, busyTimeout, walAutoCheckpoint)
 	if err := store.CleanupAudits(auditRetentionDays); err != nil {
 		log.Printf("audit retention cleanup: %v", err)
 	}

@@ -41,6 +41,12 @@ func (s *Store) init() error {
 	if _, err := s.DB.Exec("PRAGMA busy_timeout = 5000"); err != nil {
 		return err
 	}
+	if _, err := s.DB.Exec("PRAGMA synchronous = NORMAL"); err != nil {
+		return err
+	}
+	if _, err := s.DB.Exec("PRAGMA wal_autocheckpoint = 1000"); err != nil {
+		return err
+	}
 	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
 		"name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'offline', is_local INTEGER NOT NULL DEFAULT 0, " +
 		"arch TEXT, os TEXT, last_seen INTEGER NOT NULL DEFAULT 0, last_heartbeat INTEGER NOT NULL DEFAULT 0, " +
@@ -207,6 +213,44 @@ func (s *Store) UpsertRemote(name, status, arch, osName string, lastHeartbeat in
 		"last_seen=excluded.last_seen, last_heartbeat=excluded.last_heartbeat, offline_at=NULL, profile_json=excluded.profile_json, updated_at=excluded.updated_at",
 		name, status, 0, arch, osName, lastHeartbeat, lastHeartbeat, nil, profileJSON, now, now)
 	return err
+}
+
+type RemoteProfileUpdate struct {
+	Name          string
+	LastHeartbeat int64
+	Arch          string
+	OS            string
+	ProfileJSON   string
+}
+
+// UpdateRemoteProfiles persists the latest profile snapshots in one transaction.
+// Device status is deliberately not changed here: a queued profile may be flushed
+// after the connection has already transitioned offline.
+func (s *Store) UpdateRemoteProfiles(updates []RemoteProfileUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.Prepare(`UPDATE devices SET arch=?, os=?, last_seen=?, last_heartbeat=?, profile_json=?, updated_at=? WHERE name=? AND is_local=0`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().Unix()
+	for _, u := range updates {
+		heartbeat := u.LastHeartbeat
+		if heartbeat <= 0 {
+			heartbeat = now
+		}
+		if _, err := stmt.Exec(u.Arch, u.OS, heartbeat, heartbeat, u.ProfileJSON, now, u.Name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UpdateRemoteProfile(name string, lastHeartbeat int64, arch, osName, profileJSON string) error {
