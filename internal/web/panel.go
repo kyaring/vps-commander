@@ -2,16 +2,19 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
-
-	"github.com/wjyhk/vps-commander/internal/auth"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wjyhk/vps-commander/internal/auth"
 )
 
 //go:embed static/*
@@ -39,10 +42,22 @@ type Panel struct {
 	Runner     Runner
 	mu         sync.RWMutex
 	sessions   map[string]time.Time
+	cacheMu    sync.Mutex
+	cache      map[string]cachedHTTPResponse
 }
 
+type cachedHTTPResponse struct {
+	status    int
+	header    http.Header
+	body      []byte
+	etag      string
+	expiresAt time.Time
+}
+
+const panelResponseCacheTTL = 2 * time.Second
+
 func New(password, adminToken string, runner Runner) *Panel {
-	return &Panel{Password: password, AdminToken: adminToken, Runner: runner, sessions: make(map[string]time.Time)}
+	return &Panel{Password: password, AdminToken: adminToken, Runner: runner, sessions: make(map[string]time.Time), cache: make(map[string]cachedHTTPResponse)}
 }
 
 func (p *Panel) Handler() http.Handler {
@@ -51,9 +66,9 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/logout", p.logout)
 	mux.HandleFunc("/panel", p.index)
 	mux.HandleFunc("/panel/", p.index)
-	mux.HandleFunc("/probe/summary", p.probeSummary)
+	mux.HandleFunc("/probe/summary", p.cachedHandler("probe-summary", p.probeSummary))
 	mux.HandleFunc("/static/", p.static)
-	mux.HandleFunc("/panel/api/devices", p.protected(p.handleDevices))
+	mux.HandleFunc("/panel/api/devices", p.protected(p.cachedHandler("panel-devices", p.handleDevices)))
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
@@ -207,6 +222,72 @@ func (p *Panel) probeSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Runner.DevicesJSON(w, r)
+}
+
+func (p *Panel) cachedHandler(key string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			next(w, r)
+			return
+		}
+		// These two cached endpoints do not vary by query parameters. Keeping
+		// one bounded entry per endpoint also prevents arbitrary-query cache growth.
+		cacheKey := key
+		now := time.Now()
+		p.cacheMu.Lock()
+		entry, ok := p.cache[cacheKey]
+		if ok && now.Before(entry.expiresAt) {
+			p.cacheMu.Unlock()
+			writeCachedResponse(w, r, entry)
+			return
+		}
+		p.cacheMu.Unlock()
+
+		recorder := httptest.NewRecorder()
+		next(recorder, r)
+		status := recorder.Code
+		if status == 0 {
+			status = http.StatusOK
+		}
+		entry = cachedHTTPResponse{status: status, header: recorder.Header().Clone(), body: append([]byte(nil), recorder.Body.Bytes()...), expiresAt: time.Now().Add(panelResponseCacheTTL)}
+		if status == http.StatusOK {
+			sum := sha256.Sum256(entry.body)
+			entry.etag = fmt.Sprintf("%x", sum[:])
+			entry.header.Set("ETag", `"`+entry.etag+`"`)
+			entry.header.Set("Cache-Control", "no-cache")
+			p.cacheMu.Lock()
+			if p.cache == nil {
+				p.cache = make(map[string]cachedHTTPResponse)
+			}
+			p.cache[cacheKey] = entry
+			p.cacheMu.Unlock()
+		}
+		writeCachedResponse(w, r, entry)
+	}
+}
+
+func writeCachedResponse(w http.ResponseWriter, r *http.Request, entry cachedHTTPResponse) {
+	for key, values := range entry.header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	if entry.etag != "" && etagMatches(r.Header.Get("If-None-Match"), `"`+entry.etag+`"`) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(entry.status)
+	_, _ = w.Write(entry.body)
+}
+
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Panel) probe(w http.ResponseWriter, r *http.Request) {

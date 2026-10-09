@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -40,7 +43,133 @@ func positiveEnvInt(name string, fallback int) int {
 	return value
 }
 
+type requestLogWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *requestLogWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *requestLogWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *requestLogWriter) Flush() {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *requestLogWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil && w.status == 0 {
+		w.status = http.StatusSwitchingProtocols
+	}
+	return conn, rw, err
+}
+
+func (w *requestLogWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func configureRequestLogging() {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VPS_COMMANDER_LOG_LEVEL"))) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	case "info", "":
+		level = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+}
+
+func configuredCORSOrigins() map[string]struct{} {
+	origins := make(map[string]struct{})
+	for _, value := range strings.Split(os.Getenv("VPS_COMMANDER_CORS_ORIGINS"), ",") {
+		origin := strings.TrimSpace(value)
+		if origin != "" && origin != "*" {
+			origins[origin] = struct{}{}
+		}
+	}
+	return origins
+}
+
+func originAllowed(origin string, allowed map[string]struct{}) bool {
+	_, ok := allowed[origin]
+	return origin != "" && ok
+}
+
+func addVaryOrigin(h http.Header) {
+	for _, value := range h.Values("Vary") {
+		for _, item := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(item), "Origin") {
+				return
+			}
+		}
+	}
+	h.Add("Vary", "Origin")
+}
+
+func shouldLogRequest(path string, status int) bool {
+	return path != "/healthz" && !strings.HasPrefix(path, "/static/") && status != http.StatusNotModified
+}
+
+func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struct{}) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		rw := &requestLogWriter{ResponseWriter: w}
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		allowed := originAllowed(origin, allowedOrigins)
+		if allowed {
+			rw.Header().Set("Access-Control-Allow-Origin", origin)
+			addVaryOrigin(rw.Header())
+		}
+		if r.Method == http.MethodOptions {
+			if origin != "" && !allowed {
+				http.Error(rw, "CORS origin not allowed", http.StatusForbidden)
+			} else {
+				if allowed {
+					rw.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD, DELETE, PATCH")
+					rw.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, If-None-Match, Mcp-Session-Id, Mcp-Protocol-Version")
+				}
+				rw.WriteHeader(http.StatusNoContent)
+			}
+		} else {
+			mux.ServeHTTP(rw, r)
+		}
+		status := rw.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if shouldLogRequest(r.URL.Path, status) {
+			slog.Info("http_request", "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr, "status", status, "duration_ms", time.Since(started).Milliseconds(), "bytes", rw.bytes)
+		}
+	})
+}
+
 func main() {
+	configureRequestLogging()
 	addr := flag.String("addr", "127.0.0.1:9521", "listen address")
 	dbPath := flag.String("db", "data/commander.db", "sqlite database")
 	flag.Parse()
@@ -137,37 +266,24 @@ func main() {
 	mux.Handle("/api/", protected)
 
 	// MCP Endpoints
-	// Flexible Auth: allows optional token on SSE connect, but enforces token on Message calls
 	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
 	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleSSE))))
 	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleMessage))))
 
-	// OAuth Endpoints (For OpenAI OAuth auto-discovery)
+	// OAuth Endpoints
 	mux.HandleFunc("/.well-known/oauth-authorization-server", mcpServer.HandleOAuthMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", mcpServer.HandleOAuthMetadata)
 	mux.HandleFunc("/oauth/authorize", mcpServer.HandleAuthorize)
 	mux.HandleFunc("/oauth/token", mcpServer.HandleToken)
-
 	mux.HandleFunc("/healthz", s.Routes().ServeHTTP)
 	mux.HandleFunc("/openapi.json", s.Routes().ServeHTTP)
 	mux.HandleFunc("/agent/ws", s.Routes().ServeHTTP)
 	panel := s.Panel(webPassword)
 	mux.Handle("/", panel)
 
-	// Wrap root with logger and CORS
-	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[REQ] %s %s from %s (Auth: %v)", r.Method, r.URL.String(), r.RemoteAddr, r.Header.Get("Authorization") != "")
-		// Handle CORS Preflight
-		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		mux.ServeHTTP(w, r)
-	})
+	// Structured request logging and an explicit CORS origin allowlist. An
+	// unset VPS_COMMANDER_CORS_ORIGINS means no cross-origin browser access.
+	rootHandler := withRequestLoggingAndCORS(mux, configuredCORSOrigins())
 
 	server := &http.Server{
 		Addr:              *addr,

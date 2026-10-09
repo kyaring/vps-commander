@@ -253,7 +253,6 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	endpointURI := fmt.Sprintf("/mcp/message?sessionId=%s", sessionID)
 	fmt.Fprintf(w, "event: endpoint\ndata: %s\n\n", endpointURI)

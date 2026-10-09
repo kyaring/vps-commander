@@ -412,19 +412,23 @@ if ($("#notificationRefresh")) $("#notificationRefresh").onclick = () => loadWeb
 
 // 开启 5 秒平滑实时自动轮询
 let devicePollTimer = null;
-function startDevicePolling() {
+function stopDevicePolling() {
   if (devicePollTimer) clearInterval(devicePollTimer);
-  devicePollTimer = setInterval(() => {
-    if (!document.hidden) {
-      loadDevices().catch(console.error);
-    }
-  }, 5000);
+  devicePollTimer = null;
+}
+function startDevicePolling() {
+  stopDevicePolling();
+  if (document.hidden) return;
+  devicePollTimer = setInterval(() => loadDevices().catch(console.error), 5000);
 }
 startDevicePolling();
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) {
+  if (document.hidden) {
+    stopDevicePolling();
+  } else {
     loadDevices().catch(console.error);
+    startDevicePolling();
   }
 });
 loadWebhooks().catch(console.error);

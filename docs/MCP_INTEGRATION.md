@@ -251,3 +251,10 @@ Agent MCP Service
 - `VPS_COMMANDER_EXEC_CONCURRENCY`：全局 exec 并发上限，默认 `32`。
 - `VPS_COMMANDER_SEARCH_CONCURRENCY`：全局搜索并发上限，默认 `8`。
 - `VPS_COMMANDER_TOKEN_EXEC_CONCURRENCY`：每个令牌的并发 exec 上限，默认 `2`。
+
+## 缓存、请求日志与 CORS（B5）
+
+- `/probe/summary` 和 `/panel/api/devices` 使用 2 秒服务端缓存，并支持 `ETag` / `If-None-Match` 条件请求（匹配时返回 `304 Not Modified`）。
+- 公共探针页与管理面板在浏览器标签页隐藏时暂停 5 秒轮询，恢复可见后立即刷新并重新开始轮询。
+- HTTP 请求日志使用 `log/slog` 结构化输出，默认级别 `info`；`/healthz`、`/static/` 和 `304` 响应不记录请求日志。可用 `VPS_COMMANDER_LOG_LEVEL=debug|info|warn|error` 调整级别。
+- CORS 使用 `VPS_COMMANDER_CORS_ORIGINS` 配置逗号分隔的精确 Origin 白名单，例如 `https://panel.example,https://admin.example`。未设置时不开放跨域浏览器访问；通配符 `*` 不被接受。

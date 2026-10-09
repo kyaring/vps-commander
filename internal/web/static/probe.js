@@ -284,6 +284,22 @@
     }
   }
 
-  load();
-  setInterval(load, 5000);
+  let pollTimer = null;
+  function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    if (document.hidden) return;
+    pollTimer = setInterval(() => { if (!document.hidden) load(); }, 5000);
+  }
+  if (!document.hidden) load();
+  startPolling();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    } else {
+      load();
+      startPolling();
+    }
+  });
 })();

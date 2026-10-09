@@ -23,7 +23,6 @@ func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint_auth_methods_supported": []string{"none"},
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	_ = json.NewEncoder(w).Encode(meta)
 }
 
