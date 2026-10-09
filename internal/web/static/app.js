@@ -248,7 +248,7 @@ function wizardGenerate(force=false){
   $("#wizardGPT").hidden=!wizardConfigGenerated||client!=="gpt";$("#wizardMCP").hidden=!wizardConfigGenerated||client!=="mcp";$("#wizardREST").hidden=!wizardConfigGenerated||client!=="rest";
   $("#wizardSchema").value=origin+"/openapi.json";$("#wizardPrompt").value=wizardPromptText;
   $("#wizardHTTPURL").value=origin+"/mcp";$("#wizardSSEURL").value=origin+"/mcp/sse";
-  $("#wizardMCPJSON").value=JSON.stringify({mcpServers:{"vps-commander":{url:origin+"/mcp",headers:{Authorization:"Bearer "+secret}}},sse:{url:origin+"/mcp/sse",headers:{Authorization:"Bearer "+secret}}},null,2);
+  $("#wizardMCPJSON").value=JSON.stringify({mcpServers:{"vps-commander":{type:"http",url:origin+"/mcp",headers:{Authorization:"Bearer "+secret}},"vps-commander-sse":{type:"sse",url:origin+"/mcp/sse",headers:{Authorization:"Bearer "+secret}}}},null,2);
   $("#wizardCurl").value=`curl -fsS '${origin}/api/v1/devices' -H 'Authorization: Bearer ${secret}'`;
   const selected=wizardSelectedToken();
   $("#wizardTokenStatus").textContent=selected?( $("#wizardSecret").value.trim()?`已选择命名令牌：${selected.name}`:`已选择命名令牌：${selected.name}。请粘贴该令牌的完整密钥；Hub 无法恢复旧密钥。`):"请先选择一个命名令牌；已有令牌需粘贴创建时保存的完整密钥。";
@@ -261,7 +261,8 @@ $("#wizardSecret").addEventListener("input",()=>{wizardSecretTokenID=$("#wizardT
 document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",async()=>{const el=$("#"+button.dataset.copy);try{await navigator.clipboard.writeText(el.value);button.textContent="已复制";setTimeout(()=>button.textContent="复制",1500)}catch(e){el.focus();el.select()}}));
 $("#wizardCreateToken").onclick=async()=>{
   const name=$("#wizardNewTokenName").value.trim();if(!name){$("#wizardTokenStatus").textContent="请先输入新令牌名称。";return}
-  try{const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,note:"由 AI 接入向导创建",scopes:["devices:read"],rate_rps:10,max_sessions:10})});$("#wizardSecret").value=x.token;wizardSecretTokenID=x.id;await loadTokens();$("#wizardToken").value=x.id;$("#wizardTokenStatus").textContent="命名令牌已创建。完整密钥仅显示在当前页面，请妥善保存。";wizardGenerate();}catch(e){$("#wizardTokenStatus").textContent="创建失败："+e.message}
+  const template=$("#wizardTokenTemplate").value,scopes=tokenTemplates[template]||tokenTemplates.read;
+  try{const x=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,note:"由 AI 接入向导创建",scopes,rate_rps:10,max_sessions:10})});$("#wizardSecret").value=x.token;wizardSecretTokenID=x.id;await loadTokens();$("#wizardToken").value=x.id;$("#wizardTokenStatus").textContent=`命名令牌已创建（${template==="ops"?"运维":"只读"}）。完整密钥仅显示在当前页面，请妥善保存。`;wizardGenerate();}catch(e){$("#wizardTokenStatus").textContent="创建失败："+e.message}
 };
 $("#wizardTest").onclick=async()=>{
   const secret=$("#wizardSecret").value.trim(),result=$("#wizardTestResult");
@@ -269,14 +270,29 @@ $("#wizardTest").onclick=async()=>{
   if(!wizardSelectedToken()){result.textContent="失败：请先选择有效的命名令牌。";result.className="test-fail";return}
   if(!secret){result.textContent="失败：Hub 不保存完整密钥，请粘贴令牌密钥后重试。";result.className="test-fail";return}
   result.textContent="测试中…";result.className="";
-  try{const r=await fetch(location.origin+"/api/v1/devices",{headers:{Authorization:"Bearer "+secret},cache:"no-store"});const body=await r.text();if(!r.ok)throw Error(`HTTP ${r.status}: ${body.slice(0,240)}`);const data=JSON.parse(body);result.textContent=`成功：list_devices 返回 ${Array.isArray(data)?data.length:(data.devices||[]).length} 台设备。`;result.className="test-ok";}catch(e){result.textContent="失败："+e.message;result.className="test-fail"}
+  try{
+    const client=$("#wizardClient").value;
+    if(client==="mcp"){
+      const headers={Authorization:"Bearer "+secret,"Content-Type":"application/json",Accept:"application/json, text/event-stream"};
+      const rpc=async(payload,sessionID="")=>{const h={...headers};if(sessionID)h["Mcp-Session-Id"]=sessionID;const r=await fetch(location.origin+"/mcp",{method:"POST",headers:h,body:JSON.stringify(payload),cache:"no-store"});const body=await r.text();if(!r.ok)throw Error(`MCP HTTP ${r.status}: ${body.slice(0,240)}`);if(!body.trim())return null;let data;try{data=JSON.parse(body)}catch(e){throw Error("MCP 返回了非 JSON 响应："+body.slice(0,160))}if(data.error)throw Error(`MCP ${data.error.code}: ${data.error.message}`);return {data,sessionID:r.headers.get("Mcp-Session-Id")||sessionID}};
+      const init=await rpc({jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2025-03-26",capabilities:{},clientInfo:{name:"vps-commander-panel-wizard",version:"1.0"}}});
+      if(!init?.data?.result)throw Error("MCP initialize 未返回 result");
+      const sessionID=init.sessionID||"";
+      await rpc({jsonrpc:"2.0",method:"notifications/initialized"},sessionID);
+      const listed=await rpc({jsonrpc:"2.0",id:2,method:"tools/list",params:{}},sessionID);
+      const tools=listed?.data?.result?.tools;if(!Array.isArray(tools))throw Error("MCP tools/list 未返回工具列表");
+      result.style.whiteSpace="pre-wrap";result.textContent=`成功：MCP initialize + tools/list 完成，可用工具 ${tools.length} 个。`+(tools.length?"\n"+tools.map(t=>`• ${t.name}${t.description?" — "+t.description:""}`).join("\n"):"\n此令牌当前没有可用工具。");result.className="test-ok";
+    }else{
+      const r=await fetch(location.origin+"/api/v1/devices",{headers:{Authorization:"Bearer "+secret},cache:"no-store"});const body=await r.text();if(!r.ok)throw Error(`HTTP ${r.status}: ${body.slice(0,240)}`);const data=JSON.parse(body);result.textContent=`成功：list_devices 返回 ${Array.isArray(data)?data.length:(data.devices||[]).length} 台设备。`;result.className="test-ok";
+    }
+  }catch(e){result.textContent="失败："+e.message;result.className="test-fail"}
 };
 $("#confirmNamedTokenUse").addEventListener("change",()=>{$("#rotateKey").disabled=!$("#confirmNamedTokenUse").checked});
 $("#rotateKey").onclick=async()=>{
   if(!$("#confirmNamedTokenUse").checked){alert("请先确认已切换到命名令牌并验证连通。 ");return}
   if(!confirm("轮换 API Key 会让所有使用 legacy Key 的客户端立刻失效。请先将当前客户端切换到命名令牌。确定已完成切换？"))return;
   if(prompt("二次确认：输入 ROTATE 才会继续。")!=="ROTATE")return;
-  try{const x=await api("/key/rotate",{method:"POST"});$("#newKey").textContent="新 API Key（仅本次显示）：\\n"+x.api_key;}catch(e){$("#newKey").textContent=e.message}
+  try{const x=await api("/key/rotate",{method:"POST"});$("#newKey").textContent="新 API Key（仅本次显示）：\n"+x.api_key;}catch(e){$("#newKey").textContent=e.message}
 };
 $("#logout").onclick=async()=>{
   await fetch("/panel/logout",{method:"POST"});

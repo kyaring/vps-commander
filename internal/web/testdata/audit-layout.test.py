@@ -154,6 +154,7 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         evaluate("(()=>{window.__confirmCalls=0;window.confirm=()=>{window.__confirmCalls++;return window.__confirmCalls===1};document.querySelector('#tokenName').value='must-not-create-admin';const t=document.querySelector('#tokenTemplate');t.value='all';t.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#tokenCreate').click()})()")
         assert evaluate("window.__confirmCalls===2 && document.querySelector('[data-token-scope=admin]').checked"), "admin create did not require two confirmations"
         # Create a real named token through the wizard and test it against the temporary Hub.
+        assert evaluate("document.querySelector('#wizardTokenTemplate').value") == "read", "wizard token template must default to read-only"
         evaluate("document.querySelector('#tokenTemplate').value='read';document.querySelector('#tokenTemplate').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardNewTokenName').value='layout-wizard-token';document.querySelector('#wizardCreateToken').click()")
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -163,15 +164,25 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert created.get("secret","").startswith("vpc_") and "layout-wizard-token" in created.get("selected",""), f"wizard did not create/select token: {created}"
         evaluate("document.querySelector('#wizardClient').value='mcp';document.querySelector('#wizardClient').dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('#wizardGenerate').click()")
         config = evaluate("JSON.parse(document.querySelector('#wizardMCPJSON').value)")
-        assert config["mcpServers"]["vps-commander"]["url"].endswith("/mcp"), f"bad Streamable HTTP config: {config}"
-        assert config["sse"]["url"].endswith("/mcp/sse"), f"bad SSE config: {config}"
+        assert config["mcpServers"]["vps-commander"]["type"] == "http" and config["mcpServers"]["vps-commander"]["url"].endswith("/mcp"), f"bad Streamable HTTP config: {config}"
+        assert config["mcpServers"]["vps-commander-sse"]["type"] == "sse" and config["mcpServers"]["vps-commander-sse"]["url"].endswith("/mcp/sse"), f"bad SSE config: {config}"
         evaluate("document.querySelector('#wizardTest').click()")
         deadline = time.time() + 10
         while time.time() < deadline:
             if evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok') || document.querySelector('#wizardTestResult').classList.contains('test-fail')"): break
             time.sleep(.1)
-        assert evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok')"), "wizard list_devices test failed: " + str(evaluate("document.querySelector('#wizardTestResult').textContent"))
+        assert evaluate("document.querySelector('#wizardTestResult').classList.contains('test-ok')"), "wizard MCP initialize/tools-list test failed: " + str(evaluate("document.querySelector('#wizardTestResult').textContent"))
+        mcp_test_text = evaluate("document.querySelector('#wizardTestResult').textContent")
+        assert "initialize + tools/list" in mcp_test_text and "list_devices" in mcp_test_text, f"MCP wizard did not show available tools: {mcp_test_text}"
         token = created["secret"]
+        # Verify the wizard can also create an operational token with the requested scopes.
+        evaluate("document.querySelector('#wizardTokenTemplate').value='ops';document.querySelector('#wizardNewTokenName').value='layout-wizard-ops-token';document.querySelector('#wizardCreateToken').click()")
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            wizard_scopes = evaluate("Array.from(document.querySelectorAll('#tokens tr')).find(r=>r.textContent.includes('layout-wizard-ops-token'))?.cells[2]?.textContent.split(', ').sort()||[]")
+            if wizard_scopes: break
+            time.sleep(.1)
+        assert sorted(wizard_scopes) == ["devices:read","exec","files:read","files:write","mcp:call","process"], f"wizard ops template scopes wrong: {wizard_scopes}"
         rest = subprocess.run(["curl","-fsS",base+"/api/v1/devices","-H",f"Authorization: Bearer {token}"],capture_output=True,text=True,timeout=8,check=True)
         assert isinstance(json.loads(rest.stdout),list), "curl REST list_devices did not return a JSON array"
         rpc = json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"panel-layout-test","version":"1"}}})
