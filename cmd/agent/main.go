@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -33,16 +34,26 @@ func main() {
 		log.Fatal("-hub, -name and -token are required")
 	}
 	backoff := time.Second
+	firstReconnect := true
 	for {
 		started := time.Now()
-		if err := run(*hub, *name, *token, *insecure); err != nil {
+		err := run(*hub, *name, *token, *insecure)
+		if err != nil {
 			log.Printf("agent connection: %v", err)
 		}
 		stable := time.Since(started) >= 2*time.Minute
 		if stable {
 			backoff = time.Second
 		}
-		delay := jitteredBackoff(backoff, 30*time.Second, rand.Float64())
+		var delay time.Duration
+		if firstReconnect {
+			// Spread the first wave independently of the exponential backoff.
+			delay = initialReconnectDelay(backoff, 30*time.Second, rand.Float64(), rand.Float64())
+			firstReconnect = false
+		} else {
+			delay = fullJitterBackoff(backoff, 30*time.Second, rand.Float64())
+		}
+		delay = applyRetryAfter(delay, err)
 		log.Printf("reconnecting in %s (base=%s)", delay, backoff)
 		time.Sleep(delay)
 		if !stable && backoff < 30*time.Second {
@@ -54,12 +65,23 @@ func main() {
 	}
 }
 
-func jitteredBackoff(base, max time.Duration, sample float64) time.Duration {
+func initialReconnectDelay(base, max time.Duration, backoffSample, initialSample float64) time.Duration {
+	if initialSample < 0 {
+		initialSample = 0
+	}
+	if initialSample > 1 {
+		initialSample = 1
+	}
+	return fullJitterBackoff(base, max, backoffSample) + time.Duration(float64(10*time.Second)*initialSample)
+}
+
+func fullJitterBackoff(base, max time.Duration, sample float64) time.Duration {
 	if base < 0 {
 		base = 0
 	}
-	if max > 0 && base > max {
-		base = max
+	limit := base
+	if max > 0 && limit > max {
+		limit = max
 	}
 	if sample < 0 {
 		sample = 0
@@ -67,12 +89,58 @@ func jitteredBackoff(base, max time.Duration, sample float64) time.Duration {
 	if sample > 1 {
 		sample = 1
 	}
-	// Bounded jitter in [0.8x, 1.2x] spreads simultaneous reconnects while preserving the backoff envelope.
-	delay := time.Duration(float64(base) * (0.8 + sample*0.4))
-	if max > 0 && delay > max {
-		delay = max
+	return time.Duration(float64(limit) * sample)
+}
+
+type dialFailure struct {
+	err        error
+	statusCode int
+	retryAfter time.Duration
+}
+
+func (e *dialFailure) Error() string {
+	if e.statusCode == 0 {
+		return e.err.Error()
+	}
+	if e.retryAfter > 0 {
+		return fmt.Sprintf("websocket handshake HTTP %d (Retry-After=%s): %v", e.statusCode, e.retryAfter, e.err)
+	}
+	return fmt.Sprintf("websocket handshake HTTP %d: %v", e.statusCode, e.err)
+}
+
+func (e *dialFailure) Unwrap() error { return e.err }
+
+func retryAfterFromError(err error) time.Duration {
+	var failure *dialFailure
+	if errors.As(err, &failure) {
+		return failure.retryAfter
+	}
+	return 0
+}
+
+func applyRetryAfter(delay time.Duration, err error) time.Duration {
+	if retryAfter := retryAfterFromError(err); retryAfter > delay {
+		return retryAfter
 	}
 	return delay
+}
+
+func newDialFailure(err error, resp *http.Response) error {
+	if resp == nil {
+		return err
+	}
+	failure := &dialFailure{err: err, statusCode: resp.StatusCode}
+	if value := resp.Header.Get("Retry-After"); value != "" {
+		if seconds, parseErr := time.ParseDuration(value + "s"); parseErr == nil && seconds >= 0 {
+			failure.retryAfter = seconds
+		} else if when, dateErr := http.ParseTime(value); dateErr == nil {
+			failure.retryAfter = time.Until(when)
+			if failure.retryAfter < 0 {
+				failure.retryAfter = 0
+			}
+		}
+	}
+	return failure
 }
 
 func run(hub, name, token string, insecure bool) error {
@@ -83,9 +151,13 @@ func run(hub, name, token string, insecure bool) error {
 	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
-	c, _, err := dialer.Dial(u, header)
+	c, resp, err := dialer.Dial(u, header)
 	if err != nil {
-		return err
+		failure := newDialFailure(err, resp)
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return failure
 	}
 	defer c.Close()
 	var writeMu sync.Mutex

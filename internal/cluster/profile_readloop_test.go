@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,5 +67,52 @@ func TestReadLoopHelloPersistsImmediatelyAndPingDoesNotWriteDB(t *testing.T) {
 	}
 	if afterUpdated != beforeUpdated || afterHeartbeat != beforeHeartbeat {
 		t.Fatalf("profile-free ping unexpectedly wrote database: before=(%d,%d) after=(%d,%d)", beforeUpdated, beforeHeartbeat, afterUpdated, afterHeartbeat)
+	}
+}
+
+func TestServeWSClosesConnectionWhenFrameExceedsReadLimit(t *testing.T) {
+	mgr := NewManager("test-secret", nil)
+	defer mgr.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/agent/ws", mgr.ServeWS)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	url := "ws" + ts.URL[4:] + "/agent/ws?device_name=oversized-frame-test"
+	header := http.Header{"Authorization": []string{"Bearer test-secret"}}
+	c, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	// Keep the payload valid JSON: without SetReadLimit, the server would parse
+	// the message and continue instead of disconnecting this client.
+	payload := []byte(`{"event":"ping","padding":"` + strings.Repeat("x", 8<<20) + `"}`)
+	// The server may close the TCP connection while the client is still writing.
+	_ = c.WriteMessage(websocket.TextMessage, payload)
+	for {
+		_, _, err = c.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+	if err == nil {
+		t.Fatal("server accepted a WebSocket frame larger than 8 MiB")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.RLock()
+		n := mgr.nodes["oversized-frame-test"]
+		mgr.mu.RUnlock()
+		if n != nil && !n.Connected.Load() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mgr.mu.RLock()
+	n := mgr.nodes["oversized-frame-test"]
+	mgr.mu.RUnlock()
+	if n == nil || n.Connected.Load() {
+		t.Fatal("server did not disconnect the oversized-frame client")
 	}
 }

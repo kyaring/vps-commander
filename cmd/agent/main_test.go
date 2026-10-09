@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -89,18 +91,62 @@ func TestProfileIntervalHubConfigurationCompatibility(t *testing.T) {
 	}
 }
 
-func TestJitteredBackoffBounds(t *testing.T) {
+func TestFullJitterBackoffBounds(t *testing.T) {
 	base, max := 10*time.Second, 30*time.Second
-	if got := jitteredBackoff(base, max, 0); got != 8*time.Second {
-		t.Fatalf("minimum jitter=%s, want 8s", got)
+	if got := fullJitterBackoff(base, max, 0); got != 0 {
+		t.Fatalf("minimum full jitter=%s, want 0s", got)
 	}
-	if got := jitteredBackoff(base, max, 0.5); got != 10*time.Second {
-		t.Fatalf("midpoint jitter=%s, want 10s", got)
+	if got := fullJitterBackoff(base, max, 0.5); got != 5*time.Second {
+		t.Fatalf("midpoint full jitter=%s, want 5s", got)
 	}
-	if got := jitteredBackoff(base, max, 1); got != 12*time.Second {
-		t.Fatalf("maximum jitter=%s, want 12s", got)
+	if got := fullJitterBackoff(base, max, 1); got != 10*time.Second {
+		t.Fatalf("maximum full jitter=%s, want 10s", got)
 	}
-	if got := jitteredBackoff(40*time.Second, max, 1); got != max {
-		t.Fatalf("capped jitter=%s, want %s", got, max)
+	if got := fullJitterBackoff(40*time.Second, max, 1); got != max {
+		t.Fatalf("capped full jitter=%s, want %s", got, max)
+	}
+	if got := fullJitterBackoff(-time.Second, max, 0.5); got != 0 {
+		t.Fatalf("negative base should clamp to zero, got %s", got)
+	}
+}
+
+func TestInitialReconnectDelayAddsZeroToTenSeconds(t *testing.T) {
+	base, max := time.Second, 30*time.Second
+	if got := initialReconnectDelay(base, max, 0, 0); got != 0 {
+		t.Fatalf("minimum initial reconnect delay=%s, want 0s", got)
+	}
+	if got := initialReconnectDelay(base, max, 1, 1); got != 11*time.Second {
+		t.Fatalf("maximum initial reconnect delay=%s, want 11s", got)
+	}
+	if got := initialReconnectDelay(base, max, 0.5, 0.5); got != 5500*time.Millisecond {
+		t.Fatalf("midpoint initial reconnect delay=%s, want 5.5s", got)
+	}
+}
+
+func TestDialFailureHonorsRetryAfter(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"3"}}}
+	err := newDialFailure(errors.New("bad handshake"), resp)
+	var failure *dialFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected dialFailure, got %T", err)
+	}
+	if failure.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429", failure.statusCode)
+	}
+	if got := retryAfterFromError(err); got != 3*time.Second {
+		t.Fatalf("Retry-After=%s, want 3s", got)
+	}
+	if got := applyRetryAfter(200*time.Millisecond, err); got != 3*time.Second {
+		t.Fatalf("retry delay=%s, want to honor 3s Retry-After", got)
+	}
+	if got := applyRetryAfter(5*time.Second, err); got != 5*time.Second {
+		t.Fatalf("retry delay=%s, should retain longer randomized delay", got)
+	}
+}
+
+func TestDialFailureWithoutResponseKeepsOriginalError(t *testing.T) {
+	want := errors.New("connection refused")
+	if got := newDialFailure(want, nil); got != want {
+		t.Fatalf("error without response changed: got %v", got)
 	}
 }

@@ -136,9 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device, timestamp);
 
 ### B2. 重连与握手
 
-- Agent 退避加入 full jitter：`sleep = rand(0, min(cap, base*2^n))`，首次重连附加 0–10s 随机延迟。
-- Hub `/agent/ws` 握手令牌桶（默认 20/s），超限返回 503 + `Retry-After`，Agent 遵守。
-- WebSocket：`SetReadLimit`（8MB）；每节点单写协程 + 有界发送队列，替代 `WriteMu` 直接写。
+- Agent 退避使用 full jitter：`sleep = rand(0, min(cap, base*2^n))`，首次重连额外附加 0–10s 随机延迟；读取握手响应状态码，遵守 `Retry-After`。
+- Hub `/agent/ws` 握手限流：全局 `50/s`、突发 `200`；单 IP `5/s`、突发 `20`。超限返回 `429 Too Many Requests` + `Retry-After: 1`，Agent 遵守。限流和 GeoIP 统一使用 `auth.ClientIP`：默认仅使用连接地址；开启 `VPS_COMMANDER_TRUST_PROXY=on` 后按该函数规则读取代理头。反代必须正确覆盖/追加客户端 IP，不能直接信任客户端伪造的头。共用同一公网 IP/NAT 的 Agent 共享单 IP 桶，集体重连时可能触发 429 并依赖退避恢复。
+- WebSocket：升级后立即调用 `SetReadLimit(8<<20)`（8 MiB）；每节点单写协程 + 有界发送队列，替代 `WriteMu` 直接写。
 
 ### B3. MCP 传输
 
@@ -158,7 +158,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device, timestamp);
 
 ### B6. 可观测性
 
-- `GET /metrics`（需 `admin` scope，Prometheus 文本）：在线 Agent 数、MCP 会话数（按传输）、在途 exec、审计队列深度、SQLite 写延迟、429/503 计数、Goroutine 数、RSS。
+- `GET /metrics`（需 `admin` scope，Prometheus 文本）：在线 Agent 数、MCP 会话数（按传输）、在途 exec、审计队列深度、SQLite 写延迟、429 计数、Goroutine 数、RSS。
 
 ### B7. 压测工具
 

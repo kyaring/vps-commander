@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/security"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -129,7 +130,7 @@ func (m *Manager) SetProfileInterval(interval time.Duration) {
 }
 
 func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
-	clientIP := ExtractIPFromRequest(r)
+	clientIP := auth.ClientIP(r)
 	if m.handshakeLimiter != nil && !m.handshakeLimiter.Allow(clientIP, time.Now()) {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many agent handshakes", http.StatusTooManyRequests)
@@ -177,6 +178,7 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	c.SetReadLimit(8 << 20)
 	m.startProfileFlusher()
 	cc, countryName := ResolveIP(clientIP)
 	n := &Node{

@@ -176,8 +176,8 @@ Agent 只主动连接 Hub，不需要公网入站端口。
 
 - `VPS_COMMANDER_PROFILE_INTERVAL_SECONDS`：Agent 资源画像的最长上报间隔，默认 `300` 秒；Hub 会通过心跳消息下发给新版 Agent，范围限制为 `60–3600` 秒。旧版 Agent 忽略该可选协议字段，不影响原有心跳。
 - 审计日志由存储层单写协程异步批量持久化：队列容量 `1024`，每累计 `100` 条或每 `500ms` 刷写；队列满时告警并同步写入。Hub 正常退出时会等待队列刷写完成。
-- Agent 断线重连使用指数退避（`1s` 起步、最高 `30s`），加入 ±20% 抖动；连接稳定运行 2 分钟后退避重置。
-- Agent WebSocket 握手使用令牌桶限流：全局 `50/s`、突发 `200`；单 IP `5/s`、突发 `20`。超过限额返回 HTTP `429`，避免重连风暴压垮 Hub。
+- Agent 断线重连使用 full jitter 指数退避（`rand(0, min(cap, base*2^n))`，起步 `1s`、上限 `30s`）；首次重连额外随机等待 `0–10s`，并遵守握手响应的 `Retry-After`。连接稳定运行 2 分钟后退避重置。
+- Agent WebSocket 握手使用令牌桶限流：全局 `50/s`、突发 `200`；单 IP `5/s`、突发 `20`。超过限额返回 HTTP `429` 和 `Retry-After: 1`。共享同一公网 IP/NAT 的 Agent 共用单 IP 限额，集体重连时可能触发 429。WebSocket 入站帧大小限制为 `8 MiB`。
 
 生产发布顺序：
 `backup → clean build → 单节点灰度 → Hub restart recovery → rolling Agent → MCP/security/audit 验收`。

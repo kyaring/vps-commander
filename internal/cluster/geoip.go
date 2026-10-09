@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wjyhk/vps-commander/internal/auth"
 )
 
 type GeoLocation struct {
@@ -31,31 +33,9 @@ func isPrivateIP(ipStr string) bool {
 	return false
 }
 
-// ExtractIPFromRequest retrieves the real client IP from HTTP headers or RemoteAddr
+// ExtractIPFromRequest uses the same trusted-proxy policy as REST/MCP.
 func ExtractIPFromRequest(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		parts := strings.Split(fwd, ",")
-		for _, p := range parts {
-			clean := strings.TrimSpace(p)
-			if clean != "" && !isPrivateIP(clean) {
-				return clean
-			}
-		}
-		if len(parts) > 0 {
-			clean := strings.TrimSpace(parts[0])
-			if clean != "" {
-				return clean
-			}
-		}
-	}
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
-	}
-	return r.RemoteAddr
+	return auth.ClientIP(r)
 }
 
 // ResolveIP returns countryCode (e.g. "HK", "SG") and countryName (e.g. "Hong Kong", "Singapore")
