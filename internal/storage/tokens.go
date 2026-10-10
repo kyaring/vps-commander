@@ -37,11 +37,39 @@ func HashAPIToken(token string) string {
 }
 
 func (s *Store) EnsureAPITokens(legacyKey string) error {
-	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL UNIQUE, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL, devices_json TEXT, rate_rps INTEGER NOT NULL DEFAULT 10, max_sessions INTEGER NOT NULL DEFAULT 10, note TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER, last_used_at INTEGER, last_used_ip TEXT, revoked_at INTEGER, is_legacy INTEGER NOT NULL DEFAULT 0)")
+	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL UNIQUE, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL, devices_json TEXT, rate_rps INTEGER NOT NULL DEFAULT 10, max_sessions INTEGER NOT NULL DEFAULT 10, note TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER, last_used_at INTEGER, last_used_ip TEXT, revoked_at INTEGER, is_legacy INTEGER NOT NULL DEFAULT 0, oauth_version INTEGER NOT NULL DEFAULT 1)")
 	if err != nil {
 		return err
 	}
+	cols := map[string]bool{}
+	rows, err := s.DB.Query("PRAGMA table_info(api_tokens)")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		cols[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !cols["oauth_version"] {
+		if _, err := s.DB.Exec("ALTER TABLE api_tokens ADD COLUMN oauth_version INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return err
+		}
+	}
 	if _, err = s.DB.Exec("CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)"); err != nil {
+		return err
+	}
+	// Backfill grant device snapshots after api_tokens exists. This also makes
+	// upgrades from the first OAuth schema fail closed to the current token ACL.
+	if _, err = s.DB.Exec("UPDATE oauth_grants SET devices_json=COALESCE((SELECT devices_json FROM api_tokens WHERE api_tokens.id=oauth_grants.api_token_id),'[]') WHERE devices_json IS NULL"); err != nil {
 		return err
 	}
 	if legacyKey == "" {
@@ -118,7 +146,12 @@ func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS
 	if maxSessions <= 0 {
 		maxSessions = 10
 	}
-	r, err := s.DB.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,note=?,expires_at=? WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, note, expiresAt, id)
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	r, err := tx.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,note=?,expires_at=?,oauth_version=oauth_version+1 WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, note, expiresAt, id)
 	if err != nil {
 		return err
 	}
@@ -126,7 +159,10 @@ func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS
 	if n == 0 {
 		return fmt.Errorf("token not found")
 	}
-	return nil
+	if err := constrainOAuthGrantScopesTx(tx, id, time.Now().Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RotateAPIToken(id, prefix, tokenHash string) error {
@@ -142,7 +178,10 @@ func (s *Store) RotateAPIToken(id, prefix, tokenHash string) error {
 	if revoked.Valid {
 		return fmt.Errorf("token already revoked")
 	}
-	if _, err := tx.Exec("UPDATE api_tokens SET prefix=?,token_hash=?,revoked_at=NULL WHERE id=?", prefix, tokenHash, id); err != nil {
+	if _, err := tx.Exec("UPDATE api_tokens SET prefix=?,token_hash=?,revoked_at=NULL,oauth_version=oauth_version+1 WHERE id=?", prefix, tokenHash, id); err != nil {
+		return err
+	}
+	if err := revokeOAuthForAPITokenTx(tx, id, time.Now().Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -150,7 +189,12 @@ func (s *Store) RotateAPIToken(id, prefix, tokenHash string) error {
 
 func (s *Store) RevokeAPIToken(id string) error {
 	now := time.Now().Unix()
-	r, err := s.DB.Exec("UPDATE api_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL", now, id)
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	r, err := tx.Exec("UPDATE api_tokens SET revoked_at=?,oauth_version=oauth_version+1 WHERE id=? AND revoked_at IS NULL", now, id)
 	if err != nil {
 		return err
 	}
@@ -158,11 +202,20 @@ func (s *Store) RevokeAPIToken(id string) error {
 	if n == 0 {
 		return fmt.Errorf("token not found or already revoked")
 	}
-	return nil
+	if err := revokeOAuthForAPITokenTx(tx, id, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DeleteAPIToken(id string) error {
-	r, err := s.DB.Exec("DELETE FROM api_tokens WHERE id=?", id)
+	now := time.Now().Unix()
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	r, err := tx.Exec("DELETE FROM api_tokens WHERE id=?", id)
 	if err != nil {
 		return err
 	}
@@ -170,7 +223,10 @@ func (s *Store) DeleteAPIToken(id string) error {
 	if n == 0 {
 		return fmt.Errorf("token not found")
 	}
-	return nil
+	if err := revokeOAuthForAPITokenTx(tx, id, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetAPITokenByID(id string) (APIToken, error) {
@@ -230,4 +286,10 @@ func (s *Store) ValidateAPIToken(token, ip string) (string, string, map[string]b
 	}
 	_ = s.TouchAPIToken(t.ID, ip)
 	return t.ID, t.Name, sm, dm, true
+}
+
+func (s *Store) GetAPITokenOAuthVersion(id string) (int64, error) {
+	var version int64
+	err := s.DB.QueryRow("SELECT oauth_version FROM api_tokens WHERE id=?", id).Scan(&version)
+	return version, err
 }
