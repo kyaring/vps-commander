@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,9 +16,9 @@ var (
 )
 
 type OAuthClient struct {
-	ID, Name, RedirectURIsJSON, GrantTypesJSON, ResponseTypesJSON string
-	CreatedAt                                                     int64
-	DisabledAt                                                    *int64
+	ID, Name, RedirectURIsJSON, GrantTypesJSON, ResponseTypesJSON, ClientSecretHash string
+	CreatedAt                                                                       int64
+	DisabledAt                                                                      *int64
 }
 type OAuthAuthorizationCode struct {
 	CodeHash, ClientID, APITokenID, APITokenPrefix, RedirectURI, ScopesJSON, CodeChallenge, Resource string
@@ -25,9 +26,9 @@ type OAuthAuthorizationCode struct {
 	UsedAt                                                                                           *int64
 }
 type OAuthGrant struct {
-	ID, ClientID, APITokenID, APITokenPrefix, ScopesJSON, DevicesJSON, Resource string
-	APITokenVersion, CreatedAt, RefreshExpiresAt                                int64
-	RevokedAt                                                                   *int64
+	ID, ClientID, APITokenID, APITokenPrefix, ScopesJSON, DevicesJSON, Resource, CodeHash string
+	APITokenVersion, CreatedAt, RefreshExpiresAt                                          int64
+	RevokedAt                                                                             *int64
 }
 type OAuthToken struct {
 	ID, GrantID, Kind, TokenHash string
@@ -47,7 +48,8 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
  client_id TEXT PRIMARY KEY, client_name TEXT NOT NULL,
  redirect_uris_json TEXT NOT NULL, created_at INTEGER NOT NULL, disabled_at INTEGER,
  grant_types_json TEXT NOT NULL DEFAULT '["authorization_code","refresh_token"]',
- response_types_json TEXT NOT NULL DEFAULT '["code"]'
+ response_types_json TEXT NOT NULL DEFAULT '["code"]',
+ client_secret_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_clients_created ON oauth_clients(created_at);
 CREATE TABLE IF NOT EXISTS oauth_codes (
@@ -60,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_oauth_codes_expiry ON oauth_codes(expires_at);
 CREATE TABLE IF NOT EXISTS oauth_grants (
  id TEXT PRIMARY KEY, client_id TEXT NOT NULL, api_token_id TEXT NOT NULL,
  scopes_json TEXT NOT NULL, devices_json TEXT NOT NULL DEFAULT '[]', resource TEXT NOT NULL, created_at INTEGER NOT NULL,
- refresh_expires_at INTEGER NOT NULL, revoked_at INTEGER
+ refresh_expires_at INTEGER NOT NULL, revoked_at INTEGER, code_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_grants_client ON oauth_grants(client_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_oauth_grants_api_token ON oauth_grants(api_token_id, revoked_at);
@@ -102,6 +104,11 @@ CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash_kind ON oauth_tokens(token_hash
 	}
 	if !cols["response_types_json"] {
 		if _, err := s.DB.Exec("ALTER TABLE oauth_clients ADD COLUMN response_types_json TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return err
+		}
+	}
+	if !cols["client_secret_hash"] {
+		if _, err := s.DB.Exec("ALTER TABLE oauth_clients ADD COLUMN client_secret_hash TEXT NOT NULL DEFAULT ''"); err != nil {
 			return err
 		}
 	}
@@ -156,12 +163,17 @@ CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash_kind ON oauth_tokens(token_hash
 			return err
 		}
 	}
+	if !grantCols["code_hash"] {
+		if _, err := s.DB.Exec("ALTER TABLE oauth_grants ADD COLUMN code_hash TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 func (s *Store) RegisterOAuthClient(c OAuthClient) error {
-	if c.ID == "" || c.Name == "" || c.RedirectURIsJSON == "" {
-		return errors.New("oauth client id, name and redirect URIs required")
+	if c.ID == "" || c.Name == "" || c.RedirectURIsJSON == "" || len(c.ClientSecretHash) != 64 {
+		return errors.New("oauth client id, name, redirect URIs and SHA-256 client secret hash required")
 	}
 	var uris []string
 	if err := json.Unmarshal([]byte(c.RedirectURIsJSON), &uris); err != nil || len(uris) == 0 || len(uris) > 10 {
@@ -206,14 +218,26 @@ func (s *Store) RegisterOAuthClient(c OAuthClient) error {
 	if c.ResponseTypesJSON == "" {
 		c.ResponseTypesJSON = "[\"code\"]"
 	}
-	_, err := s.DB.Exec("INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at,disabled_at,grant_types_json,response_types_json) VALUES(?,?,?,?,?,?,?)", c.ID, c.Name, c.RedirectURIsJSON, c.CreatedAt, c.DisabledAt, c.GrantTypesJSON, c.ResponseTypesJSON)
+	_, err := s.DB.Exec("INSERT INTO oauth_clients(client_id,client_name,redirect_uris_json,created_at,disabled_at,grant_types_json,response_types_json,client_secret_hash) VALUES(?,?,?,?,?,?,?,?)", c.ID, c.Name, c.RedirectURIsJSON, c.CreatedAt, c.DisabledAt, c.GrantTypesJSON, c.ResponseTypesJSON, c.ClientSecretHash)
 	return err
 }
 func (s *Store) GetOAuthClient(id string) (OAuthClient, error) {
 	var c OAuthClient
-	err := s.DB.QueryRow("SELECT client_id,client_name,redirect_uris_json,created_at,disabled_at,grant_types_json,response_types_json FROM oauth_clients WHERE client_id=?", id).Scan(&c.ID, &c.Name, &c.RedirectURIsJSON, &c.CreatedAt, &c.DisabledAt, &c.GrantTypesJSON, &c.ResponseTypesJSON)
+	err := s.DB.QueryRow("SELECT client_id,client_name,redirect_uris_json,created_at,disabled_at,grant_types_json,response_types_json,client_secret_hash FROM oauth_clients WHERE client_id=?", id).Scan(&c.ID, &c.Name, &c.RedirectURIsJSON, &c.CreatedAt, &c.DisabledAt, &c.GrantTypesJSON, &c.ResponseTypesJSON, &c.ClientSecretHash)
 	return c, err
 }
+func (s *Store) AuthenticateOAuthClient(id, secret string) (OAuthClient, bool) {
+	c, err := s.GetOAuthClient(id)
+	if err != nil || c.DisabledAt != nil || len(c.ClientSecretHash) != 64 || secret == "" {
+		return OAuthClient{}, false
+	}
+	candidate := HashAPIToken(secret)
+	if subtle.ConstantTimeCompare([]byte(candidate), []byte(c.ClientSecretHash)) != 1 {
+		return OAuthClient{}, false
+	}
+	return c, true
+}
+
 func (s *Store) CreateOAuthCode(c OAuthAuthorizationCode) error {
 	if c.CodeHash == "" || c.ClientID == "" || c.APITokenID == "" || c.APITokenPrefix == "" || c.APITokenVersion <= 0 || c.RedirectURI == "" || c.CodeChallenge == "" || c.Resource == "" || c.ExpiresAt <= c.CreatedAt {
 		return errors.New("incomplete or expired oauth authorization code")
@@ -221,6 +245,11 @@ func (s *Store) CreateOAuthCode(c OAuthAuthorizationCode) error {
 	var scopes []string
 	if err := json.Unmarshal([]byte(c.ScopesJSON), &scopes); err != nil || len(scopes) == 0 {
 		return errors.New("valid OAuth code scopes required")
+	}
+	for _, scope := range scopes {
+		if scope == "admin" {
+			return errors.New("OAuth clients cannot request admin scope")
+		}
 	}
 	_, err := s.DB.Exec("INSERT INTO oauth_codes(code_hash,client_id,api_token_id,redirect_uri,scopes_json,code_challenge,resource,created_at,expires_at,used_at,api_token_prefix,api_token_version) VALUES(?,?,?,?,?,?,?,?,?,NULL,?,?)", c.CodeHash, c.ClientID, c.APITokenID, c.RedirectURI, c.ScopesJSON, c.CodeChallenge, c.Resource, c.CreatedAt, c.ExpiresAt, c.APITokenPrefix, c.APITokenVersion)
 	return err
@@ -233,7 +262,16 @@ func (s *Store) ConsumeOAuthCode(hash, clientID, redirectURI string, now int64) 
 	defer tx.Rollback()
 	var c OAuthAuthorizationCode
 	err = tx.QueryRow("SELECT code_hash,client_id,api_token_id,api_token_prefix,redirect_uri,scopes_json,code_challenge,resource,created_at,expires_at,used_at,api_token_version FROM oauth_codes WHERE code_hash=?", hash).Scan(&c.CodeHash, &c.ClientID, &c.APITokenID, &c.APITokenPrefix, &c.RedirectURI, &c.ScopesJSON, &c.CodeChallenge, &c.Resource, &c.CreatedAt, &c.ExpiresAt, &c.UsedAt, &c.APITokenVersion)
-	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI || c.ExpiresAt <= now || c.UsedAt != nil {
+	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI || c.ExpiresAt <= now {
+		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
+	}
+	if c.UsedAt != nil {
+		if err := revokeOAuthCodeGrantTx(tx, c.CodeHash, now); err != nil {
+			return OAuthAuthorizationCode{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return OAuthAuthorizationCode{}, err
+		}
 		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
 	}
 	res, err := tx.Exec("UPDATE oauth_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL AND expires_at>?", now, hash, now)
@@ -273,13 +311,18 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 	if json.Unmarshal([]byte(g.ScopesJSON), &requestedScopes) != nil || json.Unmarshal([]byte(currentScopesJSON), &currentScopes) != nil {
 		return errors.New("invalid OAuth grant scopes")
 	}
+	for _, scope := range requestedScopes {
+		if scope == "admin" {
+			return errors.New("OAuth grants cannot contain admin scope")
+		}
+	}
 	currentSet := map[string]bool{}
 	for _, scope := range currentScopes {
 		currentSet[scope] = true
 	}
 	effectiveScopes := make([]string, 0, len(requestedScopes))
 	for _, scope := range requestedScopes {
-		if currentSet[scope] {
+		if scope != "admin" && currentSet[scope] {
 			effectiveScopes = append(effectiveScopes, scope)
 		}
 	}
@@ -301,7 +344,7 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 	}
 	devicesJSON, _ := json.Marshal(effectiveDevices)
 	g.DevicesJSON = string(devicesJSON)
-	if _, err := tx.Exec("INSERT INTO oauth_grants(id,client_id,api_token_id,scopes_json,devices_json,resource,created_at,refresh_expires_at,revoked_at) VALUES(?,?,?,?,?,?,?,?,NULL)", g.ID, g.ClientID, g.APITokenID, g.ScopesJSON, g.DevicesJSON, g.Resource, g.CreatedAt, g.RefreshExpiresAt); err != nil {
+	if _, err := tx.Exec("INSERT INTO oauth_grants(id,client_id,api_token_id,scopes_json,devices_json,resource,created_at,refresh_expires_at,revoked_at,code_hash) VALUES(?,?,?,?,?,?,?,?,NULL,?)", g.ID, g.ClientID, g.APITokenID, g.ScopesJSON, g.DevicesJSON, g.Resource, g.CreatedAt, g.RefreshExpiresAt, g.CodeHash); err != nil {
 		return err
 	}
 	if err := insertOAuthToken(tx, access); err != nil {
@@ -314,6 +357,35 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 	}
 	return tx.Commit()
 }
+func revokeOAuthCodeGrantTx(tx *sql.Tx, codeHash string, now int64) error {
+	rows, err := tx.Query("SELECT id FROM oauth_grants WHERE code_hash=? AND revoked_at IS NULL", codeHash)
+	if err != nil {
+		return err
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := revokeOAuthGrantTx(tx, id, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func insertOAuthToken(tx *sql.Tx, t OAuthToken) error {
 	if t.ID == "" || t.GrantID == "" || t.TokenHash == "" || (t.Kind != "access" && t.Kind != "refresh") {
 		return errors.New("invalid oauth token")
@@ -328,10 +400,11 @@ func (s *Store) RotateOAuthRefresh(hash, clientID string, now int64, access, ref
 	}
 	defer tx.Rollback()
 	var g OAuthGrant
-	var consumed, tokenRevoked, grantRevoked sql.NullInt64
+	var consumed, tokenRevoked, grantRevoked, apiRevoked, apiExpiry, clientDisabled sql.NullInt64
 	var tokenExpiry int64
+	var legacy int
 	var tokenID string
-	err = tx.QueryRow("SELECT t.id,t.grant_id,t.consumed_at,t.revoked_at,t.expires_at,g.client_id,g.api_token_id,g.scopes_json,g.devices_json,g.resource,g.created_at,g.refresh_expires_at,g.revoked_at FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id WHERE t.token_hash=? AND t.kind='refresh'", hash).Scan(&tokenID, &g.ID, &consumed, &tokenRevoked, &tokenExpiry, &g.ClientID, &g.APITokenID, &g.ScopesJSON, &g.DevicesJSON, &g.Resource, &g.CreatedAt, &g.RefreshExpiresAt, &grantRevoked)
+	err = tx.QueryRow("SELECT t.id,t.grant_id,t.consumed_at,t.revoked_at,t.expires_at,g.client_id,g.api_token_id,g.scopes_json,g.devices_json,g.resource,g.created_at,g.refresh_expires_at,g.revoked_at,a.revoked_at,a.expires_at,a.is_legacy,c.disabled_at FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN api_tokens a ON a.id=g.api_token_id JOIN oauth_clients c ON c.client_id=g.client_id WHERE t.token_hash=? AND t.kind='refresh'", hash).Scan(&tokenID, &g.ID, &consumed, &tokenRevoked, &tokenExpiry, &g.ClientID, &g.APITokenID, &g.ScopesJSON, &g.DevicesJSON, &g.Resource, &g.CreatedAt, &g.RefreshExpiresAt, &grantRevoked, &apiRevoked, &apiExpiry, &legacy, &clientDisabled)
 	if err != nil || g.ClientID != clientID {
 		return OAuthGrant{}, ErrOAuthRefreshInvalid
 	}
@@ -347,7 +420,7 @@ func (s *Store) RotateOAuthRefresh(hash, clientID string, now int64, access, ref
 		}
 		return OAuthGrant{}, ErrOAuthRefreshReplay
 	}
-	if tokenRevoked.Valid || grantRevoked.Valid || tokenExpiry <= now || g.RefreshExpiresAt <= now {
+	if tokenRevoked.Valid || grantRevoked.Valid || apiRevoked.Valid || clientDisabled.Valid || legacy != 0 || (apiExpiry.Valid && apiExpiry.Int64 <= now) || tokenExpiry <= now || g.RefreshExpiresAt <= now {
 		return OAuthGrant{}, ErrOAuthRefreshInvalid
 	}
 	if access.GrantID != g.ID || refresh.GrantID != g.ID || access.Kind != "access" || refresh.Kind != "refresh" {
@@ -431,7 +504,7 @@ func (s *Store) ValidateOAuthAccessToken(raw, ip string, now int64) (OAuthAccess
 	}
 	out.Scopes = make(map[string]bool)
 	for _, scope := range granted {
-		if currentScopes[scope] {
+		if scope != "admin" && currentScopes[scope] {
 			out.Scopes[scope] = true
 		}
 	}

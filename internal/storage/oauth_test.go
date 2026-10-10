@@ -26,7 +26,7 @@ func oauthFixture(t *testing.T) (*Store, string, string) {
 		t.Fatal(err)
 	}
 	uris, _ := json.Marshal([]string{"http://127.0.0.1:9876/callback"})
-	if err := s.RegisterOAuthClient(OAuthClient{ID: "client-1", Name: "Test MCP", RedirectURIsJSON: string(uris), CreatedAt: 10}); err != nil {
+	if err := s.RegisterOAuthClient(OAuthClient{ID: "client-1", Name: "Test MCP", RedirectURIsJSON: string(uris), ClientSecretHash: HashAPIToken("client-secret"), CreatedAt: 10}); err != nil {
 		t.Fatal(err)
 	}
 	return s, raw, "http://127.0.0.1:9876/callback"
@@ -307,5 +307,125 @@ INSERT INTO oauth_grants(id,client_id,api_token_id,scopes_json,resource,created_
 	var codeVersion int64
 	if err := s.DB.QueryRow("SELECT api_token_version FROM oauth_codes LIMIT 1").Scan(&codeVersion); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		t.Fatal(err)
+	}
+}
+
+func TestOAuthClientSecretStoredAsHashAndAuthenticated(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	var stored string
+	if err := s.DB.QueryRow("SELECT client_secret_hash FROM oauth_clients WHERE client_id='client-1'").Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != HashAPIToken("client-secret") || stored == "client-secret" {
+		t.Fatalf("unexpected client secret storage: %q", stored)
+	}
+	if _, ok := s.AuthenticateOAuthClient("client-1", "client-secret"); !ok {
+		t.Fatal("valid client secret rejected")
+	}
+	if _, ok := s.AuthenticateOAuthClient("client-1", "wrong-secret"); ok {
+		t.Fatal("wrong client secret accepted")
+	}
+	if _, ok := s.AuthenticateOAuthClient("client-old", "anything"); ok {
+		t.Fatal("legacy client without a secret hash authenticated")
+	}
+}
+
+func TestOAuthAdminScopeRejectedAndNeverValidated(t *testing.T) {
+	s, _, redirect := oauthFixture(t)
+	now := time.Now().Unix()
+	code := OAuthAuthorizationCode{CodeHash: HashAPIToken("admin-code"), ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, RedirectURI: redirect, ScopesJSON: `["admin"]`, CodeChallenge: "challenge", Resource: "https://hub.example.com/mcp", CreatedAt: now, ExpiresAt: now + 60}
+	if err := s.CreateOAuthCode(code); err == nil {
+		t.Fatal("authorization code with admin scope accepted")
+	}
+	g := OAuthGrant{ID: "admin-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["admin","devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
+	a := OAuthToken{ID: "admin-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("admin-access-secret"), CreatedAt: now, ExpiresAt: now + 600}
+	r := OAuthToken{ID: "admin-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("admin-refresh-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	if err := s.CreateOAuthGrant(g, a, r); err == nil {
+		t.Fatal("grant with admin scope accepted")
+	}
+	// Simulate corrupt/legacy storage: validation must still fail closed for admin.
+	g.ScopesJSON = `["admin","devices:read"]`
+	if err := s.DB.QueryRow("SELECT 1").Scan(new(int)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("INSERT INTO oauth_grants(id,client_id,api_token_id,scopes_json,devices_json,resource,created_at,refresh_expires_at,code_hash) VALUES(?,?,?,?,?,?,?,?,?)", g.ID, g.ClientID, g.APITokenID, g.ScopesJSON, `[]`, g.Resource, g.CreatedAt, g.RefreshExpiresAt, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertOAuthTokenForTest(s, a); err != nil {
+		t.Fatal(err)
+	}
+	p, ok := s.ValidateOAuthAccessToken("admin-access-secret", "192.0.2.10", now+1)
+	if !ok || p.Scopes["admin"] || !p.Scopes["devices:read"] {
+		t.Fatalf("admin scope not filtered: principal=%+v ok=%v", p, ok)
+	}
+}
+
+func insertOAuthTokenForTest(s *Store, tkn OAuthToken) error {
+	_, err := s.DB.Exec("INSERT INTO oauth_tokens(id,grant_id,kind,token_hash,created_at,expires_at) VALUES(?,?,?,?,?,?)", tkn.ID, tkn.GrantID, tkn.Kind, tkn.TokenHash, tkn.CreatedAt, tkn.ExpiresAt)
+	return err
+}
+
+func TestOAuthAuthorizationCodeReplayRevokesIssuedGrant(t *testing.T) {
+	s, _, redirect := oauthFixture(t)
+	now := time.Now().Unix()
+	codeHash := HashAPIToken("replay-code")
+	code := OAuthAuthorizationCode{CodeHash: codeHash, ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, RedirectURI: redirect, ScopesJSON: `["devices:read"]`, CodeChallenge: "challenge", Resource: "https://hub.example.com/mcp", CreatedAt: now, ExpiresAt: now + 60}
+	if err := s.CreateOAuthCode(code); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeOAuthCode(codeHash, "client-1", redirect, now+1); err != nil {
+		t.Fatal(err)
+	}
+	g := OAuthGrant{ID: "replay-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CodeHash: codeHash, CreatedAt: now + 1, RefreshExpiresAt: now + 3600}
+	a := OAuthToken{ID: "replay-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("replay-access-secret"), CreatedAt: now + 1, ExpiresAt: now + 600}
+	r := OAuthToken{ID: "replay-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("replay-refresh-secret"), CreatedAt: now + 1, ExpiresAt: now + 3600}
+	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConsumeOAuthCode(codeHash, "client-1", redirect, now+2); !errors.Is(err, ErrOAuthCodeInvalid) {
+		t.Fatalf("replay error=%v", err)
+	}
+	if _, ok := s.ValidateOAuthAccessToken("replay-access-secret", "192.0.2.11", now+3); ok {
+		t.Fatal("replayed code did not revoke the issued grant")
+	}
+}
+
+func TestOAuthRefreshRejectsExpiredOrLegacyUnderlyingToken(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		expire bool
+		legacy bool
+	}{
+		{name: "expired", expire: true}, {name: "legacy", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, _ := oauthFixture(t)
+			now := time.Now().Unix()
+			if tc.expire {
+				if _, err := s.DB.Exec("UPDATE api_tokens SET expires_at=? WHERE id='api-1'", now-1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.legacy {
+				if _, err := s.DB.Exec("UPDATE api_tokens SET is_legacy=1 WHERE id='api-1'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			g := OAuthGrant{ID: "refresh-policy", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
+			r := OAuthToken{ID: "policy-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("policy-refresh-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+			// Grant creation intentionally rejects invalid underlying token; seed the grant directly to test refresh defense.
+			if _, err := s.DB.Exec("INSERT INTO oauth_grants(id,client_id,api_token_id,scopes_json,devices_json,resource,created_at,refresh_expires_at) VALUES(?,?,?,?,?,?,?,?)", g.ID, g.ClientID, g.APITokenID, g.ScopesJSON, `["node-1"]`, g.Resource, g.CreatedAt, g.RefreshExpiresAt); err != nil {
+				t.Fatal(err)
+			}
+			if err := insertOAuthTokenForTest(s, r); err != nil {
+				t.Fatal(err)
+			}
+			_, err := s.RotateOAuthRefresh(HashAPIToken("policy-refresh-secret"), "client-1", now+1,
+				OAuthToken{ID: "policy-access-2", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("policy-access-2-secret"), CreatedAt: now + 1, ExpiresAt: now + 601},
+				OAuthToken{ID: "policy-refresh-2", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("policy-refresh-2-secret"), CreatedAt: now + 1, ExpiresAt: now + 3600})
+			if !errors.Is(err, ErrOAuthRefreshInvalid) {
+				t.Fatalf("refresh should reject invalid underlying token, got %v", err)
+			}
+		})
 	}
 }
