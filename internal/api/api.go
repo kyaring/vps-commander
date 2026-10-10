@@ -683,6 +683,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/notifications/webhook/test", s.requireScope("admin", http.HandlerFunc(s.TestWebhookJSON)))
 	mux.Handle("/api/v1/audits/export.csv", s.requireScope("admin", http.HandlerFunc(s.AuditExportCSV)))
 	mux.Handle("/api/v1/audits", s.requireScope("admin", http.HandlerFunc(s.AuditsJSON)))
+	mux.Handle("/api/v1/oauth/clients", s.requireScope("admin", http.HandlerFunc(s.OAuthClientsJSON)))
+	mux.Handle("/api/v1/oauth/clients/", s.requireScope("admin", http.HandlerFunc(s.OAuthClientDisableJSON)))
 	mux.Handle("/api/v1/tokens", s.requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			s.TokenCreateJSON(w, r)

@@ -75,9 +75,12 @@ func TestOAuthAccessScopeIntersectionAndRefreshReplayRevokesFamily(t *testing.T)
 	if err := s.CreateOAuthGrant(g, access, refresh); err != nil {
 		t.Fatal(err)
 	}
-	p, ok := s.ValidateOAuthAccessToken("access-secret", "192.0.2.1", now+1)
+	p, ok := s.ValidateOAuthAccessToken("access-secret", "https://hub.example.com/mcp", "192.0.2.1", now+1)
 	if !ok || !p.Scopes["devices:read"] || p.Scopes["files:read"] || !p.Scopes["mcp:call"] || p.Scopes["exec"] != false {
 		t.Fatalf("access principal=%+v ok=%v; expected grant scopes intersected with current API token scopes", p, ok)
+	}
+	if _, ok := s.ValidateOAuthAccessToken("access-secret", "https://other.example/mcp", "192.0.2.1", now+1); ok {
+		t.Fatal("OAuth access token was accepted for a different resource")
 	}
 	newAccess := OAuthToken{ID: "access-2", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-secret-2"), CreatedAt: now + 2, ExpiresAt: now + 3602}
 	newRefresh := OAuthToken{ID: "refresh-2", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-secret-2"), CreatedAt: now + 2, ExpiresAt: g.RefreshExpiresAt}
@@ -89,7 +92,7 @@ func TestOAuthAccessScopeIntersectionAndRefreshReplayRevokesFamily(t *testing.T)
 		OAuthToken{ID: "refresh-3", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-secret-3"), CreatedAt: now + 3, ExpiresAt: g.RefreshExpiresAt}); !errors.Is(err, ErrOAuthRefreshReplay) {
 		t.Fatalf("refresh replay error=%v", err)
 	}
-	if _, ok := s.ValidateOAuthAccessToken("access-secret-2", "192.0.2.1", now+4); ok {
+	if _, ok := s.ValidateOAuthAccessToken("access-secret-2", "https://hub.example.com/mcp", "192.0.2.1", now+4); ok {
 		t.Fatal("access token remained valid after refresh replay revoked the grant")
 	}
 }
@@ -106,7 +109,7 @@ func TestOAuthRevokedAPITokenInvalidatesAccess(t *testing.T) {
 	if err := s.RevokeAPIToken("api-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.ValidateOAuthAccessToken("access-secret-4", "192.0.2.2", now+1); ok {
+	if _, ok := s.ValidateOAuthAccessToken("access-secret-4", "https://hub.example.com/mcp", "192.0.2.2", now+1); ok {
 		t.Fatal("OAuth access survived underlying API token revocation")
 	}
 }
@@ -123,7 +126,7 @@ func TestOAuthClientDisableRevokesGrantAndAccess(t *testing.T) {
 	if err := s.DisableOAuthClient("client-1", now+1); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.ValidateOAuthAccessToken("access-disable-secret", "192.0.2.5", now+2); ok {
+	if _, ok := s.ValidateOAuthAccessToken("access-disable-secret", "https://hub.example.com/mcp", "192.0.2.5", now+2); ok {
 		t.Fatal("access token remained valid after client disable")
 	}
 	client, err := s.GetOAuthClient("client-1")
@@ -144,7 +147,7 @@ func TestOAuthRevokingOneTokenRevokesItsGrant(t *testing.T) {
 	if err := s.RevokeOAuthToken("refresh-revoke-secret", "client-1", now+1); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := s.ValidateOAuthAccessToken("access-revoke-secret", "192.0.2.5", now+2); ok {
+	if _, ok := s.ValidateOAuthAccessToken("access-revoke-secret", "https://hub.example.com/mcp", "192.0.2.5", now+2); ok {
 		t.Fatal("access token remained valid after refresh-token revocation")
 	}
 }
@@ -213,7 +216,7 @@ func TestOAuthDeviceGrantDoesNotExpandWhenUnderlyingTokenWidens(t *testing.T) {
 	if err := s.UpdateAPIToken("api-1", "desktop", "[\"devices:read\",\"mcp:call\",\"exec\"]", "[\"node-1\",\"node-2\"]", 7, 3, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	principal, ok := s.ValidateOAuthAccessToken("access-device-narrow", "192.0.2.9", time.Now().Unix())
+	principal, ok := s.ValidateOAuthAccessToken("access-device-narrow", "https://hub.example.com/mcp", "192.0.2.9", time.Now().Unix())
 	if !ok || !principal.Devices["node-1"] || principal.Devices["node-2"] {
 		t.Fatalf("delegated device ACL expanded: principal=%+v ok=%v", principal, ok)
 	}
@@ -354,7 +357,7 @@ func TestOAuthAdminScopeRejectedAndNeverValidated(t *testing.T) {
 	if err := insertOAuthTokenForTest(s, a); err != nil {
 		t.Fatal(err)
 	}
-	p, ok := s.ValidateOAuthAccessToken("admin-access-secret", "192.0.2.10", now+1)
+	p, ok := s.ValidateOAuthAccessToken("admin-access-secret", "https://hub.example.com/mcp", "192.0.2.10", now+1)
 	if !ok || p.Scopes["admin"] || !p.Scopes["devices:read"] {
 		t.Fatalf("admin scope not filtered: principal=%+v ok=%v", p, ok)
 	}
@@ -382,10 +385,10 @@ func TestOAuthAuthorizationCodeReplayRevokesIssuedGrant(t *testing.T) {
 	if err := s.CreateOAuthGrant(g, a, r); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ConsumeOAuthCode(codeHash, "client-1", redirect, now+2); !errors.Is(err, ErrOAuthCodeInvalid) {
+	if _, err := s.ConsumeOAuthCode(codeHash, "client-1", redirect, now+1000); !errors.Is(err, ErrOAuthCodeInvalid) {
 		t.Fatalf("replay error=%v", err)
 	}
-	if _, ok := s.ValidateOAuthAccessToken("replay-access-secret", "192.0.2.11", now+3); ok {
+	if _, ok := s.ValidateOAuthAccessToken("replay-access-secret", "https://hub.example.com/mcp", "192.0.2.11", now+3); ok {
 		t.Fatal("replayed code did not revoke the issued grant")
 	}
 }
@@ -427,5 +430,22 @@ func TestOAuthRefreshRejectsExpiredOrLegacyUnderlyingToken(t *testing.T) {
 				t.Fatalf("refresh should reject invalid underlying token, got %v", err)
 			}
 		})
+	}
+}
+
+func TestOAuthAccessRejectsUnderlyingLegacyToken(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := time.Now().Unix()
+	g := OAuthGrant{ID: "legacy-access-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
+	a := OAuthToken{ID: "legacy-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("legacy-access-secret"), CreatedAt: now, ExpiresAt: now + 600}
+	r := OAuthToken{ID: "legacy-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("legacy-refresh-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("UPDATE api_tokens SET is_legacy=1 WHERE id='api-1'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.ValidateOAuthAccessToken("legacy-access-secret", "https://hub.example.com/mcp", "192.0.2.12", now+1); ok {
+		t.Fatal("OAuth access token backed by a legacy API token was accepted")
 	}
 }

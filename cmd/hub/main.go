@@ -278,6 +278,7 @@ func main() {
 	// OAuth Endpoints
 	mux.HandleFunc("/.well-known/oauth-authorization-server", mcpServer.HandleOAuthMetadata)
 	mux.HandleFunc("/.well-known/oauth-protected-resource", mcpServer.HandleOAuthMetadata)
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp", mcpServer.HandleOAuthMetadata)
 	mux.HandleFunc("/oauth/authorize", mcpServer.HandleAuthorize)
 	mux.HandleFunc("/oauth/token", mcpServer.HandleToken)
 	mux.HandleFunc("/healthz", s.Routes().ServeHTTP)

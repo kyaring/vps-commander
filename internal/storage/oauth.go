@@ -3,9 +3,13 @@ package storage
 import (
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -171,18 +175,46 @@ CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash_kind ON oauth_tokens(token_hash
 	return nil
 }
 
+func validOAuthRedirectURI(raw string) bool {
+	if strings.TrimSpace(raw) != raw || raw == "" || strings.Contains(raw, "*") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u == nil || u.Opaque != "" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (s *Store) RegisterOAuthClient(c OAuthClient) error {
-	if c.ID == "" || c.Name == "" || c.RedirectURIsJSON == "" || len(c.ClientSecretHash) != 64 {
+	if c.ID == "" || len(c.ID) > 128 || c.Name == "" || len(c.Name) > 200 || c.RedirectURIsJSON == "" || len(c.ClientSecretHash) != 64 {
 		return errors.New("oauth client id, name, redirect URIs and SHA-256 client secret hash required")
 	}
+	if _, err := hex.DecodeString(c.ClientSecretHash); err != nil {
+		return errors.New("client secret hash must be SHA-256 hex")
+	}
+	c.ClientSecretHash = strings.ToLower(c.ClientSecretHash)
 	var uris []string
 	if err := json.Unmarshal([]byte(c.RedirectURIsJSON), &uris); err != nil || len(uris) == 0 || len(uris) > 10 {
 		return errors.New("valid redirect URI list required")
 	}
+	seenURIs := map[string]bool{}
 	for _, uri := range uris {
-		if uri == "" {
-			return errors.New("empty redirect URI")
+		if !validOAuthRedirectURI(uri) || seenURIs[uri] {
+			return errors.New("redirect URIs must be unique absolute HTTPS or loopback HTTP URLs without fragments or userinfo")
 		}
+		seenURIs[uri] = true
 	}
 	var grants, responses []string
 	if err := json.Unmarshal([]byte(c.GrantTypesJSON), &grants); err != nil && c.GrantTypesJSON != "" {
@@ -262,7 +294,7 @@ func (s *Store) ConsumeOAuthCode(hash, clientID, redirectURI string, now int64) 
 	defer tx.Rollback()
 	var c OAuthAuthorizationCode
 	err = tx.QueryRow("SELECT code_hash,client_id,api_token_id,api_token_prefix,redirect_uri,scopes_json,code_challenge,resource,created_at,expires_at,used_at,api_token_version FROM oauth_codes WHERE code_hash=?", hash).Scan(&c.CodeHash, &c.ClientID, &c.APITokenID, &c.APITokenPrefix, &c.RedirectURI, &c.ScopesJSON, &c.CodeChallenge, &c.Resource, &c.CreatedAt, &c.ExpiresAt, &c.UsedAt, &c.APITokenVersion)
-	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI || c.ExpiresAt <= now {
+	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI {
 		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
 	}
 	if c.UsedAt != nil {
@@ -272,6 +304,9 @@ func (s *Store) ConsumeOAuthCode(hash, clientID, redirectURI string, now int64) 
 		if err := tx.Commit(); err != nil {
 			return OAuthAuthorizationCode{}, err
 		}
+		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
+	}
+	if c.ExpiresAt <= now {
 		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
 	}
 	res, err := tx.Exec("UPDATE oauth_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL AND expires_at>?", now, hash, now)
@@ -301,19 +336,35 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 	}
 	defer tx.Rollback()
 	var prefix, currentScopesJSON, currentDevicesJSON string
+	var codeScopesJSON string
+	var codeScopes []string
 	var apiRevoked, apiExpiry, clientDisabled sql.NullInt64
 	var legacy int
 	var tokenVersion int64
 	if err := tx.QueryRow("SELECT a.prefix,a.scopes_json,COALESCE(a.devices_json,'[]'),a.revoked_at,a.expires_at,a.is_legacy,a.oauth_version,c.disabled_at FROM api_tokens a JOIN oauth_clients c ON c.client_id=? WHERE a.id=?", g.ClientID, g.APITokenID).Scan(&prefix, &currentScopesJSON, &currentDevicesJSON, &apiRevoked, &apiExpiry, &legacy, &tokenVersion, &clientDisabled); err != nil || g.APITokenPrefix == "" || prefix != g.APITokenPrefix || g.APITokenVersion != tokenVersion || apiRevoked.Valid || clientDisabled.Valid || legacy != 0 || (apiExpiry.Valid && apiExpiry.Int64 <= g.CreatedAt) {
 		return errors.New("underlying API token changed or is unavailable")
 	}
+	if g.CodeHash != "" {
+		var codeClient, codeToken, codeResource string
+		var codeUsed, codeExpiry sql.NullInt64
+		if err := tx.QueryRow("SELECT client_id,api_token_id,resource,used_at,expires_at,scopes_json FROM oauth_codes WHERE code_hash=?", g.CodeHash).Scan(&codeClient, &codeToken, &codeResource, &codeUsed, &codeExpiry, &codeScopesJSON); err != nil || !codeUsed.Valid || codeUsed.Int64 > g.CreatedAt || !codeExpiry.Valid || codeExpiry.Int64 <= codeUsed.Int64 || codeClient != g.ClientID || codeToken != g.APITokenID || codeResource != g.Resource || json.Unmarshal([]byte(codeScopesJSON), &codeScopes) != nil {
+			return errors.New("OAuth grant is not bound to a consumed authorization code")
+		}
+	}
 	var requestedScopes, currentScopes []string
 	if json.Unmarshal([]byte(g.ScopesJSON), &requestedScopes) != nil || json.Unmarshal([]byte(currentScopesJSON), &currentScopes) != nil {
 		return errors.New("invalid OAuth grant scopes")
 	}
+	codeScopeSet := map[string]bool{}
+	for _, scope := range codeScopes {
+		codeScopeSet[scope] = true
+	}
 	for _, scope := range requestedScopes {
 		if scope == "admin" {
 			return errors.New("OAuth grants cannot contain admin scope")
+		}
+		if g.CodeHash != "" && !codeScopeSet[scope] {
+			return errors.New("OAuth grant scope exceeds authorization code")
 		}
 	}
 	currentSet := map[string]bool{}
@@ -485,13 +536,14 @@ func intersectDeviceLists(grant, current []string) ([]string, error) {
 	return out, nil
 }
 
-func (s *Store) ValidateOAuthAccessToken(raw, ip string, now int64) (OAuthAccessPrincipal, bool) {
+func (s *Store) ValidateOAuthAccessToken(raw, resource, ip string, now int64) (OAuthAccessPrincipal, bool) {
 	var out OAuthAccessPrincipal
 	var tokenRevoked, grantRevoked, apiRevoked, apiExpires, clientDisabled sql.NullInt64
-	var grantScopes, apiScopesJSON, grantDevicesJSON, currentDevicesJSON string
+	var grantScopes, apiScopesJSON, grantDevicesJSON, currentDevicesJSON, grantResource string
 	var tokenExpiry int64
-	err := s.DB.QueryRow("SELECT g.api_token_id,g.id,a.name,c.client_name,g.scopes_json,a.scopes_json,g.devices_json,COALESCE(a.devices_json,'[]'),a.rate_rps,a.max_sessions,t.revoked_at,g.revoked_at,a.revoked_at,a.expires_at,t.expires_at,c.disabled_at FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN api_tokens a ON a.id=g.api_token_id JOIN oauth_clients c ON c.client_id=g.client_id WHERE t.token_hash=? AND t.kind='access'", HashAPIToken(raw)).Scan(&out.APITokenID, &out.GrantID, &out.TokenName, &out.ClientName, &grantScopes, &apiScopesJSON, &grantDevicesJSON, &currentDevicesJSON, &out.RateRPS, &out.MaxSessions, &tokenRevoked, &grantRevoked, &apiRevoked, &apiExpires, &tokenExpiry, &clientDisabled)
-	if err != nil || tokenRevoked.Valid || grantRevoked.Valid || apiRevoked.Valid || clientDisabled.Valid || (apiExpires.Valid && apiExpires.Int64 <= now) || tokenExpiry <= now {
+	var legacy int
+	err := s.DB.QueryRow("SELECT g.api_token_id,g.id,a.name,c.client_name,g.scopes_json,a.scopes_json,g.devices_json,COALESCE(a.devices_json,'[]'),a.rate_rps,a.max_sessions,t.revoked_at,g.revoked_at,a.revoked_at,a.expires_at,t.expires_at,c.disabled_at,g.resource,a.is_legacy FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN api_tokens a ON a.id=g.api_token_id JOIN oauth_clients c ON c.client_id=g.client_id WHERE t.token_hash=? AND t.kind='access'", HashAPIToken(raw)).Scan(&out.APITokenID, &out.GrantID, &out.TokenName, &out.ClientName, &grantScopes, &apiScopesJSON, &grantDevicesJSON, &currentDevicesJSON, &out.RateRPS, &out.MaxSessions, &tokenRevoked, &grantRevoked, &apiRevoked, &apiExpires, &tokenExpiry, &clientDisabled, &grantResource, &legacy)
+	if err != nil || resource == "" || grantResource != resource || legacy != 0 || tokenRevoked.Valid || grantRevoked.Valid || apiRevoked.Valid || clientDisabled.Valid || (apiExpires.Valid && apiExpires.Int64 <= now) || tokenExpiry <= now {
 		return OAuthAccessPrincipal{}, false
 	}
 	var granted, current, grantDevices, currentDevices []string
