@@ -456,6 +456,21 @@ func TestLegacyAuthAuditRateLimitedAndVisibleInUsageSummary(t *testing.T) {
 	if !foundSSE {
 		t.Fatalf("missing SSE path/IP/UA audit: %+v", rows)
 	}
+	// A fresh Server instance simulates a Hub restart: the DB must still enforce the 10-minute window.
+	serverAfterRestart := &Server{Store: store}
+	restartedRequest := httptest.NewRequest(http.MethodGet, "/mcp/sse", nil)
+	restartedRequest.RemoteAddr = "203.0.113.10:55555"
+	serverAfterRestart.RecordLegacyAuth(restartedRequest, legacy)
+	rows = auditRows(t, store)
+	count = 0
+	for _, row := range rows {
+		if row.Action == "legacy_auth" {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("restart bypassed persistent legacy throttle: %d rows", count)
+	}
 	summary, err := store.LegacyUsageSummary(time.Now().Add(-7 * 24 * time.Hour).Unix())
 	if err != nil {
 		t.Fatal(err)

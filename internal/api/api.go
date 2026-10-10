@@ -561,6 +561,12 @@ func (s *Server) RecordLegacyAuth(r *http.Request, p auth.Principal) {
 		s.legacyAuthMu.Unlock()
 		return
 	}
+	// Keep the throttle effective across Hub restarts as well as concurrent requests.
+	if recent, err := s.Store.HasRecentLegacyAuth(ip, transport, now.Add(-10*time.Minute).Unix()); err == nil && recent {
+		s.legacyAuthLast[key] = now
+		s.legacyAuthMu.Unlock()
+		return
+	}
 	for k, last := range s.legacyAuthLast {
 		if now.Sub(last) >= 10*time.Minute {
 			delete(s.legacyAuthLast, k)

@@ -844,6 +844,15 @@ func (s *Store) SetLegacyKeyDisabled(disabled bool) error {
 	return err
 }
 
+func (s *Store) HasRecentLegacyAuth(ip, transport string, since int64) (bool, error) {
+	if err := s.FlushAudits(); err != nil {
+		return false, err
+	}
+	var count int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE action='legacy_auth' AND caller_ip=? AND transport=? AND timestamp>=?`, ip, transport, since).Scan(&count)
+	return count > 0, err
+}
+
 type LegacyUsage struct {
 	Count     int64  `json:"count"`
 	LastAt    int64  `json:"last_at"`
