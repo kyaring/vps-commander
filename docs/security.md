@@ -24,7 +24,7 @@
 - 授权请求必须使用 `response_type=code`、精确注册的 `redirect_uri`、`state`、PKCE `S256` 和匹配的 `resource`。
 - 用户登录面板后，选择一个有效的命名令牌和本次 scope 子集。OAuth 永远不能申请 `admin`，最终权限受命名令牌权限与授权 scope 的交集约束。
 - 授权码短时有效且一次性使用。Token 端点支持 `client_secret_basic` 和 `client_secret_post`，兑换时重新验证 PKCE 与 redirect URI。
-- Access Token 有效期 1 小时；Refresh Token 最长 30 天，并采用轮换与重放检测。停用客户端、吊销命名令牌或撤销授权都会使相关 OAuth Token 失效。
+- Access Token 有效期 1 小时；Refresh Token 采用滑动有效期：每次刷新续期 30 天（30 天未使用即失效），自首次授权起绝对上限 360 天，到期需重新授权；并采用轮换与重放检测。停用客户端、吊销命名令牌或撤销授权都会使相关 OAuth Token 失效。
 - OAuth 和直接命名令牌共用限流、exec 并发和 MCP 会话额度；审计 Actor 会追加 `via=oauth:<client_id>`。
 
 ## 3. 命名令牌

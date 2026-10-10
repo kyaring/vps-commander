@@ -512,6 +512,17 @@ func (s *Store) RotateOAuthRefresh(hash, clientID string, now int64, access, ref
 	if access.GrantID != g.ID || refresh.GrantID != g.ID || access.Kind != "access" || refresh.Kind != "refresh" {
 		return OAuthGrant{}, errors.New("invalid oauth rotation tokens")
 	}
+	// Sliding refresh lifetime: each successful rotation extends the grant by
+	// OAuthRefreshIdleTTL, never beyond OAuthGrantMaxLifetime from grant creation.
+	newRefreshExp := OAuthRefreshExpiry(g.CreatedAt, now)
+	if newRefreshExp <= now {
+		return OAuthGrant{}, ErrOAuthRefreshInvalid
+	}
+	refresh.ExpiresAt = newRefreshExp
+	if _, err := tx.Exec("UPDATE oauth_grants SET refresh_expires_at=? WHERE id=?", newRefreshExp, g.ID); err != nil {
+		return OAuthGrant{}, err
+	}
+	g.RefreshExpiresAt = newRefreshExp
 	res, err := tx.Exec("UPDATE oauth_tokens SET consumed_at=?,replaced_by=? WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL", now, refresh.ID, tokenID)
 	if err != nil {
 		return OAuthGrant{}, err
@@ -534,6 +545,23 @@ func (s *Store) RotateOAuthRefresh(hash, clientID string, now int64, access, ref
 		return OAuthGrant{}, err
 	}
 	return g, nil
+}
+
+// OAuthRefreshIdleTTL is how long a refresh token stays valid without use.
+const OAuthRefreshIdleTTL int64 = 30 * 86400
+
+// OAuthGrantMaxLifetime caps a grant's total lifetime regardless of refreshes;
+// after it the user must re-authorize.
+const OAuthGrantMaxLifetime int64 = 360 * 86400
+
+// OAuthRefreshExpiry returns the refresh expiry for a grant created at
+// createdAt when a refresh token is issued at now.
+func OAuthRefreshExpiry(createdAt, now int64) int64 {
+	exp := now + OAuthRefreshIdleTTL
+	if limit := createdAt + OAuthGrantMaxLifetime; exp > limit {
+		exp = limit
+	}
+	return exp
 }
 
 // Empty device lists mean unrestricted. If both grant and token are restricted,

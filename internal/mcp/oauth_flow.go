@@ -533,7 +533,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 500, "server_error", "token generation failed")
 			return
 		}
-		exp, refreshExp := now+3600, now+30*24*3600
+		exp, refreshExp := now+3600, storage.OAuthRefreshExpiry(now, now)
 		g := storage.OAuthGrant{ID: gid, ClientID: client.ID, APITokenID: rec.APITokenID, APITokenPrefix: rec.APITokenPrefix, APITokenVersion: rec.APITokenVersion, ScopesJSON: rec.ScopesJSON, Resource: rec.Resource, CodeHash: rec.CodeHash, CreatedAt: now, RefreshExpiresAt: refreshExp}
 		if err := s.OAuthStore.CreateOAuthGrant(g, storage.OAuthToken{ID: aid, GrantID: gid, Kind: "access", TokenHash: storage.HashAPIToken(access), CreatedAt: now, ExpiresAt: exp}, storage.OAuthToken{ID: rid, GrantID: gid, Kind: "refresh", TokenHash: storage.HashAPIToken(refresh), CreatedAt: now, ExpiresAt: refreshExp}); err != nil {
 			oauthError(w, 400, "invalid_grant", "authorization grant could not be created")
@@ -575,7 +575,7 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 500, "server_error", "token generation failed")
 			return
 		}
-		rotated, err := s.OAuthStore.RotateOAuthRefresh(storage.HashAPIToken(raw), client.ID, now, storage.OAuthToken{ID: aid, GrantID: old.ID, Kind: "access", TokenHash: storage.HashAPIToken(access), CreatedAt: now, ExpiresAt: now + 3600}, storage.OAuthToken{ID: rid, GrantID: old.ID, Kind: "refresh", TokenHash: storage.HashAPIToken(refresh), CreatedAt: now, ExpiresAt: old.RefreshExpiresAt})
+		rotated, err := s.OAuthStore.RotateOAuthRefresh(storage.HashAPIToken(raw), client.ID, now, storage.OAuthToken{ID: aid, GrantID: old.ID, Kind: "access", TokenHash: storage.HashAPIToken(access), CreatedAt: now, ExpiresAt: now + 3600}, storage.OAuthToken{ID: rid, GrantID: old.ID, Kind: "refresh", TokenHash: storage.HashAPIToken(refresh), CreatedAt: now, ExpiresAt: storage.OAuthRefreshExpiry(old.CreatedAt, now)})
 		if err != nil {
 			oauthError(w, 400, "invalid_grant", "refresh token invalid, expired, revoked, or replayed")
 			return

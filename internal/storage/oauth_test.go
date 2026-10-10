@@ -520,3 +520,90 @@ func TestOAuthGrantListingAndRevoke(t *testing.T) {
 		t.Fatal("missing grant revoke should fail")
 	}
 }
+
+func TestOAuthRefreshSlidingExpiryWithAbsoluteCap(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := int64(1000)
+	day := int64(86400)
+	g := OAuthGrant{ID: "grant-sliding", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: OAuthRefreshExpiry(now, now)}
+	if g.RefreshExpiresAt != now+30*day {
+		t.Fatalf("initial refresh expiry=%d want %d", g.RefreshExpiresAt, now+30*day)
+	}
+	a := OAuthToken{ID: "sl-a0", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("sl-a0"), CreatedAt: now, ExpiresAt: now + 3600}
+	r := OAuthToken{ID: "sl-r0", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("sl-r0"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
+		t.Fatal(err)
+	}
+	cur := "sl-r0"
+	step := 0
+	rotate := func(at int64) (OAuthGrant, error) {
+		step++
+		next := "sl-r" + string(rune('a'+step))
+		acc := OAuthToken{ID: "sl-a" + string(rune('a'+step)), GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("sl-acc" + next), CreatedAt: at, ExpiresAt: at + 3600}
+		// Caller-supplied ExpiresAt must not matter: storage enforces policy.
+		ref := OAuthToken{ID: next, GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken(next), CreatedAt: at, ExpiresAt: at + 1000*day}
+		out, err := s.RotateOAuthRefresh(HashAPIToken(cur), "client-1", at, acc, ref)
+		if err == nil {
+			cur = next
+		}
+		return out, err
+	}
+	grantExpiry := func() int64 {
+		var v int64
+		if err := s.DB.QueryRow("SELECT refresh_expires_at FROM oauth_grants WHERE id=?", g.ID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	tokenExpiry := func(id string) int64 {
+		var v int64
+		if err := s.DB.QueryRow("SELECT expires_at FROM oauth_tokens WHERE id=?", id).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	// Used within 30 days: slides forward 30 days from use, past the original expiry.
+	at := now + 20*day
+	out, err := rotate(at)
+	if err != nil {
+		t.Fatalf("rotate day 20: %v", err)
+	}
+	if out.RefreshExpiresAt != at+30*day || grantExpiry() != at+30*day || tokenExpiry(cur) != at+30*day {
+		t.Fatalf("day 20 expiry ret=%d grant=%d token=%d want %d", out.RefreshExpiresAt, grantExpiry(), tokenExpiry(cur), at+30*day)
+	}
+	at = now + 45*day // beyond the original 30-day expiry
+	if _, err := rotate(at); err != nil {
+		t.Fatalf("rotate day 45 (sliding) failed: %v", err)
+	}
+	// Keep using every 29 days until close to the absolute cap.
+	for at+29*day < now+360*day {
+		at += 29 * day
+		if _, err := rotate(at); err != nil {
+			t.Fatalf("rotate at day %d: %v", (at-now)/day, err)
+		}
+	}
+	if want := now + 360*day; grantExpiry() != want || tokenExpiry(cur) != want {
+		t.Fatalf("near cap expiry grant=%d token=%d want cap %d", grantExpiry(), tokenExpiry(cur), want)
+	}
+	if _, err := rotate(now + 360*day); !errors.Is(err, ErrOAuthRefreshInvalid) {
+		t.Fatalf("rotation at absolute cap error=%v, want invalid", err)
+	}
+}
+
+func TestOAuthRefreshIdleExpiry(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := int64(1000)
+	g := OAuthGrant{ID: "grant-idle", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: OAuthRefreshExpiry(now, now)}
+	a := OAuthToken{ID: "idle-a0", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("idle-a0"), CreatedAt: now, ExpiresAt: now + 3600}
+	r := OAuthToken{ID: "idle-r0", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("idle-r0"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
+		t.Fatal(err)
+	}
+	at := now + 30*86400
+	_, err := s.RotateOAuthRefresh(HashAPIToken("idle-r0"), "client-1", at,
+		OAuthToken{ID: "idle-a1", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("idle-a1"), CreatedAt: at, ExpiresAt: at + 3600},
+		OAuthToken{ID: "idle-r1", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("idle-r1"), CreatedAt: at, ExpiresAt: at + 30*86400})
+	if !errors.Is(err, ErrOAuthRefreshInvalid) {
+		t.Fatalf("refresh after 30 idle days error=%v, want invalid", err)
+	}
+}
