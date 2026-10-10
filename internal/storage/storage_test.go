@@ -307,3 +307,40 @@ func TestMigrateAuditExtractsOAuthClientID(t *testing.T) {
 		t.Fatalf("migrated actor_name=%q oauth_client_id=%q", actorName, oauthClientID)
 	}
 }
+
+func TestNotificationAuditMigrationIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-notify.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,actor_name,transport) VALUES(1,'127.0.0.1','node-a','notification','webhook:old-target',0,'unknown(legacy)','legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for run := 1; run <= 2; run++ {
+		s, err = Open(path)
+		if err != nil {
+			t.Fatalf("migration run %d: %v", run, err)
+		}
+		var actorType, actorID, actorName, transport string
+		if err := s.DB.QueryRow(`SELECT actor_type,actor_id,actor_name,transport FROM audit_logs WHERE command='webhook:old-target'`).Scan(&actorType, &actorID, &actorName, &transport); err != nil {
+			t.Fatal(err)
+		}
+		if actorType != "system" || actorID != "system:notify" || actorName != "system:notify" || transport != "internal" {
+			t.Fatalf("run %d migrated attribution = %q/%q/%q/%q", run, actorType, actorID, actorName, transport)
+		}
+		var count int
+		if err := s.DB.QueryRow(`SELECT COUNT(*) FROM audit_logs WHERE command='webhook:old-target'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("run %d duplicated rows: %d", run, count)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

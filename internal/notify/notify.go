@@ -258,16 +258,21 @@ func (m *Manager) emit(e Event) {
 		req = req.WithContext(ctx)
 		resp, err := m.Client.Do(req)
 		if err != nil {
-			_ = m.Store.Audit("127.0.0.1", e.Device, "notification", "webhook:"+t.ID, 1, 0, err.Error())
+			_ = m.Store.AuditEntry(storage.AuditEntry{CallerIP: "127.0.0.1", Device: e.Device, Action: "notification", Command: "webhook:" + t.ID, ExitCode: 1, ErrorMsg: err.Error(), ActorType: "system", ActorID: "system:notify", ActorName: "system:notify", Transport: "internal", TargetType: "webhook", Target: t.ID, Result: "error"})
 		} else {
 			resp.Body.Close()
 			code := resp.StatusCode
-			_ = m.Store.Audit("127.0.0.1", e.Device, "notification", "webhook:"+t.ID, func() int {
+			_ = m.Store.AuditEntry(storage.AuditEntry{CallerIP: "127.0.0.1", Device: e.Device, Action: "notification", Command: "webhook:" + t.ID, ExitCode: func() int {
 				if code >= 200 && code < 300 {
 					return 0
 				}
 				return code
-			}(), 0, "")
+			}(), ActorType: "system", ActorID: "system:notify", ActorName: "system:notify", Transport: "internal", TargetType: "webhook", Target: t.ID, Result: func() string {
+				if code >= 200 && code < 300 {
+					return "ok"
+				}
+				return "error"
+			}()})
 		}
 		cancel()
 	}

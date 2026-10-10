@@ -179,3 +179,29 @@ func TestUpdateDeviceStatusKeepsOfflineSince(t *testing.T) {
 		t.Fatalf("online->offline should set offline_at to now, got %v", f)
 	}
 }
+
+func TestWebhookAuditHasSystemAttribution(t *testing.T) {
+	st, err := storage.Open(t.TempDir() + "/audit.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer srv.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "audit-target", Name: "audit", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(st)
+	m.Client = srv.Client()
+	m.emit(Event{Type: "test", Device: "node-a", Severity: "info", Message: "test", At: time.Now().Unix()})
+	if err := st.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var actorType, actorID, actorName, transport, result string
+	if err := st.DB.QueryRow(`SELECT actor_type,actor_id,actor_name,transport,result FROM audit_logs WHERE action='notification' AND command='webhook:audit-target' ORDER BY id DESC LIMIT 1`).Scan(&actorType, &actorID, &actorName, &transport, &result); err != nil {
+		t.Fatal(err)
+	}
+	if actorType != "system" || actorID != "system:notify" || actorName != "system:notify" || transport != "internal" || result != "ok" {
+		t.Fatalf("unexpected system audit: %q/%q/%q/%q/%q", actorType, actorID, actorName, transport, result)
+	}
+}

@@ -394,6 +394,18 @@ func (s *Store) migrateAudit() error {
 	if err != nil {
 		return err
 	}
+	// Reclassify historical webhook delivery audit rows emitted by the Hub itself.
+	// This update is intentionally idempotent and narrowly scoped to the old
+	// notification action and loopback caller so user-originated rows are untouched.
+	_, err = s.DB.Exec(`UPDATE audit_logs
+		SET actor_type='system', actor_id='system:notify', actor_name='system:notify', transport='internal'
+		WHERE action='notification' AND caller_ip='127.0.0.1'
+		AND COALESCE(target_type,'')='' AND COALESCE(target,'')=''
+		AND (actor_name='unknown(legacy)' OR actor_name='legacy' OR actor_name='legacy-env' OR actor_name IS NULL)
+		AND (command LIKE 'webhook:%' OR command='')`)
+	if err != nil {
+		return err
+	}
 	_, err = s.DB.Exec("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs(timestamp); CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor_name,timestamp); CREATE INDEX IF NOT EXISTS idx_audit_device ON audit_logs(device,timestamp)")
 	return err
 }
@@ -777,6 +789,8 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 			q += " AND (actor_name IN ('legacy','legacy-env','unknown(legacy)') OR actor_id='legacy-env')"
 		case "panel":
 			q += " AND (actor_type='panel' OR transport='panel')"
+		case "system":
+			q += " AND actor_type='system'"
 		default:
 			// Selecting a named token includes its OAuth-attributed audit rows too.
 			q += " AND actor_name=?"

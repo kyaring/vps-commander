@@ -32,7 +32,7 @@ function refreshAuditFilterOptions(){
   const actor=$("#auditActor");
   if(actor){
     const selected=actor.value;
-    const options=['<option value="">全部令牌</option>','<option value="panel">面板</option>','<option value="legacy">legacy</option>'];
+    const options=['<option value="">全部来源</option>','<option value="panel">面板</option>','<option value="system">系统</option>','<option value="legacy">legacy</option>'];
     auditTokens.forEach(t=>{if(!t.is_legacy && t.name!=="legacy-env") options.push('<option value="'+esc(t.name)+'">'+esc(t.name)+(t.revoked_at?'（已吊销）':'')+'</option>')});
     actor.innerHTML=options.join("");
     if(Array.from(actor.options||[]).some(o=>o.value===selected)) actor.value=selected;

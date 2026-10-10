@@ -40,4 +40,5 @@ assert.ok(mismatch.includes('目标：device:node-b'), 'device target differing 
 assert.ok(!plain.includes('目标：') && !fileRow.includes('目标：'), 'redundant targets stay hidden');
 assert.equal(AuditUI.actorLabel({actor_name:'legacy-env',actor_type:'api_token'}, []), 'legacy');
 assert.equal(AuditUI.actorLabel({actor_name:'panel:admin',actor_type:'panel',transport:'panel'}, []), '面板');
+assert.equal(AuditUI.actorLabel({actor_name:'system:notify',actor_type:'system',transport:'internal'}, []), '系统');
 console.log('PASS audit-ui token filtering, date/result/transport/cursor query, merged OAuth client into token cell, dropped redundant target column, denied styling, actor aliases, and HTML escaping');

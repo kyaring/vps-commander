@@ -24,6 +24,7 @@
     return p;
   }
   function actorLabel(row,tokens){
+    if(row.actor_type==="system"||row.transport==="internal")return "系统";
     if(row.transport==="panel"||row.actor_type==="panel")return "面板";
     if(["legacy","legacy-env","unknown(legacy)"].includes(row.actor_name))return "legacy";
     if(tokens.some(t=>t.is_legacy&&t.name===row.actor_name))return "legacy";
