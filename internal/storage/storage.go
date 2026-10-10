@@ -867,7 +867,7 @@ func (s *Store) LegacyUsageSummary(since int64) (LegacyUsage, error) {
 	return v, err
 }
 
-func (s *Store) QueryAudits(actor, device, action, result, transport string, from, to, cursor int64, limit int) ([]AuditLog, error) {
+func (s *Store) QueryAudits(actor, device, action, result, transport string, from, to, cursor int64, limit int, oauthClientIDs ...string) ([]AuditLog, error) {
 	if err := s.FlushAudits(); err != nil {
 		return nil, err
 	}
@@ -912,6 +912,10 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 			q += " AND transport=?"
 			args = append(args, transport)
 		}
+	}
+	if len(oauthClientIDs) > 0 && strings.TrimSpace(oauthClientIDs[0]) != "" {
+		q += " AND oauth_client_id=?"
+		args = append(args, strings.TrimSpace(oauthClientIDs[0]))
 	}
 	if from > 0 {
 		q += " AND timestamp>=?"

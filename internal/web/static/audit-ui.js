@@ -17,6 +17,7 @@
     if(filters.action)p.set("action",filters.action);
     if(filters.result)p.set("result",filters.result);
     if(filters.transport)p.set("transport",filters.transport);
+    if(filters.oauthClient)p.set("oauth_client_id",filters.oauthClient);
     const from=dateEpoch(filters.from,false),to=dateEpoch(filters.to,true);
     if(from)p.set("from",from);
     if(to)p.set("to",to);

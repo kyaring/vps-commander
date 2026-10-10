@@ -40,7 +40,7 @@ var authorizePage = template.Must(template.New("oauth-authorize").Funcs(template
 <label>使用哪个命名令牌？<select name="api_token_id" required>{{range .Tokens}}<option value="{{.ID}}">{{.Name}}（可授予：{{join .Scopes ", "}}）</option>{{end}}</select></label>
 <fieldset><legend>本次授权范围</legend>{{range .Requested}}<label><input type="checkbox" name="scope" value="{{.}}"> <code>{{.}}</code></label>{{end}}</fieldset>
 <p class="muted">访问令牌绑定到本次 OAuth 客户端和资源，并且不会获得所选命名令牌以外的权限。</p>
-<button type="submit" name="decision" value="approve">批准授权</button><button class="danger" type="submit" name="decision" value="deny">拒绝</button></form></main></body></html>`))
+<button type="submit" name="decision" value="approve">批准授权</button><button class="danger" type="submit" name="decision" value="deny">拒绝</button></form></main><script nonce="{{.Nonce}}">document.querySelector('form').addEventListener('submit',function(event){const submitter=event.submitter;if(submitter){const decision=document.createElement('input');decision.type='hidden';decision.name='decision';decision.value=submitter.value;this.appendChild(decision)}this.querySelectorAll('button[type=submit]').forEach(function(button){button.disabled=true});if(submitter)submitter.textContent=submitter.value==='approve'?'正在提交…':'正在拒绝…'});</script></body></html>`))
 
 var oauthScopes = map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true}
 
@@ -57,12 +57,18 @@ func (s *Server) setOAuthBrowserHeaders(w http.ResponseWriter) {
 // form-action on redirects that follow a form submission, so the consent page
 // must also allow the origin of the already-validated redirect URI; otherwise
 // the approve/deny 302 back to the client is blocked and the flow hangs.
-func oauthBrowserCSP(redirectURI string) string {
+func oauthBrowserCSP(redirectURI string) string { return oauthBrowserCSPWithNonce(redirectURI, "") }
+
+func oauthBrowserCSPWithNonce(redirectURI, nonce string) string {
 	formAction := "'self'"
 	if origin := oauthRedirectOrigin(redirectURI); origin != "" {
 		formAction += " " + origin
 	}
-	return "default-src 'none'; style-src 'unsafe-inline'; form-action " + formAction + "; base-uri 'none'; frame-ancestors 'none'"
+	scriptSrc := "'none'"
+	if nonce != "" && !strings.ContainsAny(nonce, "' ;\"\t\r\n") {
+		scriptSrc = "'nonce-" + nonce + "'"
+	}
+	return "default-src 'none'; script-src " + scriptSrc + "; style-src 'unsafe-inline'; form-action " + formAction + "; base-uri 'none'; frame-ancestors 'none'"
 }
 
 // oauthRedirectOrigin returns scheme://host[:port] for an http(s) redirect URI,
@@ -101,20 +107,30 @@ func cookieSessionHash(r *http.Request) string {
 }
 func parseOAuthScopes(raw string) ([]string, error) {
 	fields := strings.Fields(raw)
-	if len(fields) == 0 || len(fields) > len(oauthScopes) {
+	if len(fields) == 0 || len(fields) > 64 {
 		return nil, errors.New("scope required")
 	}
 	seen := map[string]bool{}
 	out := make([]string, 0, len(fields))
 	for _, v := range fields {
-		if !oauthScopes[v] || seen[v] {
-			return nil, errors.New("unsupported scope")
+		if v == "admin" {
+			return nil, errors.New("admin scope is forbidden")
+		}
+		if !oauthScopes[v] {
+			continue
+		} // Ignore optional/extension scopes such as offline_access.
+		if seen[v] {
+			return nil, errors.New("duplicate scope")
 		}
 		seen[v] = true
 		out = append(out, v)
 	}
+	if len(out) == 0 {
+		return nil, errors.New("scope required")
+	}
 	return out, nil
 }
+
 func oauthClientAllows(c storage.OAuthClient, field, want string) bool {
 	raw := c.GrantTypesJSON
 	if field == "response_type" {
@@ -277,6 +293,11 @@ func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	pending := pendingOAuthRequest{ClientID: client.ID, ClientName: client.Name, RedirectURI: q.Get("redirect_uri"), State: state, Challenge: challenge, Resource: resource, Requested: requested, SessionHash: cookieSessionHash(r), CreatedAt: time.Now()}
+	nonce, err := randomOAuthValue("", 18)
+	if err != nil {
+		http.Error(w, "authorization setup failed", 500)
+		return
+	}
 	if pending.SessionHash == "" {
 		http.Error(w, "panel session required", 401)
 		return
@@ -289,12 +310,12 @@ func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request)
 	}
 	s.oauthPending[csrf] = pending
 	s.oauthMu.Unlock()
-	w.Header().Set("Content-Security-Policy", oauthBrowserCSP(pending.RedirectURI))
+	w.Header().Set("Content-Security-Policy", oauthBrowserCSPWithNonce(pending.RedirectURI, nonce))
 	data := struct {
-		ClientName, CSRF string
-		Tokens           []authorizeTokenOption
-		Requested        []string
-	}{client.Name, csrf, options, requested}
+		ClientName, CSRF, Nonce string
+		Tokens                  []authorizeTokenOption
+		Requested               []string
+	}{client.Name, csrf, nonce, options, requested}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = authorizePage.Execute(w, data)
 }

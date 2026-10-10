@@ -66,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_oauth_codes_expiry ON oauth_codes(expires_at);
 CREATE TABLE IF NOT EXISTS oauth_grants (
  id TEXT PRIMARY KEY, client_id TEXT NOT NULL, api_token_id TEXT NOT NULL,
  scopes_json TEXT NOT NULL, devices_json TEXT NOT NULL DEFAULT '[]', resource TEXT NOT NULL, created_at INTEGER NOT NULL,
- refresh_expires_at INTEGER NOT NULL, revoked_at INTEGER, code_hash TEXT NOT NULL DEFAULT ''
+ refresh_expires_at INTEGER NOT NULL, revoked_at INTEGER, code_hash TEXT NOT NULL DEFAULT '', last_used_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_grants_client ON oauth_grants(client_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_oauth_grants_api_token ON oauth_grants(api_token_id, revoked_at);
@@ -169,6 +169,11 @@ CREATE INDEX IF NOT EXISTS idx_oauth_tokens_hash_kind ON oauth_tokens(token_hash
 	}
 	if !grantCols["code_hash"] {
 		if _, err := s.DB.Exec("ALTER TABLE oauth_grants ADD COLUMN code_hash TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+	}
+	if !grantCols["last_used_at"] {
+		if _, err := s.DB.Exec("ALTER TABLE oauth_grants ADD COLUMN last_used_at INTEGER"); err != nil {
 			return err
 		}
 	}
@@ -603,6 +608,11 @@ func intersectDeviceLists(grant, current []string) ([]string, error) {
 	return out, nil
 }
 
+func (s *Store) MarkOAuthGrantUsed(grantID string, now int64) error {
+	_, err := s.DB.Exec(`UPDATE oauth_grants SET last_used_at=? WHERE id=? AND revoked_at IS NULL`, now, grantID)
+	return err
+}
+
 func (s *Store) ValidateOAuthAccessToken(raw, resource, ip string, now int64) (OAuthAccessPrincipal, bool) {
 	var out OAuthAccessPrincipal
 	var tokenRevoked, grantRevoked, apiRevoked, apiExpires, clientDisabled sql.NullInt64
@@ -636,6 +646,7 @@ func (s *Store) ValidateOAuthAccessToken(raw, resource, ip string, now int64) (O
 		out.Devices[device] = true
 	}
 	_ = s.TouchAPIToken(out.APITokenID, ip)
+	_ = s.MarkOAuthGrantUsed(out.GrantID, now)
 	return out, true
 }
 func (s *Store) RevokeOAuthToken(raw, clientID string, now int64) error {
@@ -838,10 +849,11 @@ type OAuthGrantRecord struct {
 	CreatedAt        int64    `json:"created_at"`
 	RefreshExpiresAt int64    `json:"refresh_expires_at"`
 	RevokedAt        *int64   `json:"revoked_at"`
+	LastUsedAt       *int64   `json:"last_used_at"`
 }
 
 func (s *Store) ListOAuthGrants() ([]OAuthGrantRecord, error) {
-	rows, err := s.DB.Query("SELECT g.id,g.client_id,c.client_name,g.api_token_id,a.name,g.scopes_json,g.resource,g.created_at,g.refresh_expires_at,g.revoked_at FROM oauth_grants g JOIN oauth_clients c ON c.client_id=g.client_id JOIN api_tokens a ON a.id=g.api_token_id ORDER BY g.created_at DESC")
+	rows, err := s.DB.Query("SELECT g.id,g.client_id,c.client_name,g.api_token_id,a.name,g.scopes_json,g.resource,g.created_at,g.refresh_expires_at,g.revoked_at,g.last_used_at FROM oauth_grants g JOIN oauth_clients c ON c.client_id=g.client_id JOIN api_tokens a ON a.id=g.api_token_id ORDER BY g.created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +862,7 @@ func (s *Store) ListOAuthGrants() ([]OAuthGrantRecord, error) {
 	for rows.Next() {
 		var g OAuthGrantRecord
 		var scopes string
-		if err := rows.Scan(&g.ID, &g.ClientID, &g.ClientName, &g.APITokenID, &g.APITokenName, &scopes, &g.Resource, &g.CreatedAt, &g.RefreshExpiresAt, &g.RevokedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.ClientID, &g.ClientName, &g.APITokenID, &g.APITokenName, &scopes, &g.Resource, &g.CreatedAt, &g.RefreshExpiresAt, &g.RevokedAt, &g.LastUsedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(scopes), &g.Scopes); err != nil {

@@ -370,3 +370,23 @@ func TestLegacyKeyDisableSettingDefaultsOffAndPersists(t *testing.T) {
 		t.Fatalf("after restore disabled=%t err=%v", disabled, err)
 	}
 }
+
+func TestQueryAuditsFiltersByOAuthClient(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "oauth-audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, client := range []string{"client-a", "client-b"} {
+		if err := s.AuditEntry(AuditEntry{Action: "exec", ActorName: "named", OAuthClientID: client, Transport: "mcp-http", Result: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.QueryAudits("", "", "", "", "", 0, 0, 0, 100, "client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].OAuthClientID != "client-a" {
+		t.Fatalf("OAuth client filter rows=%+v", rows)
+	}
+}

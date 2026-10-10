@@ -122,6 +122,20 @@ func TestOAuthAccessScopeIntersectionAndRefreshReplayRevokesFamily(t *testing.T)
 	if !ok || !p.Scopes["devices:read"] || p.Scopes["files:read"] || !p.Scopes["mcp:call"] || p.Scopes["exec"] != false {
 		t.Fatalf("access principal=%+v ok=%v; expected grant scopes intersected with current API token scopes", p, ok)
 	}
+	var lastUsed sql.NullInt64
+	if err := s.DB.QueryRow("SELECT last_used_at FROM oauth_grants WHERE id=?", g.ID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if !lastUsed.Valid || lastUsed.Int64 != now+1 {
+		t.Fatalf("grant last_used_at=%v, want %d", lastUsed, now+1)
+	}
+	grants, err := s.ListOAuthGrants()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].LastUsedAt == nil || *grants[0].LastUsedAt != now+1 {
+		t.Fatalf("grant record missing last use: %+v", grants)
+	}
 	if _, ok := s.ValidateOAuthAccessToken("access-secret", "https://other.example/mcp", "192.0.2.1", now+1); ok {
 		t.Fatal("OAuth access token was accepted for a different resource")
 	}

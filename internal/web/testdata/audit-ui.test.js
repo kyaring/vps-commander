@@ -4,13 +4,14 @@ const AuditUI = require('../static/audit-ui.js');
 
 const query = AuditUI.buildAuditQuery({
   actor: 'deploy-token', device: 'node-a', action: 'exec', result: 'denied',
-  transport: 'mcp', from: '2026-10-01', to: '2026-10-09'
+  transport: 'mcp', oauthClient: 'client-abc', from: '2026-10-01', to: '2026-10-09'
 }, 987);
 assert.equal(query.get('actor'), 'deploy-token', 'token filter must use the selected named token');
 assert.equal(query.get('device'), 'node-a');
 assert.equal(query.get('action'), 'exec');
 assert.equal(query.get('result'), 'denied');
 assert.equal(query.get('transport'), 'mcp');
+assert.equal(query.get('oauth_client_id'), 'client-abc');
 assert.equal(query.get('cursor'), '987');
 assert.ok(Number(query.get('from')) > 0 && Number(query.get('to')) > Number(query.get('from')));
 

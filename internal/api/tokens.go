@@ -257,8 +257,9 @@ func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	actor, device, action, result, transport := r.URL.Query().Get("actor"), r.URL.Query().Get("device"), r.URL.Query().Get("action"), r.URL.Query().Get("result"), r.URL.Query().Get("transport")
+	oauthClientID := r.URL.Query().Get("oauth_client_id")
 	query := func(cursor int64, limit int) ([]storage.AuditLog, error) {
-		return s.Store.QueryAudits(actor, device, action, result, transport, from, to, cursor, limit)
+		return s.Store.QueryAudits(actor, device, action, result, transport, from, to, cursor, limit, oauthClientID)
 	}
 	page, err := query(0, min(500, maxRows))
 	if err != nil {

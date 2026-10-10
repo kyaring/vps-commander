@@ -372,3 +372,38 @@ func TestOAuthRedirectOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOAuthScopesIgnoresExtensionScopesButRejectsAdmin(t *testing.T) {
+	scopes, err := parseOAuthScopes("devices:read offline_access future_extension mcp:call")
+	if err != nil {
+		t.Fatalf("extension scopes should be ignored: %v", err)
+	}
+	if len(scopes) != 2 || scopes[0] != "devices:read" || scopes[1] != "mcp:call" {
+		t.Fatalf("parsed scopes=%v", scopes)
+	}
+	if _, err := parseOAuthScopes("devices:read admin"); err == nil {
+		t.Fatal("admin scope must remain forbidden")
+	}
+	if _, err := parseOAuthScopes("offline_access"); err == nil {
+		t.Fatal("unknown-only scope list must not become empty authorization")
+	}
+}
+
+func TestConsentPageHasNonceProtectedDoubleSubmitGuard(t *testing.T) {
+	s, _, _, _, redirect, pkce := oauthFlowFixture(t)
+	challenge := strings.SplitN(pkce, "|", 2)[1]
+	q := url.Values{"response_type": {"code"}, "client_id": {"client-flow"}, "redirect_uri": {redirect}, "state": {"double-submit"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "resource": {"https://hub.example.test/mcp"}, "scope": {"devices:read"}}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
+	w := httptest.NewRecorder()
+	s.HandleAuthorize(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("consent page status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `<script nonce="`) || !strings.Contains(w.Body.String(), "button.disabled=true") {
+		t.Fatal("consent page missing nonce-protected submit lock")
+	}
+	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "script-src 'nonce-") {
+		t.Fatalf("consent CSP does not authorize only the nonce script: %q", w.Header().Get("Content-Security-Policy"))
+	}
+}

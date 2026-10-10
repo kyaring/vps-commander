@@ -180,7 +180,7 @@ async function loadOAuthAdmin(){
     const revoked=!!g.revoked_at,expired=Number(g.refresh_expires_at)<=now;
     const status=revoked?"已撤销":(expired?"已过期":"有效");
     const op=!revoked&&!expired?"<button type=\"button\" data-oauth-grant-revoke=\""+esc(g.grant_id)+"\">撤销授权</button>":"";
-    return "<tr><td>"+esc(g.client_name)+"<div class=\"muted\">"+esc(g.client_id)+"</div></td><td>"+esc(g.api_token_name)+"</td><td>"+esc((g.scopes||[]).join(", "))+"</td><td><code>"+esc(g.resource)+"</code></td><td>"+esc(new Date(Number(g.created_at)*1000).toLocaleString())+"<div class=\"muted\">到期："+esc(new Date(Number(g.refresh_expires_at)*1000).toLocaleString())+"</div></td><td>"+status+"</td><td>"+op+"</td></tr>";
+    return "<tr><td>"+esc(g.client_name)+"<div class=\"muted\">"+esc(g.client_id)+"</div></td><td>"+esc(g.api_token_name)+"</td><td>"+esc((g.scopes||[]).join(", "))+"</td><td><code>"+esc(g.resource)+"</code></td><td>"+esc(new Date(Number(g.created_at)*1000).toLocaleString())+"<div class=\"muted\">到期："+esc(new Date(Number(g.refresh_expires_at)*1000).toLocaleString())+"</div><div class=\"muted\">最后使用："+(g.last_used_at?esc(new Date(Number(g.last_used_at)*1000).toLocaleString()):"从未使用")+"</div></td><td>"+status+"</td><td>"+op+"</td></tr>";
   }).join("")||"<tr><td colspan=7>暂无授权记录</td></tr>";
 }
 $("#oauthClientCreate").onclick=async function(){
@@ -262,7 +262,7 @@ $("#tokenCreate").onclick=async()=>{
 };
 
 function currentAuditFilters(){
-  return {actor:$("#auditActor").value,device:$("#auditDevice").value,action:$("#auditAction").value,result:$("#auditResult").value,transport:$("#auditTransport").value,from:$("#auditFrom").value,to:$("#auditTo").value};
+  return {actor:$("#auditActor").value,device:$("#auditDevice").value,action:$("#auditAction").value,result:$("#auditResult").value,transport:$("#auditTransport").value,oauthClient:$("#auditOAuthClient").value.trim(),from:$("#auditFrom").value,to:$("#auditTo").value};
 }
 let auditOAuthClients={};
 async function loadAudits(reset=true){
@@ -285,7 +285,7 @@ $("#auditLoadMore").onclick=()=>{if(auditHasMore)loadAudits(false).catch(e=>$("#
 $("#auditExport").onclick=()=>{const params=AuditUI.buildAuditQuery(currentAuditFilters(),0);location.href="/panel/api/audits/export.csv?"+params.toString()};
 $("#audits").addEventListener("click",event=>{const code=event.target.closest(".audit-command-text");if(!code)return;const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
 $("#audits").addEventListener("keydown",event=>{const code=event.target.closest(".audit-command-text");if(!code||!(event.key==="Enter"||event.key===" "))return;event.preventDefault();const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
-["#auditActor","#auditDevice","#auditAction","#auditResult","#auditTransport","#auditFrom","#auditTo"].forEach(id=>$(id).addEventListener("change",()=>loadAudits(true).catch(e=>$("#auditStatus").textContent=e.message)));
+["#auditActor","#auditDevice","#auditAction","#auditResult","#auditTransport","#auditOAuthClient","#auditFrom","#auditTo"].forEach(id=>$(id).addEventListener("change",()=>loadAudits(true).catch(e=>$("#auditStatus").textContent=e.message)));
 $("#run").onclick=async()=>{
   let o=$("#output");
   o.textContent="执行中…";
