@@ -278,13 +278,13 @@ function showCreatedSecret(token,name,surface){
   const manager=surface==="manager";
   $("#newTokenBox").hidden=!manager;$("#wizardNewTokenBox").hidden=manager;
   $("#newTokenName").textContent=name;$("#newTokenValue").value=manager?token.token:"";
-  $("#wizardNewTokenName").textContent=name;$("#wizardNewTokenValue").value=manager?"":token.token;
+  $("#wizardCreatedTokenName").textContent=name;$("#wizardNewTokenValue").value=manager?"":token.token;
 }
 function clearCreatedSecret(){
   if(createdToken&&!secretCopied&&!confirm("密钥尚未复制，刷新后将无法再查看，确定继续？"))return false;
   const oldID=createdToken?.id||"";
   $("#newTokenBox").hidden=true;$("#newTokenValue").value="";$("#newTokenName").textContent="";
-  $("#wizardNewTokenBox").hidden=true;$("#wizardNewTokenValue").value="";$("#wizardNewTokenName").textContent="";
+  $("#wizardNewTokenBox").hidden=true;$("#wizardNewTokenValue").value="";$("#wizardCreatedTokenName").textContent="";
   if(oldID&&wizardSecretTokenID===oldID){$("#wizardSecret").value="";wizardSecretTokenID="";wizardGenerate();}
   createdToken=null;secretCopied=false;
   return true;
@@ -309,8 +309,8 @@ document.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener
   else{
     if(typeof el.select==="function"){el.focus();el.select();}else{const range=document.createRange();range.selectNodeContents(el);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);}
     const message="复制失败，请按 Ctrl/长按复制（内容已选中）。";
-    if($("#tokenFormStatus"))$("#tokenFormStatus").textContent=message;
-    if($("#wizardTokenStatus"))$("#wizardTokenStatus").textContent=message;
+    const status=button.closest("#aiWizardCard")?$("#wizardTokenStatus"):$("#tokenFormStatus");
+    if(status)status.textContent=message;
   }
   setTimeout(()=>{button.textContent=originalText;delete button.dataset.originalText;},1500);
 }));
