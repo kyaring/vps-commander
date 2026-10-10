@@ -168,6 +168,49 @@ function renderTokenDevices(devices=null){
   const names=knownTokenDevices.length?knownTokenDevices:Array.from(auditDeviceOptions);
   box.innerHTML=names.map(name=>`<label><input type="checkbox" value="${esc(name)}" ${selected.has(name)||old.includes(name)?"checked":""}>${esc(name)}</label>`).join("")||'<span class="muted">暂无设备；留空表示全部设备。</span>';
 }
+
+async function loadOAuthAdmin(){
+  const result=await Promise.all([api("/oauth/clients"),api("/oauth/grants")]);
+  const clients=result[0]||[],grants=result[1]||[],now=Math.floor(Date.now()/1000);
+  $("#oauthClients").innerHTML=clients.map(function(c){
+    const disabled=!!c.disabled_at;
+    return "<tr><td><strong>"+esc(c.client_name)+"</strong><div class=\"muted\"><code>"+esc(c.client_id)+"</code></div></td><td>"+esc((c.redirect_uris||[]).join("\n"))+"</td><td>"+esc(new Date(Number(c.created_at)*1000).toLocaleString())+"</td><td>"+(disabled?"已停用":"有效")+"</td><td>"+(disabled?"":("<button type=\"button\" data-oauth-client-disable=\""+esc(c.client_id)+"\">停用</button>"))+"</td></tr>";
+  }).join("")||"<tr><td colspan=5>暂无 OAuth 客户端</td></tr>";
+  $("#oauthGrants").innerHTML=grants.map(function(g){
+    const revoked=!!g.revoked_at,expired=Number(g.refresh_expires_at)<=now;
+    const status=revoked?"已撤销":(expired?"已过期":"有效");
+    const op=!revoked&&!expired?"<button type=\"button\" data-oauth-grant-revoke=\""+esc(g.grant_id)+"\">撤销授权</button>":"";
+    return "<tr><td>"+esc(g.client_name)+"<div class=\"muted\">"+esc(g.client_id)+"</div></td><td>"+esc(g.api_token_name)+"</td><td>"+esc((g.scopes||[]).join(", "))+"</td><td><code>"+esc(g.resource)+"</code></td><td>"+esc(new Date(Number(g.created_at)*1000).toLocaleString())+"<div class=\"muted\">到期："+esc(new Date(Number(g.refresh_expires_at)*1000).toLocaleString())+"</div></td><td>"+status+"</td><td>"+op+"</td></tr>";
+  }).join("")||"<tr><td colspan=7>暂无授权记录</td></tr>";
+}
+$("#oauthClientCreate").onclick=async function(){
+  const name=$("#oauthClientName").value.trim(),redirect_uris=$("#oauthRedirectURIs").value.split(/\r?\n/).map(function(x){return x.trim()}).filter(Boolean);
+  if(!name||!redirect_uris.length){$("#oauthAdminStatus").textContent="请填写客户端名称和至少一个回调 URI。";return}
+  if(!confirm("请确认回调 URI 已由你控制，且与客户端配置完全一致。继续创建？"))return;
+  const b=$("#oauthClientCreate");b.disabled=true;
+  try{
+    const x=await api("/oauth/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name,redirect_uris:redirect_uris})});
+    $("#oauthCreatedClientID").value=x.client_id;$("#oauthCreatedClientSecret").value=x.client_secret;$("#oauthClientSecretBox").hidden=false;
+    $("#oauthClientName").value="";$("#oauthRedirectURIs").value="";$("#oauthAdminStatus").textContent="客户端已创建。Secret 仅显示本次，请先保存。";
+    await loadOAuthAdmin();
+  }catch(e){$("#oauthAdminStatus").textContent="创建失败："+e.message}
+  finally{b.disabled=false}
+};
+$("#oauthClients").addEventListener("click",async function(e){
+  const b=e.target.closest("[data-oauth-client-disable]");if(!b)return;
+  const id=b.getAttribute("data-oauth-client-disable");
+  if(!confirm("停用该 OAuth 客户端将撤销其所有授权，确定继续？"))return;
+  try{await api("/oauth/client/disable?id="+encodeURIComponent(id),{method:"POST"});$("#oauthAdminStatus").textContent="客户端已停用。";await loadOAuthAdmin()}catch(err){$("#oauthAdminStatus").textContent="停用失败："+err.message}
+});
+$("#oauthGrants").addEventListener("click",async function(e){
+  const b=e.target.closest("[data-oauth-grant-revoke]");if(!b)return;
+  const id=b.getAttribute("data-oauth-grant-revoke");
+  if(!confirm("确认撤销这条 OAuth 授权？现有访问令牌将立即失效。"))return;
+  try{await api("/oauth/grant/revoke?id="+encodeURIComponent(id),{method:"POST"});$("#oauthAdminStatus").textContent="授权已撤销。";await loadOAuthAdmin()}catch(err){$("#oauthAdminStatus").textContent="撤销失败："+err.message}
+});
+$("#oauthRefresh").onclick=function(){loadOAuthAdmin().catch(function(e){$("#oauthAdminStatus").textContent="刷新失败："+e.message})};
+$("#oauthHideSecret").onclick=function(){if(!confirm("确认已保存 Client ID 和 Client Secret？隐藏后 Secret 无法再次查看。"))return;$("#oauthCreatedClientSecret").value="";$("#oauthClientSecretBox").hidden=true};
+
 async function loadTokens(){
   const a=await api("/tokens"); auditTokens=a; refreshAuditFilterOptions();
   const wizard=$("#wizardToken"), previous=wizard?.value;
@@ -635,7 +678,7 @@ async function activatePanelTab(tab, force=false){
   if(!force&&loadedPanelTabs.has(tab)){startDevicePolling();return}
   try{
     if(tab==="devices"||tab==="console"){await loadDevices();if(tab==="devices")renderTokenDevices();}
-    if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();wizardGenerate();}
+    if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();await loadOAuthAdmin();wizardGenerate();}
     if(tab==="security"){await Promise.all([loadSecuritySettings(),loadWebhooks()]);}
     if(tab==="logs"){await loadTokens();await loadAudits(true);}
     loadedPanelTabs.add(tab);

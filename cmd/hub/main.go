@@ -262,6 +262,7 @@ func main() {
 
 	// MCP Server instance
 	mcpServer := mcp.NewServer(s.NewMCPBackend(), authManager)
+	mcpServer.OAuthStore = store
 	mcpServer.SetLocalName(local)
 	s.MCP = mcpServer
 
@@ -305,6 +306,9 @@ func main() {
 	mux.HandleFunc("/openapi.json", s.Routes().ServeHTTP)
 	mux.HandleFunc("/agent/ws", s.Routes().ServeHTTP)
 	panel := s.Panel(webPassword)
+	if p, ok := panel.(interface{ ValidSession(*http.Request) bool }); ok {
+		mcpServer.OAuthPanelSessionValid = p.ValidSession
+	}
 	mux.Handle("/", panel)
 
 	// Structured request logging and an explicit CORS origin allowlist. An

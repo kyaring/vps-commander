@@ -15,9 +15,19 @@
 | Agent | 每设备独立凭据（WSS `Authorization` 头），Hub 只存哈希 |
 
 - 令牌不得放在 URL 中：`?token=`、`?key=`、`?api_key=` 都不作为认证方式。
-- 认证失败返回 `401`；Hub 不提供 OAuth 令牌签发（`/oauth/authorize`、`/oauth/token` 固定返回 `501`，`/.well-known/*` 只为兼容客户端探测）。
+- 认证失败返回 `401`。OAuth 默认关闭；只有配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后，才启用 Authorization Code + PKCE S256。授权页要求面板登录、一次性 CSRF nonce、精确注册的回调 URI，并设置防点击劫持响应头。
 
-## 2. 命名令牌
+## 2. OAuth 客户端与授权
+
+- OAuth 仅接受配置的公开 Origin，资源标识固定为 `VPS_COMMANDER_PUBLIC_URL/mcp`；不从请求 Host 推导。
+- 客户端由管理员在面板“接入与令牌”中创建，Client Secret 只显示一次；不支持动态客户端注册。
+- 授权请求必须使用 `response_type=code`、精确注册的 `redirect_uri`、`state`、PKCE `S256` 和匹配的 `resource`。
+- 用户登录面板后，选择一个有效的命名令牌和本次 scope 子集。OAuth 永远不能申请 `admin`，最终权限受命名令牌权限与授权 scope 的交集约束。
+- 授权码短时有效且一次性使用。Token 端点支持 `client_secret_basic` 和 `client_secret_post`，兑换时重新验证 PKCE 与 redirect URI。
+- Access Token 有效期 1 小时；Refresh Token 最长 30 天，并采用轮换与重放检测。停用客户端、吊销命名令牌或撤销授权都会使相关 OAuth Token 失效。
+- OAuth 和直接命名令牌共用限流、exec 并发和 MCP 会话额度；审计 Actor 会追加 `via=oauth:<client_id>`。
+
+## 3. 命名令牌
 
 每个客户端一个独立令牌，在面板“接入与令牌”中管理，或用 `admin` 令牌调用 `/api/v1/tokens`。
 
@@ -57,7 +67,7 @@
 2. 在“日志”中按传输方式 `legacy` 筛选，确认一段时间内没有 legacy 调用；
 3. 在 `hub.env` 设置 `VPS_COMMANDER_LEGACY_KEY=off` 并重启 Hub，或在面板“安全与通知”中轮换 legacy 密钥。
 
-## 3. 节点安全等级
+## 4. 节点安全等级
 
 每个工具在 Tool Registry 中有固定风险等级，节点的安全等级决定允许的最高风险：
 

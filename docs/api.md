@@ -53,11 +53,23 @@
 | `/healthz` | 健康检查 |
 | `/openapi.json` | OpenAPI 描述 |
 | `/probe/summary` | 公共探针摘要（2 秒缓存，支持 `ETag`） |
-| `/.well-known/oauth-*` | 仅为兼容 MCP 客户端探测；`/oauth/*` 固定返回 `501`，不签发令牌 |
+| `/.well-known/oauth-*` | OAuth Authorization Server / Protected Resource Metadata；OAuth 仅在配置 `VPS_COMMANDER_PUBLIC_URL` 后启用 |
 | `/agent/ws` | Agent WebSocket（使用设备凭据认证） |
-| `/panel/*` | 管理面板（面板密码登录） |
+| `/panel/*` | 管理面板（面板密码登录，含 OAuth 客户端管理和授权撤销） |
 
-## 4. 状态码
+## 4. OAuth 端点
+
+OAuth 端点只有在配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后启用；未配置时返回 `404`。
+
+| 接口 | 认证 / 说明 |
+| :--- | :--- |
+| `/oauth/authorize` | 浏览器端点；要求有效面板会话，用户选择命名令牌并明确同意 |
+| `/oauth/token` | 服务端端点；使用 `client_secret_basic` 或 `client_secret_post`，支持授权码兑换与刷新令牌轮换 |
+| `/api/v1/oauth/clients` | 管理员 API；创建、查询静态 OAuth 客户端 |
+| `/api/v1/oauth/grants` | 管理员 API；查询授权记录 |
+| `/api/v1/oauth/grants/{id}/revoke` | 管理员 API；撤销指定授权 |
+
+## 5. 状态码
 
 | 状态码 | 含义 |
 | :--- | :--- |

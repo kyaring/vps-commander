@@ -97,19 +97,3 @@ func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 	writeOAuthJSON(w, http.StatusOK, metadata)
 }
-
-func (s *Server) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
-	if _, enabled := oauthPublicURL(); !enabled {
-		http.NotFound(w, r)
-		return
-	}
-	http.Error(w, "OAuth authorization flow is not enabled in this build phase", http.StatusNotImplemented)
-}
-
-func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
-	if _, enabled := oauthPublicURL(); !enabled {
-		http.NotFound(w, r)
-		return
-	}
-	http.Error(w, "OAuth token issuance is not enabled in this build phase", http.StatusNotImplemented)
-}

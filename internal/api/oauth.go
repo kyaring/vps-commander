@@ -90,3 +90,37 @@ func (s *Server) OAuthClientDisableJSON(w http.ResponseWriter, r *http.Request) 
 	_ = s.audit(r, "", "oauth_client_disable", id, 0, 0, "")
 	jsonOut(w, map[string]any{"client_id": id, "disabled": true})
 }
+
+func (s *Server) OAuthGrantsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	grants, err := s.Store.ListOAuthGrants()
+	if err != nil {
+		http.Error(w, "OAuth grant query failed", http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, grants)
+}
+
+func (s *Server) OAuthGrantRevokeJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/oauth/grants/")
+	id := strings.TrimSuffix(path, "/revoke")
+	if id == "" || id == path || strings.Contains(id, "/") {
+		http.Error(w, "grant ID required", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.RevokeOAuthGrant(id, time.Now().Unix()); err != nil {
+		http.Error(w, "OAuth grant not found", http.StatusNotFound)
+		return
+	}
+	_ = s.audit(r, "", "oauth_grant_revoke", id, 0, 0, "")
+	jsonOut(w, map[string]any{"grant_id": id, "revoked": true})
+}

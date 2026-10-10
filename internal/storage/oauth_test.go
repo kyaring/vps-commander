@@ -492,3 +492,31 @@ func TestOAuthAccessRejectsUnderlyingLegacyToken(t *testing.T) {
 		t.Fatal("OAuth access token backed by a legacy API token was accepted")
 	}
 }
+
+func TestOAuthGrantListingAndRevoke(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := time.Now().Unix()
+	g := OAuthGrant{ID: "grant-list", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read","mcp:call"]`, DevicesJSON: `["node-1"]`, Resource: "https://hub.example.test/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
+	access := OAuthToken{ID: "access-list", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-list-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	refresh := OAuthToken{ID: "refresh-list", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-list-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	if err := createOAuthGrantForTest(t, s, g, access, refresh); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListOAuthGrants()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListOAuthGrants len=%d err=%v", len(rows), err)
+	}
+	if rows[0].ClientName != "Test MCP" || rows[0].APITokenName != "desktop" || len(rows[0].Scopes) != 2 || rows[0].RevokedAt != nil {
+		t.Fatalf("grant record=%+v", rows[0])
+	}
+	if err := s.RevokeOAuthGrant(g.ID, now+1); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListOAuthGrants()
+	if err != nil || len(rows) != 1 || rows[0].RevokedAt == nil {
+		t.Fatalf("revoked grant list=%+v err=%v", rows, err)
+	}
+	if err := s.RevokeOAuthGrant("missing-grant", now+1); err == nil {
+		t.Fatal("missing grant revoke should fail")
+	}
+}

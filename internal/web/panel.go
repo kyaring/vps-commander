@@ -80,6 +80,10 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/tokens/rotate", p.protected(p.tokenRotate))
 	mux.HandleFunc("/panel/api/tokens/revoke", p.protected(p.tokenRevoke))
 	mux.HandleFunc("/panel/api/tokens/delete", p.protected(p.tokenDelete))
+	mux.HandleFunc("/panel/api/oauth/clients", p.protected(p.oauthClients))
+	mux.HandleFunc("/panel/api/oauth/client/disable", p.protected(p.oauthClientDisable))
+	mux.HandleFunc("/panel/api/oauth/grants", p.protected(p.oauthGrants))
+	mux.HandleFunc("/panel/api/oauth/grant/revoke", p.protected(p.oauthGrantRevoke))
 	mux.HandleFunc("/panel/api/mcp/services", p.protected(p.mcpServices))
 	mux.HandleFunc("/panel/api/mcp/service", p.protected(p.deleteMCPService))
 	mux.HandleFunc("/panel/api/mcp/list", p.protected(p.listAgentMCP))
@@ -106,6 +110,52 @@ func (p *Panel) auditExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "audit export unavailable", http.StatusNotImplemented)
+}
+
+type oauthPanelRunner interface {
+	OAuthClientsJSON(http.ResponseWriter, *http.Request)
+	OAuthClientDisableJSON(http.ResponseWriter, *http.Request)
+	OAuthGrantsJSON(http.ResponseWriter, *http.Request)
+	OAuthGrantRevokeJSON(http.ResponseWriter, *http.Request)
+}
+
+func (p *Panel) oauthClients(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.Runner.(oauthPanelRunner)
+	if !ok {
+		http.Error(w, "OAuth API unavailable", 501)
+		return
+	}
+	v.OAuthClientsJSON(w, r)
+}
+func (p *Panel) oauthClientDisable(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.Runner.(oauthPanelRunner)
+	if !ok {
+		http.Error(w, "OAuth API unavailable", 501)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/oauth/clients/" + id + "/disable"
+	v.OAuthClientDisableJSON(w, r2)
+}
+func (p *Panel) oauthGrants(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.Runner.(oauthPanelRunner)
+	if !ok {
+		http.Error(w, "OAuth API unavailable", 501)
+		return
+	}
+	v.OAuthGrantsJSON(w, r)
+}
+func (p *Panel) oauthGrantRevoke(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.Runner.(oauthPanelRunner)
+	if !ok {
+		http.Error(w, "OAuth API unavailable", 501)
+		return
+	}
+	id := r.URL.Query().Get("id")
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/oauth/grants/" + id + "/revoke"
+	v.OAuthGrantRevokeJSON(w, r2)
 }
 
 type securityPanelRunner interface {
@@ -357,7 +407,7 @@ func (p *Panel) login(w http.ResponseWriter, r *http.Request) {
 	p.sessions[token] = time.Now().Add(12 * time.Hour)
 	p.mu.Unlock()
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	http.SetCookie(w, &http.Cookie{Name: "vpc_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
+	http.SetCookie(w, &http.Cookie{Name: "vpc_session", Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: 43200})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -368,9 +418,12 @@ func (p *Panel) logout(w http.ResponseWriter, r *http.Request) {
 		p.mu.Unlock()
 	}
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-	http.SetCookie(w, &http.Cookie{Name: "vpc_session", Value: "", Path: "/", HttpOnly: true, Secure: secure, MaxAge: -1, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: "vpc_session", Value: "", Path: "/", HttpOnly: true, Secure: secure, MaxAge: -1, SameSite: http.SameSiteLaxMode})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// ValidSession reports whether the request carries a live panel session.
+func (p *Panel) ValidSession(r *http.Request) bool { return p.valid(r) }
 
 func (p *Panel) valid(r *http.Request) bool {
 	c, err := r.Cookie("vpc_session")

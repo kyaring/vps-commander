@@ -118,3 +118,80 @@ func TestPanelTokenUpdateProxiesExistingPATCHRoute(t *testing.T) {
 		t.Fatalf("body was not preserved: %s", runner.body)
 	}
 }
+
+type oauthPanelTestRunner struct {
+	testRunner
+	lastPath string
+}
+
+func (r *oauthPanelTestRunner) OAuthClientsJSON(w http.ResponseWriter, req *http.Request) {
+	r.lastPath = req.URL.Path
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("[]"))
+}
+func (r *oauthPanelTestRunner) OAuthClientDisableJSON(w http.ResponseWriter, req *http.Request) {
+	r.lastPath = req.URL.Path
+	w.WriteHeader(http.StatusOK)
+}
+func (r *oauthPanelTestRunner) OAuthGrantsJSON(w http.ResponseWriter, req *http.Request) {
+	r.lastPath = req.URL.Path
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("[]"))
+}
+func (r *oauthPanelTestRunner) OAuthGrantRevokeJSON(w http.ResponseWriter, req *http.Request) {
+	r.lastPath = req.URL.Path
+	w.WriteHeader(http.StatusOK)
+}
+
+func TestOAuthPanelRoutesRequireSessionAndForwardResourceIDs(t *testing.T) {
+	runner := &oauthPanelTestRunner{}
+	p := New("password", "admin", runner)
+	h := p.Handler()
+	unauth := httptest.NewRecorder()
+	h.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/panel/api/oauth/clients", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth status=%d", unauth.Code)
+	}
+	p.mu.Lock()
+	p.sessions["live-session"] = time.Now().Add(time.Hour)
+	p.mu.Unlock()
+	call := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "live-session"})
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	if w := call("/panel/api/oauth/client/disable?id=client-123"); w.Code != http.StatusOK {
+		t.Fatalf("disable status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runner.lastPath != "/api/v1/oauth/clients/client-123/disable" {
+		t.Fatalf("disable forwarded path=%q", runner.lastPath)
+	}
+	if w := call("/panel/api/oauth/grant/revoke?id=grant-123"); w.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runner.lastPath != "/api/v1/oauth/grants/grant-123/revoke" {
+		t.Fatalf("revoke forwarded path=%q", runner.lastPath)
+	}
+}
+
+func TestPanelIndexContainsOAuthManagementAndLoginCookieIsLax(t *testing.T) {
+	p := New("password", "admin", testRunner{})
+	p.mu.Lock()
+	p.sessions["live-session"] = time.Now().Add(time.Hour)
+	p.mu.Unlock()
+	req := httptest.NewRequest(http.MethodGet, "/panel", nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "live-session"})
+	w := httptest.NewRecorder()
+	p.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "oauthAdminCard") {
+		t.Fatalf("panel index missing OAuth manager: status=%d", w.Code)
+	}
+	login := httptest.NewRecorder()
+	p.login(login, httptest.NewRequest(http.MethodPost, "/panel/login", strings.NewReader(`{"password":"password"}`)))
+	cookies := login.Result().Cookies()
+	if len(cookies) == 0 || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("panel login cookie SameSite=%v", cookies)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/wjyhk/vps-commander/internal/auditutil"
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/executor"
+	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
 // MCP Protocol / JSON-RPC 2.0 Types
@@ -295,10 +296,14 @@ type streamSession struct {
 }
 
 type Server struct {
-	Backend   ActionBackend
-	Auth      *auth.Manager
-	LocalName string
+	Backend                ActionBackend
+	Auth                   *auth.Manager
+	LocalName              string
+	OAuthStore             *storage.Store
+	OAuthPanelSessionValid func(*http.Request) bool
 
+	oauthMu        sync.Mutex
+	oauthPending   map[string]pendingOAuthRequest
 	mu             sync.RWMutex
 	sessions       map[string]*session
 	streamSessions map[string]streamSession
@@ -311,6 +316,7 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 		LocalName:      "local",
 		sessions:       make(map[string]*session),
 		streamSessions: make(map[string]streamSession),
+		oauthPending:   make(map[string]pendingOAuthRequest),
 	}
 }
 

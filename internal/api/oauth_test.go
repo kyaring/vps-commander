@@ -91,3 +91,26 @@ func TestOAuthClientProvisioningRejectsUnsafeRedirectURI(t *testing.T) {
 		})
 	}
 }
+
+func TestOAuthGrantManagementAPIIsAdminOnly(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "oauth-grants-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureAPITokens(""); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: store}
+	h := s.Routes()
+	unauth := httptest.NewRecorder()
+	h.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/api/v1/oauth/grants", nil))
+	if unauth.Code != http.StatusForbidden {
+		t.Fatalf("unauth grant list status=%d", unauth.Code)
+	}
+	admin := httptest.NewRecorder()
+	h.ServeHTTP(admin, systemRequest(httptest.NewRequest(http.MethodGet, "/api/v1/oauth/grants", nil)))
+	if admin.Code != http.StatusOK || !strings.Contains(admin.Body.String(), "[]") {
+		t.Fatalf("admin grant list status=%d body=%s", admin.Code, admin.Body.String())
+	}
+}

@@ -19,11 +19,11 @@
 - **轻量单体部署**：Go 原生编译，Hub、Agent、MCP stdio 均为单个二进制；Web 面板通过 Go embed 内嵌，无需 Node.js。
 - **三种客户端接入**：REST（`/api/v1/*`）、MCP Streamable HTTP（`POST /mcp`）、旧版 MCP SSE（`/mcp/sse`），以及本地 stdio。三者共用同一套令牌、scope、设备白名单、限流和审计。
 - **Hub & Agent 双通道**：Agent 通过 WSS 主动回连 Hub，远端节点不需要开放入站管理端口。
-- **命名令牌**：每个客户端一个独立令牌，可配置 scope、设备白名单、限速（rps）和最大会话数；Hub 只保存哈希，完整密钥仅在创建时显示一次。
+- **命名令牌与 OAuth**：每个客户端一个独立命名令牌，可配置 scope、设备白名单、限速（rps）和最大会话数；支持静态 OAuth 客户端、Authorization Code + PKCE S256、刷新令牌轮换和授权撤销；命名令牌与客户端 Secret 均只存储哈希，完整凭据只显示一次。OAuth 需显式配置 `VPS_COMMANDER_PUBLIC_URL` 才启用。
 - **双层授权**：令牌 scope + 设备白名单决定“谁能调用什么”，Low / Medium / High 安全等级决定“这台节点允许什么风险”。未注册或离线的远程节点一律拒绝。
 - **完整审计**：记录操作人、传输方式（rest / mcp-http / mcp-sse / panel / stdio）、目标设备、命令或路径（脱敏、截断）与结果；面板支持筛选、游标分页与 CSV 导出。
 - **可观测与限流**：管理员可读 `/metrics`（Prometheus）；按令牌限速与 exec 并发限制，Agent 握手令牌桶限流。
-- **内嵌管理面板**：设备、控制台、接入与令牌（含 AI 接入向导）、安全与通知、日志五个分区，适配手机屏幕。
+- **内嵌管理面板**：设备、控制台、接入与令牌（含 AI 接入向导、OAuth 客户端与授权列表）、安全与通知、日志五个分区，适配手机屏幕。
 
 ---
 

@@ -77,6 +77,7 @@ curl -fsS http://127.0.0.1:9521/healthz
 | `VPS_COMMANDER_ADMIN_TOKEN` | 等于面板密码 | 面板到内部管理接口的桥接令牌（`X-Admin-Token`），只在服务端使用，不发送给浏览器。 |
 | `VPS_COMMANDER_TRUST_PROXY` | 关闭 | 设为 `on` 时从 `X-Forwarded-For` 最右侧有效 IP 取客户端地址（不信任 `X-Real-IP`）。位于反代之后必须开启。 |
 | `VPS_COMMANDER_CORS_ORIGINS` | 空 | 逗号分隔的精确 Origin 白名单；不接受 `*`。为空表示不允许跨域浏览器访问。 |
+| `VPS_COMMANDER_PUBLIC_URL` | 空 | OAuth 的公开 Origin，例如 `https://hub.example.com`；只接受 Origin，不含路径、查询或片段。未设置时 OAuth 元数据和授权端点返回 `404`。启用 OAuth 前须确认 HTTPS 反代、回调 URI 和面板密码配置正确。 |
 | `VPS_COMMANDER_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error`。 |
 | `VPS_COMMANDER_AUDIT_RETENTION_DAYS` | `90` | 启动时清理早于该天数的审计记录。 |
 | `VPS_COMMANDER_AUDIT_READ_LIST` | 关闭 | 设为 `on` 时，只读列表类成功操作（`list_devices`、`list_agent_mcp`、`list_processes`、REST 文件列表/信息/搜索）也写审计。失败与拒绝始终记录。 |
@@ -95,7 +96,7 @@ curl -fsS http://127.0.0.1:9521/healthz
 
 - `/agent/ws` 必须支持 WebSocket Upgrade，读超时不低于数分钟。
 - `/mcp/sse` 是长连接 SSE，需关闭响应缓冲（Nginx：`proxy_buffering off;`）。
-- 代理必须**覆盖或正确追加** `X-Forwarded-For`，保证最右侧是真实客户端 IP；同时保证 Hub 端口不能绕过代理被直接访问，否则 XFF 可被伪造。
+- 代理必须设置 `X-Forwarded-Proto` 为外部请求的实际协议，并**覆盖或正确追加** `X-Forwarded-For`，保证最右侧是真实客户端 IP；同时保证 Hub 端口不能绕过代理被直接访问，否则转发头可被伪造。OAuth 登录依赖 HTTPS 与 Secure Session Cookie。
 - 上线前用带伪造 `X-Forwarded-For` / `X-Real-IP` 的请求验证：审计和限流记录的 IP 应是真实客户端 IP。
 
 Nginx 示例：
@@ -105,6 +106,7 @@ location / {
     proxy_pass http://127.0.0.1:9521;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $remote_addr;   # 覆盖，不信任客户端传入值
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
