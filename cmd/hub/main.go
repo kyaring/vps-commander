@@ -172,6 +172,15 @@ func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struc
 	})
 }
 
+// wirePanel mounts the panel and connects its live session validator to OAuth.
+// Keep this as the single assembly path so the login -> consent flow is tested
+// with the same Panel instance that owns the session cookie.
+func wirePanel(mux *http.ServeMux, s *api.Server, webPassword string, mcpServer *mcp.Server) {
+	panel := s.Panel(webPassword)
+	mcpServer.OAuthPanelSessionValid = panel.ValidSession
+	mux.Handle("/", panel.Handler())
+}
+
 func main() {
 	configureRequestLogging()
 	addr := flag.String("addr", "127.0.0.1:9521", "listen address")
@@ -305,11 +314,7 @@ func main() {
 	mux.HandleFunc("/healthz", s.Routes().ServeHTTP)
 	mux.HandleFunc("/openapi.json", s.Routes().ServeHTTP)
 	mux.HandleFunc("/agent/ws", s.Routes().ServeHTTP)
-	panel := s.Panel(webPassword)
-	if p, ok := panel.(interface{ ValidSession(*http.Request) bool }); ok {
-		mcpServer.OAuthPanelSessionValid = p.ValidSession
-	}
-	mux.Handle("/", panel)
+	wirePanel(mux, s, webPassword, mcpServer)
 
 	// Structured request logging and an explicit CORS origin allowlist. An
 	// unset VPS_COMMANDER_CORS_ORIGINS means no cross-origin browser access.

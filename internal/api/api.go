@@ -386,10 +386,10 @@ func (s *Server) clusterDeviceNames() []string {
 	return out
 }
 
-func (s *Server) Panel(password string) http.Handler {
+func (s *Server) Panel(password string) *panelweb.Panel {
 	p := panelweb.New(password, s.AdminToken, s)
 	go p.Cleanup()
-	return p.Handler()
+	return p
 }
 
 func (s *Server) DevicesJSON(w http.ResponseWriter, r *http.Request) { s.devices(w, r) }

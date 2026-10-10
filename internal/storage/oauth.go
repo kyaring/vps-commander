@@ -289,7 +289,26 @@ func (s *Store) CreateOAuthCode(c OAuthAuthorizationCode) error {
 func (s *Store) GetOAuthCodeForExchange(hash, clientID, redirectURI string, now int64) (OAuthAuthorizationCode, error) {
 	var c OAuthAuthorizationCode
 	err := s.DB.QueryRow("SELECT code_hash,client_id,api_token_id,api_token_prefix,redirect_uri,scopes_json,code_challenge,resource,created_at,expires_at,used_at,api_token_version FROM oauth_codes WHERE code_hash=?", hash).Scan(&c.CodeHash, &c.ClientID, &c.APITokenID, &c.APITokenPrefix, &c.RedirectURI, &c.ScopesJSON, &c.CodeChallenge, &c.Resource, &c.CreatedAt, &c.ExpiresAt, &c.UsedAt, &c.APITokenVersion)
-	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI || c.UsedAt != nil || c.ExpiresAt <= now {
+	if err != nil || c.ClientID != clientID || c.RedirectURI != redirectURI {
+		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
+	}
+	if c.UsedAt != nil {
+		// Reuse of a previously consumed code is a replay signal. Revoke any
+		// grant family issued from it before returning the generic invalid_grant.
+		tx, txErr := s.DB.Begin()
+		if txErr != nil {
+			return OAuthAuthorizationCode{}, txErr
+		}
+		if txErr = revokeOAuthCodeGrantTx(tx, c.CodeHash, now); txErr != nil {
+			_ = tx.Rollback()
+			return OAuthAuthorizationCode{}, txErr
+		}
+		if txErr = tx.Commit(); txErr != nil {
+			return OAuthAuthorizationCode{}, txErr
+		}
+		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
+	}
+	if c.ExpiresAt <= now {
 		return OAuthAuthorizationCode{}, ErrOAuthCodeInvalid
 	}
 	return c, nil

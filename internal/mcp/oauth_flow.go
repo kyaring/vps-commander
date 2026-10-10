@@ -227,6 +227,10 @@ func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request)
 		for _, v := range scopes {
 			set[v] = true
 		}
+		// Admin-capable tokens must never appear in the OAuth consent picker.
+		if set["admin"] {
+			continue
+		}
 		allowed := []string{}
 		for _, v := range requested {
 			if set[v] {
@@ -457,6 +461,9 @@ func (s *Server) HandleToken(w http.ResponseWriter, r *http.Request) {
 		sum := sha256.Sum256([]byte(verifier))
 		challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 		if subtle.ConstantTimeCompare([]byte(challenge), []byte(rec.CodeChallenge)) != 1 {
+			// A code gets one verifier attempt. Consuming it on failure prevents
+			// repeated guesses and makes the failure terminal for this code.
+			_, _ = s.OAuthStore.ConsumeOAuthCode(hash, client.ID, redirect, now)
 			oauthError(w, 400, "invalid_grant", "PKCE verification failed")
 			return
 		}

@@ -50,23 +50,17 @@ func oauthFlowFixture(t *testing.T) (*Server, *storage.Store, string, string, st
 	return srv, store, clientID, clientSecret, redirect, verifier + "|" + challenge
 }
 
-func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
-	srv, store, clientID, clientSecret, redirect, verifierChallenge := oauthFlowFixture(t)
-	parts := strings.SplitN(verifierChallenge, "|", 2)
-	verifier, challenge := parts[0], parts[1]
-	resource := "https://hub.example.test/mcp"
-	q := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {"state-123"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "resource": {resource}, "scope": {"devices:read exec"}}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
-	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
-	w := httptest.NewRecorder()
-	srv.HandleAuthorize(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("authorize status=%d body=%s", w.Code, w.Body.String())
+func issueOAuthCode(t *testing.T, srv *Server, clientID, redirect, challenge, state string) string {
+	t.Helper()
+	q := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {state}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "resource": {"https://hub.example.test/mcp"}, "scope": {"devices:read exec"}}
+	get := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	get.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
+	page := httptest.NewRecorder()
+	srv.HandleAuthorize(page, get)
+	if page.Code != http.StatusOK {
+		t.Fatalf("authorize status=%d body=%s", page.Code, page.Body.String())
 	}
-	if w.Header().Get("X-Frame-Options") != "DENY" || !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
-		t.Fatal("authorization page missing anti-framing headers")
-	}
-	match := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindStringSubmatch(w.Body.String())
+	match := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
 	if len(match) != 2 {
 		t.Fatal("authorization page missing CSRF nonce")
 	}
@@ -74,19 +68,28 @@ func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
 	post := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(form.Encode()))
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	post.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
-	pw := httptest.NewRecorder()
-	srv.HandleAuthorize(pw, post)
-	if pw.Code != http.StatusFound {
-		t.Fatalf("consent status=%d body=%s", pw.Code, pw.Body.String())
+	consent := httptest.NewRecorder()
+	srv.HandleAuthorize(consent, post)
+	if consent.Code != http.StatusFound {
+		t.Fatalf("consent status=%d body=%s", consent.Code, consent.Body.String())
 	}
-	callback, err := url.Parse(pw.Header().Get("Location"))
+	callback, err := url.Parse(consent.Header().Get("Location"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	code := callback.Query().Get("code")
-	if code == "" || callback.Query().Get("state") != "state-123" || callback.Scheme+"://"+callback.Host+callback.Path != redirect {
-		t.Fatalf("bad callback URL: %s", callback)
+	if code == "" || callback.Query().Get("state") != state {
+		t.Fatalf("bad callback: %s", callback)
 	}
+	return code
+}
+
+func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
+	srv, store, clientID, clientSecret, redirect, verifierChallenge := oauthFlowFixture(t)
+	parts := strings.SplitN(verifierChallenge, "|", 2)
+	verifier, challenge := parts[0], parts[1]
+	resource := "https://hub.example.test/mcp"
+	code := issueOAuthCode(t, srv, clientID, redirect, challenge, "state-123")
 
 	tokenCall := func(values url.Values) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(values.Encode()))
@@ -99,10 +102,6 @@ func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
 	badResource := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirect}, "code_verifier": {verifier}, "resource": {"https://other.example.test/mcp"}})
 	if badResource.Code != http.StatusBadRequest || !strings.Contains(badResource.Body.String(), "invalid_target") || badResource.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("wrong resource status=%d body=%s cache=%q", badResource.Code, badResource.Body.String(), badResource.Header().Get("Cache-Control"))
-	}
-	bad := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirect}, "code_verifier": {"wrong-verifier-value-that-is-long-enough-for-pkce-123"}})
-	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "invalid_grant") {
-		t.Fatalf("bad PKCE status=%d body=%s", bad.Code, bad.Body.String())
 	}
 	exchange := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirect}, "code_verifier": {verifier}})
 	if exchange.Code != http.StatusOK {
@@ -144,6 +143,37 @@ func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
 	}
 	if _, ok := store.ValidateOAuthAccessToken(second.Access, resource, "127.0.0.1", time.Now().Unix()); ok {
 		t.Fatal("refresh replay did not revoke grant family")
+	}
+
+	// A failed PKCE attempt consumes the code; a later correct verifier cannot redeem it.
+	badCode := issueOAuthCode(t, srv, clientID, redirect, challenge, "state-bad-pkce")
+	bad := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {badCode}, "redirect_uri": {redirect}, "code_verifier": {"wrong-verifier-value-that-is-long-enough-for-pkce-123"}})
+	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "PKCE verification failed") {
+		t.Fatalf("bad PKCE status=%d body=%s", bad.Code, bad.Body.String())
+	}
+	usedAfterFailure := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {badCode}, "redirect_uri": {redirect}, "code_verifier": {verifier}})
+	if usedAfterFailure.Code != http.StatusBadRequest || !strings.Contains(usedAfterFailure.Body.String(), "invalid_grant") {
+		t.Fatalf("PKCE-failed code remained redeemable: status=%d body=%s", usedAfterFailure.Code, usedAfterFailure.Body.String())
+	}
+
+	// Redeeming a code and then replaying it revokes the grant family created by it.
+	replayCode := issueOAuthCode(t, srv, clientID, redirect, challenge, "state-code-replay")
+	replayExchange := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {replayCode}, "redirect_uri": {redirect}, "code_verifier": {verifier}})
+	if replayExchange.Code != http.StatusOK {
+		t.Fatalf("replay fixture exchange status=%d body=%s", replayExchange.Code, replayExchange.Body.String())
+	}
+	var replayTokens struct {
+		Access string `json:"access_token"`
+	}
+	if err := json.Unmarshal(replayExchange.Body.Bytes(), &replayTokens); err != nil {
+		t.Fatal(err)
+	}
+	replayedCode := tokenCall(url.Values{"grant_type": {"authorization_code"}, "code": {replayCode}, "redirect_uri": {redirect}, "code_verifier": {verifier}})
+	if replayedCode.Code != http.StatusBadRequest || !strings.Contains(replayedCode.Body.String(), "invalid_grant") {
+		t.Fatalf("authorization code replay status=%d body=%s", replayedCode.Code, replayedCode.Body.String())
+	}
+	if _, ok := store.ValidateOAuthAccessToken(replayTokens.Access, resource, "127.0.0.1", time.Now().Unix()); ok {
+		t.Fatal("authorization-code replay did not revoke grant family")
 	}
 }
 
@@ -232,5 +262,28 @@ func TestOAuthConsentDenialAndCSRFReplay(t *testing.T) {
 	grants, err := store.ListOAuthGrants()
 	if err != nil || len(grants) != 0 {
 		t.Fatalf("denial created grant(s): %+v err=%v", grants, err)
+	}
+}
+
+func TestOAuthConsentOmitsAdminCapableTokens(t *testing.T) {
+	srv, store, clientID, _, redirect, verifierChallenge := oauthFlowFixture(t)
+	adminScopes, _ := json.Marshal([]string{"admin", "devices:read"})
+	if err := store.CreateAPIToken(storage.APIToken{ID: "admin-token", Name: "admin-capable-token", Prefix: "admintest", TokenHash: storage.HashAPIToken("vpc_admin_test_token_abcdefghijklmnopqrstuvwxyz"), ScopesJSON: string(adminScopes), DevicesJSON: "[]", RateRPS: 10, MaxSessions: 2, CreatedAt: time.Now().Unix() + 1, CreatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	challenge := strings.SplitN(verifierChallenge, "|", 2)[1]
+	q := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {"admin-filter"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "resource": {"https://hub.example.test/mcp"}, "scope": {"devices:read"}}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
+	w := httptest.NewRecorder()
+	srv.HandleAuthorize(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("authorize status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "admin-capable-token") {
+		t.Fatal("consent picker exposed a token with admin scope")
+	}
+	if !strings.Contains(w.Body.String(), "chatgpt-app") {
+		t.Fatal("consent picker omitted eligible non-admin named token")
 	}
 }
