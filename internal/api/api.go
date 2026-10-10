@@ -263,6 +263,57 @@ func (s *Server) TestWebhookJSON(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"ok": true})
 }
 
+func (s *Server) LegacyKeyStatusJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	disabled, err := s.Store.LegacyKeyDisabled()
+	if err != nil {
+		http.Error(w, "legacy key status unavailable", http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, map[string]any{"disabled": disabled})
+}
+
+func (s *Server) UpdateLegacyKeyStatusJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.AdminToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Admin-Token")), []byte(s.AdminToken)) != 1 {
+		http.Error(w, "admin authorization required", http.StatusForbidden)
+		return
+	}
+	var q struct {
+		Disabled *bool `json:"disabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&q); err != nil || q.Disabled == nil {
+		http.Error(w, "disabled boolean required", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SetLegacyKeyDisabled(*q.Disabled); err != nil {
+		http.Error(w, "legacy key setting update failed", http.StatusInternalServerError)
+		return
+	}
+	_ = s.Store.AuditEntry(storage.AuditEntry{Action: "legacy_key_setting", ActorType: "panel", ActorID: "panel", ActorName: "panel:admin", Transport: "panel", TargetType: "setting", Target: "legacy_key_disabled", Result: "ok", Command: fmt.Sprintf("disabled=%t", *q.Disabled)})
+	jsonOut(w, map[string]any{"ok": true, "disabled": *q.Disabled})
+}
+
+func (s *Server) RecordLegacyRejected(r *http.Request, p auth.Principal) {
+	if s.Store == nil {
+		return
+	}
+	transport := "rest"
+	switch r.URL.Path {
+	case "/mcp/sse", "/mcp/message":
+		transport = "mcp-sse"
+	case "/mcp":
+		transport = "mcp-http"
+	}
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: auth.ClientIP(r), Action: "legacy_rejected", Command: r.UserAgent(), ErrorMsg: "legacy API key disabled; use a named API token", ActorType: "api_token", ActorID: "legacy-env", ActorName: "legacy-env", Transport: transport, TargetType: "path", Target: r.URL.Path, Result: "denied", ExitCode: http.StatusUnauthorized})
+}
+
 func (s *Server) LegacyUsageJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

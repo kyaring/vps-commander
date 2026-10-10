@@ -90,6 +90,8 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/mcp/call", p.protected(p.callAgentMCP))
 	mux.HandleFunc("/panel/api/mcp/test", p.protected(p.testMCP))
 	mux.HandleFunc("/panel/api/security/legacy-usage", p.protected(p.legacyUsage))
+	mux.HandleFunc("/panel/api/security/legacy-key", p.protected(p.legacyKeyStatus))
+	mux.HandleFunc("/panel/api/security/legacy-key/update", p.protected(p.updateLegacyKeyStatus))
 	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
 	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
 	mux.HandleFunc("/panel/api/security/device-credentials/provision", p.protected(p.provisionDeviceCredential))
@@ -201,6 +203,28 @@ func (p *Panel) callAgentMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "MCP API unavailable", 501)
 }
+func (p *Panel) legacyKeyStatus(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(interface {
+		LegacyKeyStatusJSON(http.ResponseWriter, *http.Request)
+	}); ok {
+		v.LegacyKeyStatusJSON(w, r)
+		return
+	}
+	http.Error(w, "legacy key setting API unavailable", http.StatusNotImplemented)
+}
+func (p *Panel) updateLegacyKeyStatus(w http.ResponseWriter, r *http.Request) {
+	if p.AdminToken != "" {
+		r.Header.Set("X-Admin-Token", p.AdminToken)
+	}
+	if v, ok := p.Runner.(interface {
+		UpdateLegacyKeyStatusJSON(http.ResponseWriter, *http.Request)
+	}); ok {
+		v.UpdateLegacyKeyStatusJSON(w, r)
+		return
+	}
+	http.Error(w, "legacy key setting API unavailable", http.StatusNotImplemented)
+}
+
 func (p *Panel) legacyUsage(w http.ResponseWriter, r *http.Request) {
 	if v, ok := p.Runner.(interface {
 		LegacyUsageJSON(http.ResponseWriter, *http.Request)

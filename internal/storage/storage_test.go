@@ -344,3 +344,29 @@ func TestNotificationAuditMigrationIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyKeyDisableSettingDefaultsOffAndPersists(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "legacy-setting.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	disabled, err := s.LegacyKeyDisabled()
+	if err != nil || disabled {
+		t.Fatalf("default disabled=%t err=%v; want false", disabled, err)
+	}
+	if err := s.SetLegacyKeyDisabled(true); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err = s.LegacyKeyDisabled()
+	if err != nil || !disabled {
+		t.Fatalf("after enable disabled=%t err=%v", disabled, err)
+	}
+	if err := s.SetLegacyKeyDisabled(false); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err = s.LegacyKeyDisabled()
+	if err != nil || disabled {
+		t.Fatalf("after restore disabled=%t err=%v", disabled, err)
+	}
+}

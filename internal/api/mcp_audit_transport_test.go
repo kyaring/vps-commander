@@ -464,3 +464,76 @@ func TestLegacyAuthAuditRateLimitedAndVisibleInUsageSummary(t *testing.T) {
 		t.Fatalf("incomplete usage summary: %+v", summary)
 	}
 }
+
+func TestLegacyKeySoftDisableAcrossRESTMCPAndSSE(t *testing.T) {
+	store, _, server := newMCPAuditFixture(t)
+	legacy := auth.Principal{Type: "api_token", ID: "legacy-env", TokenID: "legacy-env", Name: "legacy-env", Scopes: map[string]bool{"devices:read": true}}
+	named := auth.Principal{Type: "api_token", ID: "named-1", TokenID: "named-1", Name: "named-agent", Scopes: map[string]bool{"devices:read": true}}
+	manager := auth.NewManagerWithValidator("", auth.TokenValidatorFunc(func(token, ip string) (auth.Principal, bool) {
+		switch token {
+		case "legacy-secret":
+			return legacy, true
+		case "named-secret":
+			return named, true
+		default:
+			return auth.Principal{}, false
+		}
+	}))
+	middleware := auth.Middleware{Manager: manager, LegacyDisabled: func() bool { disabled, err := store.LegacyKeyDisabled(); return err != nil || disabled }, OnAuthenticated: server.RecordLegacyAuth, OnLegacyRejected: server.RecordLegacyRejected, OAuthResource: "https://hub.example/mcp", OAuthTokenValidator: func(token, resource, ip string, now int64) (auth.Principal, bool) {
+		if token == "vpc_oat_valid" {
+			return auth.Principal{Type: "api_token", ID: "named-1", TokenID: "oauth:grant", Name: "named-agent", AuthMethod: "oauth", Scopes: map[string]bool{"devices:read": true}}, true
+		}
+		return auth.Principal{}, false
+	}}
+	handler := middleware.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	request := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = "203.0.113.22:1234"
+		req.Header.Set("User-Agent", "legacy-soft-disable-test/1")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+	for _, path := range []string{"/api/v1/devices", "/mcp", "/mcp/sse"} {
+		if w := request(path, "legacy-secret"); w.Code != http.StatusNoContent {
+			t.Fatalf("legacy enabled path=%s status=%d", path, w.Code)
+		}
+	}
+	if err := store.SetLegacyKeyDisabled(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/devices", "/mcp", "/mcp/sse"} {
+		w := request(path, "legacy-secret")
+		if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "named API token") {
+			t.Errorf("legacy disabled path=%s status=%d body=%s", path, w.Code, w.Body.String())
+		}
+	}
+	if w := request("/api/v1/devices", "named-secret"); w.Code != http.StatusNoContent {
+		t.Errorf("named token blocked: %d", w.Code)
+	}
+	if w := request("/mcp", "vpc_oat_valid"); w.Code != http.StatusNoContent {
+		t.Errorf("OAuth token blocked: %d body=%s", w.Code, w.Body.String())
+	}
+	if err := store.SetLegacyKeyDisabled(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/devices", "/mcp", "/mcp/sse"} {
+		if w := request(path, "legacy-secret"); w.Code != http.StatusNoContent {
+			t.Errorf("legacy restore path=%s status=%d", path, w.Code)
+		}
+	}
+	rows := auditRows(t, store)
+	var rejected int
+	for _, row := range rows {
+		if row.Action == "legacy_rejected" {
+			rejected++
+			if row.Result != "denied" || row.ExitCode != http.StatusUnauthorized || row.Target == "" || row.Command == "" {
+				t.Errorf("incomplete rejection audit: %+v", row)
+			}
+		}
+	}
+	if rejected != 3 {
+		t.Fatalf("legacy_rejected rows=%d want 3", rejected)
+	}
+}

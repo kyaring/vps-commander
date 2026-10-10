@@ -275,7 +275,8 @@ func main() {
 	mcpServer.SetLocalName(local)
 	s.MCP = mcpServer
 
-	protected := auth.Middleware{Manager: authManager, OnAuthenticated: s.RecordLegacyAuth}.Handler(s.TokenRateLimitMiddleware(s.Routes()))
+	legacyDisabled := func() bool { disabled, err := store.LegacyKeyDisabled(); return err != nil || disabled }
+	protected := auth.Middleware{Manager: authManager, OnAuthenticated: s.RecordLegacyAuth, LegacyDisabled: legacyDisabled, OnLegacyRejected: s.RecordLegacyRejected}.Handler(s.TokenRateLimitMiddleware(s.Routes()))
 	mux := http.NewServeMux()
 	mux.Handle("/api/", protected)
 	mux.Handle("/metrics", protected)
@@ -284,7 +285,7 @@ func main() {
 	// Streamable HTTP endpoint, and only for the configured PUBLIC_URL/mcp resource.
 	oauthResource, _ := mcp.OAuthResourceURL()
 	mcpAuth := auth.Middleware{
-		Manager: authManager, OnAuthenticated: s.RecordLegacyAuth, WWWAuthenticate: mcp.OAuthWWWAuthenticate(), OAuthResource: oauthResource,
+		Manager: authManager, OnAuthenticated: s.RecordLegacyAuth, LegacyDisabled: legacyDisabled, OnLegacyRejected: s.RecordLegacyRejected, WWWAuthenticate: mcp.OAuthWWWAuthenticate(), OAuthResource: oauthResource,
 		OAuthTokenValidator: func(raw, resource, ip string, now int64) (auth.Principal, bool) {
 			o, ok := store.ValidateOAuthAccessToken(raw, resource, ip, now)
 			if !ok {

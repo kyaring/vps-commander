@@ -78,7 +78,7 @@ func (s *Store) init() error {
 	if _, err := s.DB.Exec("PRAGMA wal_autocheckpoint = 1000"); err != nil {
 		return err
 	}
-	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
+	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS hub_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
 		"name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'offline', is_local INTEGER NOT NULL DEFAULT 0, " +
 		"arch TEXT, os TEXT, last_seen INTEGER NOT NULL DEFAULT 0, last_heartbeat INTEGER NOT NULL DEFAULT 0, " +
 		"offline_at INTEGER, profile_json TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); " +
@@ -769,6 +769,27 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) LegacyKeyDisabled() (bool, error) {
+	var value string
+	err := s.DB.QueryRow(`SELECT value FROM hub_settings WHERE key='legacy_key_disabled'`).Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value == "true", nil
+}
+
+func (s *Store) SetLegacyKeyDisabled(disabled bool) error {
+	value := "false"
+	if disabled {
+		value = "true"
+	}
+	_, err := s.DB.Exec(`INSERT INTO hub_settings(key,value,updated_at) VALUES('legacy_key_disabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, value, time.Now().Unix())
+	return err
 }
 
 type LegacyUsage struct {

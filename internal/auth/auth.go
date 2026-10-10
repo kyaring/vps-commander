@@ -120,6 +120,8 @@ type Middleware struct {
 	OAuthResource       string
 	OAuthTokenValidator OAuthTokenValidator
 	OnAuthenticated     func(*http.Request, Principal)
+	LegacyDisabled      func() bool
+	OnLegacyRejected    func(*http.Request, Principal)
 }
 
 func (m Middleware) Handler(next http.Handler) http.Handler {
@@ -132,6 +134,9 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			if strings.HasPrefix(got, "vpc_oat_") {
 				if r.URL.Path == "/mcp" && m.OAuthResource != "" && m.OAuthTokenValidator != nil {
 					if p, ok := m.OAuthTokenValidator(got, m.OAuthResource, ClientIP(r), time.Now().Unix()); ok {
+						if m.rejectDisabledLegacy(w, r, p) {
+							return
+						}
 						if m.OnAuthenticated != nil {
 							m.OnAuthenticated(r, p)
 						}
@@ -144,6 +149,9 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			}
 			if m.Manager != nil {
 				if p, ok := m.Manager.PrincipalFromRequest(r); ok {
+					if m.rejectDisabledLegacy(w, r, p) {
+						return
+					}
 					if m.OnAuthenticated != nil {
 						m.OnAuthenticated(r, p)
 					}
@@ -153,6 +161,9 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			} else if m.Token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(m.Token)) == 1 {
 				p := Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env", RateRPS: 10,
 					Scopes: map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}}
+				if m.rejectDisabledLegacy(w, r, p) {
+					return
+				}
 				if m.OnAuthenticated != nil {
 					m.OnAuthenticated(r, p)
 				}
@@ -166,6 +177,21 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 		}
 		unauthorizedWithChallenge(w, m.WWWAuthenticate, got != "")
 	})
+}
+
+func (m Middleware) rejectDisabledLegacy(w http.ResponseWriter, r *http.Request, p Principal) bool {
+	legacy := p.ID == "legacy-env" || p.TokenID == "legacy-env" || p.Name == "legacy-env"
+	if !legacy || m.LegacyDisabled == nil || !m.LegacyDisabled() {
+		return false
+	}
+	if m.OnLegacyRejected != nil {
+		m.OnLegacyRejected(r, p)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("WWW-Authenticate", `Bearer realm="vps-commander", error="invalid_token"`)
+	w.WriteHeader(http.StatusUnauthorized)
+	_, _ = w.Write([]byte(`{"error":"legacy API key is disabled; use a named API token"}`))
+	return true
 }
 
 func bearer(r *http.Request) string {
