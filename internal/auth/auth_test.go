@@ -129,7 +129,7 @@ func TestPrincipalQuotaIDAndAuditName(t *testing.T) {
 	if got := p.QuotaID(); got != "api-1" {
 		t.Fatalf("QuotaID=%q", got)
 	}
-	if got := p.AuditName(); got != "chatgpt-app via=oauth:chatgpt-client" {
+	if got := p.AuditName(); got != "chatgpt-app" {
 		t.Fatalf("AuditName=%q", got)
 	}
 	direct := Principal{TokenID: "api-1", Name: "chatgpt-app"}

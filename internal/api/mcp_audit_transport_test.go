@@ -370,7 +370,7 @@ func TestAuditCSVExportUsesCurrentFiltersAndActorLabels(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("CSV rows=%d want header+1 match: %v", len(rows), rows)
 	}
-	if rows[1][2] != "named-a" || rows[1][4] != "mcp-sse" || rows[1][9] != "denied" || rows[1][10] != "echo a" {
+	if rows[1][2] != "named-a" || rows[1][3] != "" || rows[1][5] != "mcp-sse" || rows[1][10] != "denied" || rows[1][11] != "echo a" {
 		t.Fatalf("CSV row differs from filtered audit: %v", rows[1])
 	}
 	panelReq := httptest.NewRequest(http.MethodGet, "/api/v1/audits/export.csv?actor=panel", nil)
@@ -391,8 +391,11 @@ func TestAuditActorFilterIncludesOAuthViaRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	for _, name := range []string{"chatgpt-app", "chatgpt-app via=oauth:client-123"} {
-		if err := store.AuditEntry(storage.AuditEntry{ActorID: "token-id", ActorType: "api_token", ActorName: name, Transport: "mcp-http", Action: "mcp_call", Result: "ok"}); err != nil {
+	for _, entry := range []storage.AuditEntry{
+		{ActorID: "token-id", ActorType: "api_token", ActorName: "chatgpt-app", Transport: "mcp-http", Action: "mcp_call", Result: "ok"},
+		{ActorID: "token-id", ActorType: "api_token", ActorName: "chatgpt-app", OAuthClientID: "client-123", Transport: "mcp-http", Action: "mcp_call", Result: "ok"},
+	} {
+		if err := store.AuditEntry(entry); err != nil {
 			t.Fatal(err)
 		}
 	}

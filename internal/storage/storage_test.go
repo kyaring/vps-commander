@@ -280,3 +280,30 @@ func TestAuditWriteFailureFallsBackWithoutInfiniteRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMigrateAuditExtractsOAuthClientID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit-oauth-migration.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,actor_name,exit_code) VALUES(?,?,?)", time.Now().Unix(), "chatgpt-app via=oauth:client-123", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var actorName, oauthClientID string
+	if err := s.DB.QueryRow("SELECT actor_name,oauth_client_id FROM audit_logs ORDER BY id DESC LIMIT 1").Scan(&actorName, &oauthClientID); err != nil {
+		t.Fatal(err)
+	}
+	if actorName != "chatgpt-app" || oauthClientID != "client-123" {
+		t.Fatalf("migrated actor_name=%q oauth_client_id=%q", actorName, oauthClientID)
+	}
+}

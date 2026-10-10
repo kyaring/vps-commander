@@ -35,11 +35,8 @@ func (p Principal) QuotaID() string {
 	return p.TokenID
 }
 
-// AuditName preserves the named token and attributes OAuth use without changing direct-token labels.
+// AuditName returns the stable human-readable API token name. OAuth attribution is stored separately.
 func (p Principal) AuditName() string {
-	if p.AuthMethod == "oauth" && p.OAuthClient != "" {
-		return p.Name + " via=oauth:" + p.OAuthClient
-	}
 	return p.Name
 }
 

@@ -371,6 +371,7 @@ func (s *Store) migrateAudit() error {
 		{"actor_type", "ALTER TABLE audit_logs ADD COLUMN actor_type TEXT"},
 		{"actor_id", "ALTER TABLE audit_logs ADD COLUMN actor_id TEXT"},
 		{"actor_name", "ALTER TABLE audit_logs ADD COLUMN actor_name TEXT"},
+		{"oauth_client_id", "ALTER TABLE audit_logs ADD COLUMN oauth_client_id TEXT"},
 		{"transport", "ALTER TABLE audit_logs ADD COLUMN transport TEXT"},
 		{"target_type", "ALTER TABLE audit_logs ADD COLUMN target_type TEXT"},
 		{"target", "ALTER TABLE audit_logs ADD COLUMN target TEXT"},
@@ -385,6 +386,12 @@ func (s *Store) migrateAudit() error {
 			}
 		}
 	}
+	// Normalize legacy OAuth attribution into its own column. New audit rows never
+	// encode the client ID inside actor_name, but preserve attribution for old rows.
+	_, err = s.DB.Exec("UPDATE audit_logs SET oauth_client_id=substr(actor_name,instr(actor_name,' via=oauth:')+length(' via=oauth:')), actor_name=substr(actor_name,1,instr(actor_name,' via=oauth:')-1) WHERE instr(actor_name,' via=oauth:')>0 AND COALESCE(oauth_client_id,'')=''")
+	if err != nil {
+		return err
+	}
 	_, err = s.DB.Exec("UPDATE audit_logs SET actor_name=COALESCE(actor_name,'unknown(legacy)'), result=COALESCE(result,CASE WHEN exit_code=0 THEN 'ok' ELSE 'error' END), transport=COALESCE(transport,'legacy') WHERE actor_name IS NULL OR result IS NULL OR transport IS NULL")
 	if err != nil {
 		return err
@@ -394,44 +401,46 @@ func (s *Store) migrateAudit() error {
 }
 
 type AuditEntry struct {
-	Timestamp  int64 `json:"timestamp"`
-	CallerIP   string
-	Device     string
-	Action     string
-	Command    string
-	ExitCode   int
-	DurationMS int64
-	ErrorMsg   string
-	ActorType  string
-	ActorID    string
-	ActorName  string
-	Transport  string
-	TargetType string
-	Target     string
-	Result     string
-	RequestID  string
-	SessionID  string
+	Timestamp     int64 `json:"timestamp"`
+	CallerIP      string
+	Device        string
+	Action        string
+	Command       string
+	ExitCode      int
+	DurationMS    int64
+	ErrorMsg      string
+	ActorType     string
+	ActorID       string
+	ActorName     string
+	OAuthClientID string
+	Transport     string
+	TargetType    string
+	Target        string
+	Result        string
+	RequestID     string
+	SessionID     string
 }
 
 type AuditLog struct {
-	ID         int64  `json:"id"`
-	Timestamp  int64  `json:"timestamp"`
-	CallerIP   string `json:"caller_ip"`
-	Device     string `json:"device"`
-	Action     string `json:"action"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exit_code"`
-	DurationMS int64  `json:"duration_ms"`
-	ErrorMsg   string `json:"error_msg"`
-	ActorType  string `json:"actor_type"`
-	ActorID    string `json:"actor_id"`
-	ActorName  string `json:"actor_name"`
-	Transport  string `json:"transport"`
-	TargetType string `json:"target_type"`
-	Target     string `json:"target"`
-	Result     string `json:"result"`
-	RequestID  string `json:"request_id"`
-	SessionID  string `json:"session_id"`
+	ID            int64  `json:"id"`
+	Timestamp     int64  `json:"timestamp"`
+	CallerIP      string `json:"caller_ip"`
+	Device        string `json:"device"`
+	Action        string `json:"action"`
+	Command       string `json:"command"`
+	ExitCode      int    `json:"exit_code"`
+	DurationMS    int64  `json:"duration_ms"`
+	ErrorMsg      string `json:"error_msg"`
+	ActorType     string `json:"actor_type"`
+	ActorID       string `json:"actor_id"`
+	ActorName     string `json:"actor_name"`
+	OAuthClientID string `json:"oauth_client_id"`
+	Transport     string `json:"transport"`
+	TargetType    string `json:"target_type"`
+	Target        string `json:"target"`
+	Result        string `json:"result"`
+	RequestID     string `json:"request_id"`
+	SessionID     string `json:"session_id"`
 }
 
 func normalizeAuditEntry(e AuditEntry) AuditEntry {
@@ -500,9 +509,9 @@ func (s *Store) writeAuditEntry(e AuditEntry) error {
 	s.auditWriteMu.Lock()
 	defer s.auditWriteMu.Unlock()
 	started := time.Now()
-	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+	_, err := s.DB.Exec("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,oauth_client_id,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		e.Timestamp, e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
-		e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID)
+		e.ActorType, e.ActorID, e.ActorName, e.OAuthClientID, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID)
 	s.sqliteWriteLatencyNS.Store(time.Since(started).Nanoseconds())
 	return err
 }
@@ -519,14 +528,14 @@ func (s *Store) writeAuditBatch(entries []AuditEntry) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+	stmt, err := tx.Prepare("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,oauth_client_id,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	for _, e := range entries {
 		if _, err = stmt.Exec(e.Timestamp, e.CallerIP, e.Device, e.Action, e.Command, e.ExitCode, e.DurationMS, e.ErrorMsg,
-			e.ActorType, e.ActorID, e.ActorName, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID); err != nil {
+			e.ActorType, e.ActorID, e.ActorName, e.OAuthClientID, e.Transport, e.TargetType, e.Target, e.Result, e.RequestID, e.SessionID); err != nil {
 			break
 		}
 	}
@@ -762,7 +771,7 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 	if limit > 500 {
 		limit = 500
 	}
-	q := "SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs WHERE 1=1"
+	q := "SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(oauth_client_id,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs WHERE 1=1"
 	args := []any{}
 	if actor != "" {
 		switch actor {
@@ -772,9 +781,8 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 			q += " AND (actor_type='panel' OR transport='panel')"
 		default:
 			// Selecting a named token includes its OAuth-attributed audit rows too.
-			q += " AND (actor_name=? OR substr(actor_name,1,length(?))=?)"
-			prefix := actor + " via=oauth:"
-			args = append(args, actor, prefix, prefix)
+			q += " AND actor_name=?"
+			args = append(args, actor)
 		}
 	}
 	if device != "" {
@@ -819,7 +827,7 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 	out := make([]AuditLog, 0, limit)
 	for rows.Next() {
 		var v AuditLog
-		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
+		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.OAuthClientID, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
@@ -846,7 +854,7 @@ func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
 	if limit > 500 {
 		limit = 500
 	}
-	rows, err := s.DB.Query("SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs ORDER BY id DESC LIMIT ?", limit)
+	rows, err := s.DB.Query("SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(oauth_client_id,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs ORDER BY id DESC LIMIT ?", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -854,7 +862,7 @@ func (s *Store) RecentAudits(limit int) ([]AuditLog, error) {
 	out := make([]AuditLog, 0, limit)
 	for rows.Next() {
 		var v AuditLog
-		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
+		if err := rows.Scan(&v.ID, &v.Timestamp, &v.CallerIP, &v.Device, &v.Action, &v.Command, &v.ExitCode, &v.DurationMS, &v.ErrorMsg, &v.ActorType, &v.ActorID, &v.ActorName, &v.OAuthClientID, &v.Transport, &v.TargetType, &v.Target, &v.Result, &v.RequestID, &v.SessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

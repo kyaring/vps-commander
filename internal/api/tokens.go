@@ -102,7 +102,7 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 		mcp.MarkAuditRecorded(ctx)
 		return nil
 	}
-	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: result})
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: result})
 	mcp.MarkAuditRecorded(ctx)
 	return err
 }
@@ -152,7 +152,7 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	if transport == "" {
 		transport = "mcp"
 	}
-	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: result})
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: result})
 	mcp.MarkAuditRecorded(ctx)
 	return err
 }
@@ -269,7 +269,7 @@ func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=audits.csv")
 	c := csv.NewWriter(w)
-	if err := c.Write([]string{"id", "timestamp", "actor_name", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"}); err != nil {
+	if err := c.Write([]string{"id", "timestamp", "actor_name", "oauth_client_id", "actor_type", "transport", "device", "action", "target_type", "target", "result", "command", "exit_code", "duration_ms", "error_msg"}); err != nil {
 		slog.Error("audit CSV header write failed", "error", err)
 		return
 	}
@@ -277,7 +277,7 @@ func (s *Server) AuditExportCSV(w http.ResponseWriter, r *http.Request) {
 	cursor := int64(0)
 	writeRows := func(rows []storage.AuditLog) error {
 		for _, v := range rows {
-			if err := c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), auditActorLabel(v), v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg}); err != nil {
+			if err := c.Write([]string{fmt.Sprint(v.ID), fmt.Sprint(v.Timestamp), auditActorLabel(v), v.OAuthClientID, v.ActorType, v.Transport, v.Device, v.Action, v.TargetType, v.Target, v.Result, v.Command, fmt.Sprint(v.ExitCode), fmt.Sprint(v.DurationMS), v.ErrorMsg}); err != nil {
 				return err
 			}
 			rowsWritten++

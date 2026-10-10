@@ -137,6 +137,12 @@ func TestOAuthAuthorizationCodePKCERefreshAndReplay(t *testing.T) {
 	if second.Access == first.Access || second.Refresh == first.Refresh {
 		t.Fatal("refresh rotation did not replace both tokens")
 	}
+	if _, ok := store.ValidateOAuthAccessToken(first.Access, resource, "127.0.0.1", time.Now().Unix()); ok {
+		t.Fatal("old access token remained valid after refresh rotation")
+	}
+	if _, ok := store.ValidateOAuthAccessToken(second.Access, resource, "127.0.0.1", time.Now().Unix()); !ok {
+		t.Fatal("replacement access token is invalid after refresh rotation")
+	}
 	replay := tokenCall(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {first.Refresh}})
 	if replay.Code != http.StatusBadRequest || !strings.Contains(replay.Body.String(), "invalid_grant") {
 		t.Fatalf("refresh replay status=%d body=%s", replay.Code, replay.Body.String())

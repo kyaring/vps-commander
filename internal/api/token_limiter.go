@@ -204,7 +204,7 @@ func (s *Server) auditRateLimitedEntry(clientIP, device, command, transport, met
 	if device != "" {
 		targetType, target = "device", device
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
 }
 
 func rateLimitIntent(r *http.Request) (device, action, command, method string) {

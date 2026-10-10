@@ -227,11 +227,11 @@ func TestOAuthRateLimitAuditIncludesViaClient(t *testing.T) {
 	if err := store.FlushAudits(); err != nil {
 		t.Fatal(err)
 	}
-	var actor string
-	if err := store.DB.QueryRow("SELECT actor_name FROM audit_logs ORDER BY id DESC LIMIT 1").Scan(&actor); err != nil {
+	var actor, oauthClient string
+	if err := store.DB.QueryRow("SELECT actor_name,oauth_client_id FROM audit_logs ORDER BY id DESC LIMIT 1").Scan(&actor, &oauthClient); err != nil {
 		t.Fatal(err)
 	}
-	if actor != "chatgpt-app via=oauth:chatgpt-client" {
-		t.Fatalf("actor=%q", actor)
+	if actor != "chatgpt-app" || oauthClient != "chatgpt-client" {
+		t.Fatalf("actor=%q oauth_client_id=%q", actor, oauthClient)
 	}
 }

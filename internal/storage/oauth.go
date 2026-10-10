@@ -520,6 +520,10 @@ func (s *Store) RotateOAuthRefresh(hash, clientID string, now int64, access, ref
 	if err != nil || n != 1 {
 		return OAuthGrant{}, ErrOAuthRefreshInvalid
 	}
+	// Revoke all prior access tokens for this grant atomically with refresh rotation.
+	if _, err := tx.Exec("UPDATE oauth_tokens SET revoked_at=COALESCE(revoked_at,?) WHERE grant_id=? AND kind='access' AND revoked_at IS NULL", now, g.ID); err != nil {
+		return OAuthGrant{}, err
+	}
 	if err := insertOAuthToken(tx, access); err != nil {
 		return OAuthGrant{}, err
 	}
