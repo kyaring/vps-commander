@@ -287,3 +287,41 @@ func TestOAuthConsentOmitsAdminCapableTokens(t *testing.T) {
 		t.Fatal("consent picker omitted eligible non-admin named token")
 	}
 }
+
+func TestOAuthConsentRejectsForgedAdminTokenSelection(t *testing.T) {
+	srv, store, clientID, _, redirect, verifierChallenge := oauthFlowFixture(t)
+	adminScopes, _ := json.Marshal([]string{"admin", "devices:read"})
+	if err := store.CreateAPIToken(storage.APIToken{ID: "admin-token", Name: "admin-capable-token", Prefix: "admintest", TokenHash: storage.HashAPIToken("vpc_admin_test_token_abcdefghijklmnopqrstuvwxyz"), ScopesJSON: string(adminScopes), DevicesJSON: "[]", RateRPS: 10, MaxSessions: 2, CreatedAt: time.Now().Unix() + 1, CreatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	challenge := strings.SplitN(verifierChallenge, "|", 2)[1]
+	q := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {"forged-admin-selection"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"}, "resource": {"https://hub.example.test/mcp"}, "scope": {"devices:read"}}
+	get := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	cookie := &http.Cookie{Name: "vpc_session", Value: "valid-panel-session"}
+	get.AddCookie(cookie)
+	page := httptest.NewRecorder()
+	srv.HandleAuthorize(page, get)
+	if page.Code != http.StatusOK {
+		t.Fatalf("authorize page status=%d body=%s", page.Code, page.Body.String())
+	}
+	match := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindStringSubmatch(page.Body.String())
+	if len(match) != 2 {
+		t.Fatal("authorization page missing CSRF nonce")
+	}
+
+	// Deliberately forge the POST to select an admin-capable token that the
+	// consent picker does not render. The server must reject it independently.
+	form := url.Values{"csrf": {match[1]}, "decision": {"approve"}, "api_token_id": {"admin-token"}, "scope": {"devices:read"}}
+	post := httptest.NewRequest(http.MethodPost, "/oauth/authorize", strings.NewReader(form.Encode()))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post.AddCookie(cookie)
+	result := httptest.NewRecorder()
+	srv.HandleAuthorize(result, post)
+	if result.Code != http.StatusForbidden {
+		t.Fatalf("forged admin-token approval status=%d body=%s", result.Code, result.Body.String())
+	}
+	grants, err := store.ListOAuthGrants()
+	if err != nil || len(grants) != 0 {
+		t.Fatalf("forged admin-token approval created grant(s): %+v err=%v", grants, err)
+	}
+}

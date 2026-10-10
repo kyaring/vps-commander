@@ -315,6 +315,12 @@ func (s *Server) finishOAuthAuthorization(w http.ResponseWriter, r *http.Request
 	for _, v := range scopes {
 		tokenScopes[v] = true
 	}
+	// Enforce the non-admin-token policy on the server, not only in the
+	// consent-page picker: clients can forge the selected token ID in POST.
+	if tokenScopes["admin"] {
+		http.Error(w, "admin-capable tokens cannot be used for OAuth authorization", http.StatusForbidden)
+		return
+	}
 	requested := map[string]bool{}
 	for _, v := range pending.Requested {
 		requested[v] = true
