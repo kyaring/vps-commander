@@ -270,10 +270,12 @@ func main() {
 	mux.Handle("/api/", protected)
 	mux.Handle("/metrics", protected)
 
-	// MCP Endpoints
-	mux.Handle("/mcp", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
-	mux.Handle("/mcp/sse", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleSSE))))
-	mux.Handle("/mcp/message", auth.Middleware{Manager: authManager}.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleMessage))))
+	// MCP Endpoints. Advertise Protected Resource Metadata only when OAuth is
+	// explicitly enabled with a trusted public origin.
+	mcpAuth := auth.Middleware{Manager: authManager, WWWAuthenticate: mcp.OAuthWWWAuthenticate()}
+	mux.Handle("/mcp", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
+	mux.Handle("/mcp/sse", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleSSE))))
+	mux.Handle("/mcp/message", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleMessage))))
 
 	// OAuth Endpoints
 	mux.HandleFunc("/.well-known/oauth-authorization-server", mcpServer.HandleOAuthMetadata)

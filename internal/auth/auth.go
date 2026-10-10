@@ -95,9 +95,10 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 }
 
 type Middleware struct {
-	Token    string
-	Manager  *Manager
-	Optional bool
+	Token           string
+	Manager         *Manager
+	Optional        bool
+	WWWAuthenticate string
 }
 
 func (m Middleware) Handler(next http.Handler) http.Handler {
@@ -119,7 +120,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		unauthorized(w)
+		unauthorizedWithChallenge(w, m.WWWAuthenticate)
 	})
 }
 
@@ -153,8 +154,15 @@ func ClientIP(r *http.Request) string {
 }
 
 func unauthorized(w http.ResponseWriter) {
+	unauthorizedWithChallenge(w, "")
+}
+
+func unauthorizedWithChallenge(w http.ResponseWriter, challenge string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("WWW-Authenticate", `Bearer realm="vps-commander"`)
+	if challenge == "" {
+		challenge = `Bearer realm="vps-commander"`
+	}
+	w.Header().Set("WWW-Authenticate", challenge)
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
 }

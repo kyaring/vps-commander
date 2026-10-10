@@ -73,7 +73,7 @@ func TestOAuthProtectedResourceMetadata(t *testing.T) {
 }
 
 func TestOAuthMetadataRejectsInvalidPublicURL(t *testing.T) {
-	for _, raw := range []string{"https://user:pass@hub.example", "https://hub.example/path?query=1", "https://hub.example/#frag", "http://hub.example"} {
+	for _, raw := range []string{"https://user:pass@hub.example", "https://hub.example/path", "https://hub.example/path?query=1", "https://hub.example/#frag", "http://hub.example"} {
 		t.Run(raw, func(t *testing.T) {
 			t.Setenv("VPS_COMMANDER_PUBLIC_URL", raw)
 			w := httptest.NewRecorder()
@@ -82,6 +82,18 @@ func TestOAuthMetadataRejectsInvalidPublicURL(t *testing.T) {
 				t.Fatalf("invalid public URL %q returned %d", raw, w.Code)
 			}
 		})
+	}
+}
+
+func TestOAuthWWWAuthenticateAdvertisesProtectedResourceMetadata(t *testing.T) {
+	t.Setenv("VPS_COMMANDER_PUBLIC_URL", "https://hub.example.test")
+	want := `Bearer realm="vps-commander", resource_metadata="https://hub.example.test/.well-known/oauth-protected-resource/mcp"`
+	if got := OAuthWWWAuthenticate(); got != want {
+		t.Fatalf("OAuthWWWAuthenticate()=%q, want %q", got, want)
+	}
+	t.Setenv("VPS_COMMANDER_PUBLIC_URL", "")
+	if got := OAuthWWWAuthenticate(); got != `Bearer realm="vps-commander"` {
+		t.Fatalf("OAuthWWWAuthenticate() while disabled=%q", got)
 	}
 }
 

@@ -17,7 +17,7 @@ func oauthPublicURL() (string, bool) {
 		return "", false
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u == nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil || u == nil || u.Host == "" || u.User != nil || u.Opaque != "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return "", false
 	}
 	if u.Scheme != "https" {
@@ -26,11 +26,26 @@ func oauthPublicURL() (string, bool) {
 			return "", false
 		}
 	}
-	base := strings.TrimRight(raw, "/")
-	if base == "" {
+	base := u.Scheme + "://" + u.Host
+	return base, true
+}
+
+// OAuthResourceMetadataURL returns the stable Protected Resource Metadata URL
+// for the configured public origin. It is empty while OAuth is disabled.
+func OAuthResourceMetadataURL() (string, bool) {
+	base, ok := oauthPublicURL()
+	if !ok {
 		return "", false
 	}
-	return base, true
+	return base + "/.well-known/oauth-protected-resource/mcp", true
+}
+
+// OAuthWWWAuthenticate returns the challenge used by the MCP resource server.
+func OAuthWWWAuthenticate() string {
+	if metadataURL, ok := OAuthResourceMetadataURL(); ok {
+		return `Bearer realm="vps-commander", resource_metadata="` + metadataURL + `"`
+	}
+	return `Bearer realm="vps-commander"`
 }
 
 func writeOAuthJSON(w http.ResponseWriter, status int, value any) {

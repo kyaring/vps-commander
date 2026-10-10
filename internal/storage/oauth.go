@@ -327,7 +327,7 @@ func (s *Store) ConsumeOAuthCode(hash, clientID, redirectURI string, now int64) 
 	return c, nil
 }
 func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error {
-	if g.ID == "" || g.ClientID == "" || g.APITokenID == "" || g.Resource == "" || access.Kind != "access" || access.GrantID != g.ID || (refresh.ID != "" && (refresh.Kind != "refresh" || refresh.GrantID != g.ID)) {
+	if g.ID == "" || g.ClientID == "" || g.APITokenID == "" || g.Resource == "" || g.CodeHash == "" || access.Kind != "access" || access.GrantID != g.ID || (refresh.ID != "" && (refresh.Kind != "refresh" || refresh.GrantID != g.ID)) {
 		return errors.New("invalid oauth grant or tokens")
 	}
 	tx, err := s.DB.Begin()
@@ -344,12 +344,10 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 	if err := tx.QueryRow("SELECT a.prefix,a.scopes_json,COALESCE(a.devices_json,'[]'),a.revoked_at,a.expires_at,a.is_legacy,a.oauth_version,c.disabled_at FROM api_tokens a JOIN oauth_clients c ON c.client_id=? WHERE a.id=?", g.ClientID, g.APITokenID).Scan(&prefix, &currentScopesJSON, &currentDevicesJSON, &apiRevoked, &apiExpiry, &legacy, &tokenVersion, &clientDisabled); err != nil || g.APITokenPrefix == "" || prefix != g.APITokenPrefix || g.APITokenVersion != tokenVersion || apiRevoked.Valid || clientDisabled.Valid || legacy != 0 || (apiExpiry.Valid && apiExpiry.Int64 <= g.CreatedAt) {
 		return errors.New("underlying API token changed or is unavailable")
 	}
-	if g.CodeHash != "" {
-		var codeClient, codeToken, codeResource string
-		var codeUsed, codeExpiry sql.NullInt64
-		if err := tx.QueryRow("SELECT client_id,api_token_id,resource,used_at,expires_at,scopes_json FROM oauth_codes WHERE code_hash=?", g.CodeHash).Scan(&codeClient, &codeToken, &codeResource, &codeUsed, &codeExpiry, &codeScopesJSON); err != nil || !codeUsed.Valid || codeUsed.Int64 > g.CreatedAt || !codeExpiry.Valid || codeExpiry.Int64 <= codeUsed.Int64 || codeClient != g.ClientID || codeToken != g.APITokenID || codeResource != g.Resource || json.Unmarshal([]byte(codeScopesJSON), &codeScopes) != nil {
-			return errors.New("OAuth grant is not bound to a consumed authorization code")
-		}
+	var codeClient, codeToken, codeResource string
+	var codeUsed, codeExpiry sql.NullInt64
+	if err := tx.QueryRow("SELECT client_id,api_token_id,resource,used_at,expires_at,scopes_json FROM oauth_codes WHERE code_hash=?", g.CodeHash).Scan(&codeClient, &codeToken, &codeResource, &codeUsed, &codeExpiry, &codeScopesJSON); err != nil || !codeUsed.Valid || codeUsed.Int64 > g.CreatedAt || !codeExpiry.Valid || codeExpiry.Int64 <= codeUsed.Int64 || codeClient != g.ClientID || codeToken != g.APITokenID || codeResource != g.Resource || json.Unmarshal([]byte(codeScopesJSON), &codeScopes) != nil {
+		return errors.New("OAuth grant is not bound to a consumed authorization code")
 	}
 	var requestedScopes, currentScopes []string
 	if json.Unmarshal([]byte(g.ScopesJSON), &requestedScopes) != nil || json.Unmarshal([]byte(currentScopesJSON), &currentScopes) != nil {
@@ -363,7 +361,7 @@ func (s *Store) CreateOAuthGrant(g OAuthGrant, access, refresh OAuthToken) error
 		if scope == "admin" {
 			return errors.New("OAuth grants cannot contain admin scope")
 		}
-		if g.CodeHash != "" && !codeScopeSet[scope] {
+		if !codeScopeSet[scope] {
 			return errors.New("OAuth grant scope exceeds authorization code")
 		}
 	}

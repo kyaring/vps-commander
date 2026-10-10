@@ -32,6 +32,39 @@ func oauthFixture(t *testing.T) (*Store, string, string) {
 	return s, raw, "http://127.0.0.1:9876/callback"
 }
 
+func createOAuthGrantForTest(t *testing.T, s *Store, g OAuthGrant, access, refresh OAuthToken) error {
+	t.Helper()
+	if g.CodeHash == "" {
+		var scopes []string
+		if json.Unmarshal([]byte(g.ScopesJSON), &scopes) != nil {
+			return s.CreateOAuthGrant(g, access, refresh)
+		}
+		codeScopesJSON := g.ScopesJSON
+		for _, scope := range scopes {
+			if scope == "admin" {
+				codeScopesJSON = `["devices:read"]`
+				break
+			}
+		}
+		g.CodeHash = HashAPIToken("test-code-" + g.ID)
+		createdAt := g.CreatedAt - 1
+		code := OAuthAuthorizationCode{
+			CodeHash: g.CodeHash, ClientID: g.ClientID, APITokenID: g.APITokenID,
+			APITokenPrefix: g.APITokenPrefix, APITokenVersion: g.APITokenVersion,
+			RedirectURI: "http://127.0.0.1:9876/callback", ScopesJSON: codeScopesJSON,
+			CodeChallenge: "test-challenge", Resource: g.Resource,
+			CreatedAt: createdAt, ExpiresAt: g.CreatedAt + 60,
+		}
+		if err := s.CreateOAuthCode(code); err != nil {
+			return err
+		}
+		if _, err := s.ConsumeOAuthCode(g.CodeHash, g.ClientID, code.RedirectURI, g.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return s.CreateOAuthGrant(g, access, refresh)
+}
+
 func TestOAuthMigrationIdempotent(t *testing.T) {
 	s, _, _ := oauthFixture(t)
 	if err := s.migrateOAuth(); err != nil {
@@ -45,6 +78,16 @@ func TestOAuthMigrationIdempotent(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("table %s exists=%d", table, n)
 		}
+	}
+}
+
+func TestCreateOAuthGrantRequiresCodeHash(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := int64(1000)
+	g := OAuthGrant{ID: "grant-no-code", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
+	a := OAuthToken{ID: "access-no-code", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-no-code"), CreatedAt: now, ExpiresAt: now + 3600}
+	if err := s.CreateOAuthGrant(g, a, OAuthToken{}); err == nil {
+		t.Fatal("CreateOAuthGrant accepted an empty CodeHash")
 	}
 }
 
@@ -72,7 +115,7 @@ func TestOAuthAccessScopeIntersectionAndRefreshReplayRevokesFamily(t *testing.T)
 	g := OAuthGrant{ID: "grant-1", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\",\"files:read\",\"mcp:call\"]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	access := OAuthToken{ID: "access-1", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-secret"), CreatedAt: now, ExpiresAt: now + 3600}
 	refresh := OAuthToken{ID: "refresh-1", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-secret"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, access, refresh); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, access, refresh); err != nil {
 		t.Fatal(err)
 	}
 	p, ok := s.ValidateOAuthAccessToken("access-secret", "https://hub.example.com/mcp", "192.0.2.1", now+1)
@@ -103,7 +146,7 @@ func TestOAuthRevokedAPITokenInvalidatesAccess(t *testing.T) {
 	g := OAuthGrant{ID: "grant-2", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\"]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	a := OAuthToken{ID: "access-4", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-secret-4"), CreatedAt: now, ExpiresAt: now + 3600}
 	r := OAuthToken{ID: "refresh-4", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-secret-4"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokeAPIToken("api-1"); err != nil {
@@ -120,7 +163,7 @@ func TestOAuthClientDisableRevokesGrantAndAccess(t *testing.T) {
 	g := OAuthGrant{ID: "grant-disable", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\"]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	a := OAuthToken{ID: "access-disable", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-disable-secret"), CreatedAt: now, ExpiresAt: now + 3600}
 	r := OAuthToken{ID: "refresh-disable", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-disable-secret"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DisableOAuthClient("client-1", now+1); err != nil {
@@ -141,7 +184,7 @@ func TestOAuthRevokingOneTokenRevokesItsGrant(t *testing.T) {
 	g := OAuthGrant{ID: "grant-revoke", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\"]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	a := OAuthToken{ID: "access-revoke", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-revoke-secret"), CreatedAt: now, ExpiresAt: now + 3600}
 	r := OAuthToken{ID: "refresh-revoke", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-revoke-secret"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokeOAuthToken("refresh-revoke-secret", "client-1", now+1); err != nil {
@@ -158,7 +201,7 @@ func TestOAuthGrantScopesStayNarrowAfterAPIKeyScopeWidening(t *testing.T) {
 	g := OAuthGrant{ID: "grant-scope-narrow", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\",\"mcp:call\"]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	a := OAuthToken{ID: "access-scope-narrow", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-scope-narrow"), CreatedAt: now, ExpiresAt: now + 3600}
 	r := OAuthToken{ID: "refresh-scope-narrow", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-scope-narrow"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	var devices string
@@ -207,7 +250,7 @@ func TestOAuthDeviceGrantDoesNotExpandWhenUnderlyingTokenWidens(t *testing.T) {
 	g := OAuthGrant{ID: "grant-device-narrow", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: "[\"devices:read\"]", DevicesJSON: "[]", Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
 	a := OAuthToken{ID: "access-device-narrow", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-device-narrow"), CreatedAt: now, ExpiresAt: now + 3600}
 	r := OAuthToken{ID: "refresh-device-narrow", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-device-narrow"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateAPIToken("api-1", "desktop", "[\"devices:read\",\"mcp:call\",\"exec\"]", "[]", 7, 3, "", nil); err != nil {
@@ -240,9 +283,9 @@ func TestConsumedOAuthCodeCannotIssueAfterTokenPolicyVersionChanges(t *testing.T
 	if err := s.UpdateAPIToken("api-1", "desktop", "[\"devices:read\"]", devices, 7, 3, "", nil); err != nil {
 		t.Fatal(err)
 	}
-	g := OAuthGrant{ID: "grant-stale-code", ClientID: "client-1", APITokenID: consumed.APITokenID, APITokenPrefix: consumed.APITokenPrefix, APITokenVersion: consumed.APITokenVersion, ScopesJSON: consumed.ScopesJSON, Resource: consumed.Resource, CreatedAt: now + 2, RefreshExpiresAt: now + 86400}
+	g := OAuthGrant{ID: "grant-stale-code", ClientID: "client-1", APITokenID: consumed.APITokenID, APITokenPrefix: consumed.APITokenPrefix, APITokenVersion: consumed.APITokenVersion, ScopesJSON: consumed.ScopesJSON, Resource: consumed.Resource, CodeHash: consumed.CodeHash, CreatedAt: now + 2, RefreshExpiresAt: now + 86400}
 	a := OAuthToken{ID: "access-stale-code", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-stale-code"), CreatedAt: now + 2, ExpiresAt: now + 3600}
-	if err := s.CreateOAuthGrant(g, a, OAuthToken{}); err == nil {
+	if err := createOAuthGrantForTest(t, s, g, a, OAuthToken{}); err == nil {
 		t.Fatal("consumed code issued grant after underlying token policy version changed")
 	}
 }
@@ -343,7 +386,7 @@ func TestOAuthAdminScopeRejectedAndNeverValidated(t *testing.T) {
 	g := OAuthGrant{ID: "admin-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["admin","devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
 	a := OAuthToken{ID: "admin-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("admin-access-secret"), CreatedAt: now, ExpiresAt: now + 600}
 	r := OAuthToken{ID: "admin-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("admin-refresh-secret"), CreatedAt: now, ExpiresAt: now + 3600}
-	if err := s.CreateOAuthGrant(g, a, r); err == nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err == nil {
 		t.Fatal("grant with admin scope accepted")
 	}
 	// Simulate corrupt/legacy storage: validation must still fail closed for admin.
@@ -382,7 +425,7 @@ func TestOAuthAuthorizationCodeReplayRevokesIssuedGrant(t *testing.T) {
 	g := OAuthGrant{ID: "replay-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CodeHash: codeHash, CreatedAt: now + 1, RefreshExpiresAt: now + 3600}
 	a := OAuthToken{ID: "replay-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("replay-access-secret"), CreatedAt: now + 1, ExpiresAt: now + 600}
 	r := OAuthToken{ID: "replay-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("replay-refresh-secret"), CreatedAt: now + 1, ExpiresAt: now + 3600}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ConsumeOAuthCode(codeHash, "client-1", redirect, now+1000); !errors.Is(err, ErrOAuthCodeInvalid) {
@@ -439,7 +482,7 @@ func TestOAuthAccessRejectsUnderlyingLegacyToken(t *testing.T) {
 	g := OAuthGrant{ID: "legacy-access-grant", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 3600}
 	a := OAuthToken{ID: "legacy-access", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("legacy-access-secret"), CreatedAt: now, ExpiresAt: now + 600}
 	r := OAuthToken{ID: "legacy-refresh", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("legacy-refresh-secret"), CreatedAt: now, ExpiresAt: now + 3600}
-	if err := s.CreateOAuthGrant(g, a, r); err != nil {
+	if err := createOAuthGrantForTest(t, s, g, a, r); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB.Exec("UPDATE api_tokens SET is_legacy=1 WHERE id='api-1'"); err != nil {
