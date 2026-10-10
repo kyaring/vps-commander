@@ -40,10 +40,10 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         long_command = ("sudo /usr/bin/env " + "verylongsegment_" * 50 + " <audit-command>")[:512]
         conn = sqlite3.connect(db, timeout=5); conn.execute("PRAGMA busy_timeout=5000")
         rows = [
-            (int(time.time()), "127.0.0.1", "layout-node", "exec", long_command, 0, 1, "", "api_token", "named-layout", "named-layout-token", "mcp-http", "device", "layout-node", "ok", "", ""),
-            (int(time.time()) + 1, "127.0.0.1", "layout-node", "scope_denied", "write /tmp/protected", 403, 0, "permission denied", "api_token", "named-layout", "named-layout-token", "rest", "device", "layout-node", "denied", "", ""),
+            (int(time.time()), "127.0.0.1", "layout-node", "exec", long_command, 0, 1, "", "api_token", "named-layout", "named-layout-token", "oauth-client-layout-123", "mcp-http", "device", "layout-node", "ok", "", ""),
+            (int(time.time()) + 1, "127.0.0.1", "layout-node", "scope_denied", "write /tmp/protected", 403, 0, "permission denied", "api_token", "named-layout", "named-layout-token", "oauth-client-denied-456", "rest", "device", "layout-node", "denied", "", ""),
         ]
-        conn.executemany("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.executemany("INSERT INTO audit_logs(timestamp,caller_ip,device,action,command,exit_code,duration_ms,error_msg,actor_type,actor_id,actor_name,oauth_client_id,transport,target_type,target,result,request_id,session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
         conn.commit(); conn.close()
         print("PASS temporary Hub database source: production DB copy (live DB is read-only and never passed to Hub)" if source_db.is_file() else "INFO temporary Hub database source: fresh test DB (production DB path unavailable)")
         chrome = subprocess.Popen(["/usr/bin/chromium", "--headless", "--no-sandbox", "--disable-gpu",
@@ -107,6 +107,7 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert state.get("path") == "/panel" and state.get("rows", 0) >= 2, f"real panel did not render seeded rows: {state}"
         assert evaluate("location.hash==='#logs' && document.querySelector('[data-tab=logs]').classList.contains('active')"), "direct #logs link did not select logs tab"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.textContent.includes('scope_denied')&&r.textContent.includes('denied'))"), "denied row is missing"
+        assert evaluate("document.querySelectorAll('.audit-table thead th')[2]?.textContent.trim()==='OAuth 客户端' && [...document.querySelectorAll('#audits tr')].some(r=>r.children[2]?.textContent==='oauth-client-layout-123') && [...document.querySelectorAll('#audits tr')].some(r=>r.children[2]?.textContent==='oauth-client-denied-456')"), "OAuth client column is missing, misaligned, or does not render API values"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.querySelector('.audit-command-text')?.title.length===512)"), "512-character tooltip is missing"
         for width in (1280, 390, 320):
             page_command("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000,

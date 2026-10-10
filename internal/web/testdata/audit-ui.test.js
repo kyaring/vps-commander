@@ -16,10 +16,10 @@ assert.ok(Number(query.get('from')) > 0 && Number(query.get('to')) > Number(quer
 
 const row = AuditUI.renderAuditRow({
   id: 9, timestamp: 1791500000, actor_name: 'deploy-token', actor_type: 'api_token',
-  transport: 'mcp-sse', device: 'node-a', action: 'exec', command: 'echo <denied>',
+  oauth_client_id: 'client-<test>', transport: 'mcp-sse', device: 'node-a', action: 'exec', command: 'echo <denied>',
   exit_code: 0, duration_ms: 2, result: 'denied', target_type: 'device', target: 'node-a', caller_ip: '127.0.0.1'
 }, [{name:'deploy-token',is_legacy:false}]);
-for (const text of ['deploy-token','mcp-sse','node-a','exec','echo &lt;denied&gt;','audit-result denied','device:node-a']) {
+for (const text of ['deploy-token','client-&lt;test&gt;','mcp-sse','node-a','exec','echo &lt;denied&gt;','audit-result denied','device:node-a']) {
   assert.ok(row.includes(text), `audit row should display ${text}`);
 }
 assert.ok(!row.includes('echo <denied>'), 'command text must be HTML-escaped');
