@@ -22,6 +22,19 @@
       <button id="notificationRefresh" type="button">刷新</button>
     </div>
   </div>
+  <article class="card wide" style="margin:0 0 14px;padding:14px">
+    <h3>通知策略</h3>
+    <div class="mcp-form">
+      <label>离线提醒时间点（分钟，3 个递增值）<input id="offlineReminderMinutes" value="1,10,60"></label>
+      <label>资源告警时间点（分钟，3 个递增值；0 表示触发时）<input id="resourceReminderMinutes" value="0,30,120"></label>
+      <label>早间报告时间<input id="morningReportTime" type="time" value="08:30"></label>
+      <label>晚间报告时间<input id="eveningReportTime" type="time" value="22:00"></label>
+      <label>内存告警阈值（%）<input id="memoryThreshold" type="number" min="1" max="100" value="90"></label>
+      <label>磁盘告警阈值（%）<input id="diskThreshold" type="number" min="1" max="100" value="90"></label>
+      <label>CPU 告警阈值（%）<input id="cpuThreshold" type="number" min="1" max="100" value="95"></label>
+    </div>
+    <div class="mcp-actions"><button id="notificationSettingsSave" type="button">保存通知策略</button><span id="notificationSettingsStatus" role="status"></span></div>
+  </article>
   <div id="webhookList" class="mcp-grid"></div>
   <div id="webhookEditor" hidden style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
     <div class="mcp-form">

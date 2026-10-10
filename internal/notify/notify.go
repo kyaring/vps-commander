@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -82,15 +83,32 @@ func (m *Manager) loop() {
 		}
 	}
 }
+func (m *Manager) notificationSettings() storage.NotificationSettings {
+	defaults := storage.DefaultNotificationSettings()
+	if m.Store == nil {
+		return defaults
+	}
+	settings, err := m.Store.GetNotificationSettings()
+	if err != nil {
+		return defaults
+	}
+	return settings
+}
+
 func (m *Manager) check() {
 	devices, _ := m.Store.ListDevices()
+	settings := m.notificationSettings()
 	now := m.now().Unix()
+	offlineSteps := make([]int64, 0, len(settings.OfflineReminderMinutes))
+	for _, minutes := range settings.OfflineReminderMinutes {
+		offlineSteps = append(offlineSteps, int64(minutes)*60)
+	}
 	for _, d := range devices {
 		if d.IsLocal {
 			continue
 		}
 		if d.Status == "offline" && d.OfflineAt != nil {
-			m.handleOffline(d.Name, *d.OfflineAt, now)
+			m.handleOffline(d.Name, *d.OfflineAt, now, offlineSteps)
 		} else if d.Status == "online" {
 			m.mu.Lock()
 			st := m.offline[d.Name]
@@ -101,7 +119,7 @@ func (m *Manager) check() {
 			}
 		}
 	}
-	m.checkSchedule(devices, now)
+	m.checkSchedule(devices, now, settings)
 	for _, d := range devices {
 		if d.ProfileJSON == "" {
 			continue
@@ -126,22 +144,22 @@ func (m *Manager) check() {
 			count := m.strikeCount[key]
 			m.mu.Unlock()
 			if val < threshold {
-				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false)
+				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false, settings.ResourceReminderMinutes)
 				return
 			}
 			if count >= 3 {
-				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, true)
+				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, true, settings.ResourceReminderMinutes)
 			}
 		}
 
 		if hasMem {
-			checkStrike("mem", mem, 90, "内存使用率")
+			checkStrike("mem", mem, settings.MemoryThreshold, "内存使用率")
 		}
 		if hasDisk {
-			checkStrike("disk", disk, 90, "磁盘使用率")
+			checkStrike("disk", disk, settings.DiskThreshold, "磁盘使用率")
 		}
 		if hasCPU {
-			checkStrike("cpu", cpu, 95, "CPU 使用率")
+			checkStrike("cpu", cpu, settings.CPUThreshold, "CPU 使用率")
 		}
 	}
 }
@@ -156,7 +174,7 @@ type resourceAlertState struct {
 	Device    string
 }
 
-func (m *Manager) updateResourceAlert(key, metric, device string, value, threshold float64, label string, now int64, over bool) {
+func (m *Manager) updateResourceAlert(key, metric, device string, value, threshold float64, label string, now int64, over bool, reminderMinutes []int) {
 	var event *Event
 	m.mu.Lock()
 	state := m.resourceAlerts[key]
@@ -179,6 +197,11 @@ func (m *Manager) updateResourceAlert(key, metric, device string, value, thresho
 	state.Value = value
 	state.Threshold = threshold
 	due := []int64{0, 30 * 60, 2 * 60 * 60}
+	if len(reminderMinutes) == 3 {
+		for i, minutes := range reminderMinutes {
+			due[i] = int64(minutes) * 60
+		}
+	}
 	if state.Sent < 3 && now-state.StartedAt >= due[state.Sent] {
 		state.Sent++
 		stage := state.Sent
@@ -233,10 +256,13 @@ func (m *Manager) now() time.Time {
 	return time.Now()
 }
 
-func (m *Manager) handleOffline(name string, since, now int64) {
+func (m *Manager) handleOffline(name string, since, now int64, alertSteps []int64) {
+	if len(alertSteps) == 0 {
+		alertSteps = offlineAlertSteps
+	}
 	elapsed := now - since
 	stage := 0
-	for _, step := range offlineAlertSteps {
+	for _, step := range alertSteps {
 		if elapsed >= step {
 			stage++
 		}
@@ -247,7 +273,7 @@ func (m *Manager) handleOffline(name string, since, now int64) {
 		st = &offlineState{since: since}
 		m.offline[name] = st
 		if elapsed >= offlineAlertLateStart {
-			st.sent = len(offlineAlertSteps)
+			st.sent = len(alertSteps)
 		}
 	}
 	if stage <= st.sent {
@@ -256,7 +282,7 @@ func (m *Manager) handleOffline(name string, since, now int64) {
 	}
 	st.sent = stage
 	st.notified = true
-	final := stage == len(offlineAlertSteps)
+	final := stage == len(alertSteps)
 	m.mu.Unlock()
 	msg := fmt.Sprintf("节点 %s 已离线 %s（自 %s）", name, humanDuration(elapsed), time.Unix(since, 0).Format("01-02 15:04"))
 	if final {
@@ -310,31 +336,48 @@ func (m *Manager) emit(e Event) {
 		if t.Type == "wecom" {
 			body, _ = json.Marshal(map[string]any{"msgtype": "text", "text": map[string]any{"content": e.Message}})
 		}
-		req, _ := http.NewRequest(http.MethodPost, t.URL, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		req = req.WithContext(ctx)
-		resp, err := m.Client.Do(req)
-		if err != nil {
-			_ = m.Store.AuditEntry(storage.AuditEntry{CallerIP: "127.0.0.1", Device: e.Device, Action: "notification", Command: "webhook:" + t.ID, ExitCode: 1, ErrorMsg: err.Error(), ActorType: "system", ActorID: "system:notify", ActorName: "system:notify", Transport: "internal", TargetType: "webhook", Target: t.ID, Result: "error"})
-		} else {
-			resp.Body.Close()
-			code := resp.StatusCode
-			_ = m.Store.AuditEntry(storage.AuditEntry{CallerIP: "127.0.0.1", Device: e.Device, Action: "notification", Command: "webhook:" + t.ID, ExitCode: func() int {
-				if code >= 200 && code < 300 {
-					return 0
-				}
-				return code
-			}(), ActorType: "system", ActorID: "system:notify", ActorName: "system:notify", Transport: "internal", TargetType: "webhook", Target: t.ID, Result: func() string {
-				if code >= 200 && code < 300 {
-					return "ok"
-				}
-				return "error"
-			}()})
+		delivered, statusCode, failure := false, 0, ""
+		for attempt := 0; attempt < 2; attempt++ {
+			req, err := http.NewRequest(http.MethodPost, t.URL, bytes.NewReader(body))
+			if err != nil {
+				failure = "request creation failed"
+				continue
+			}
+			req.Header.Set("Content-Type", "application/json")
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			req = req.WithContext(ctx)
+			resp, err := m.Client.Do(req)
+			if err != nil {
+				failure = "network request failed"
+				cancel()
+				continue
+			}
+			statusCode = resp.StatusCode
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			cancel()
+			if statusCode >= 200 && statusCode < 300 {
+				delivered = true
+				failure = ""
+				break
+			}
+			failure = fmt.Sprintf("webhook http %d", statusCode)
 		}
-		cancel()
+		if !delivered && failure == "" {
+			failure = "webhook delivery failed"
+		}
+		_ = m.Store.RecordWebhookDelivery(t.ID, statusCode, failure)
+		result, exitCode := "ok", 0
+		if !delivered {
+			result, exitCode = "error", statusCode
+			if exitCode == 0 {
+				exitCode = 1
+			}
+		}
+		_ = m.Store.AuditEntry(storage.AuditEntry{CallerIP: "127.0.0.1", Device: e.Device, Action: "notification", Command: "webhook:" + t.ID, ExitCode: exitCode, ErrorMsg: failure, ActorType: "system", ActorID: "system:notify", ActorName: "system:notify", Transport: "internal", TargetType: "webhook", Target: t.ID, Result: result})
 	}
 }
+
 func (m *Manager) TestTarget(t Target) error {
 	e := Event{Type: "test", Severity: "info", Message: "VPS-Commander Phase 3 Webhook 测试消息", At: time.Now().Unix()}
 	b, _ := json.Marshal(e)
@@ -351,11 +394,18 @@ func (m *Manager) TestTarget(t Target) error {
 	return nil
 }
 
-func (m *Manager) checkSchedule(devices []storage.DeviceRecord, now int64) {
+func (m *Manager) checkSchedule(devices []storage.DeviceRecord, now int64, settings storage.NotificationSettings) {
 	t := m.now()
 	key := t.Format("2006-01-02") + ":" + t.Format("15:04")
 	minute := t.Hour()*60 + t.Minute()
-	if minute != 510 && minute != 1320 {
+	morning, morningErr := time.Parse("15:04", settings.MorningReportTime)
+	evening, eveningErr := time.Parse("15:04", settings.EveningReportTime)
+	if morningErr != nil || eveningErr != nil {
+		morning = time.Date(0, 1, 1, 8, 30, 0, 0, time.UTC)
+		evening = time.Date(0, 1, 1, 22, 0, 0, 0, time.UTC)
+	}
+	morningMinute, eveningMinute := morning.Hour()*60+morning.Minute(), evening.Hour()*60+evening.Minute()
+	if minute != morningMinute && minute != eveningMinute {
 		return
 	}
 	m.mu.Lock()
@@ -384,7 +434,7 @@ func (m *Manager) checkSchedule(devices []storage.DeviceRecord, now int64) {
 			}
 		}
 	}
-	msg := fmt.Sprintf("VPS-Commander %s 报告：远程节点在线 %d，离线 %d", map[bool]string{true: "早间", false: "晚间"}[minute == 510], online, offline)
+	msg := fmt.Sprintf("VPS-Commander %s 报告：远程节点在线 %d，离线 %d", map[bool]string{true: "早间", false: "晚间"}[minute == morningMinute], online, offline)
 	if len(offlineLines) > 0 {
 		msg += "\n离线节点：" + strings.Join(offlineLines, "、")
 	}
@@ -392,5 +442,5 @@ func (m *Manager) checkSchedule(devices []storage.DeviceRecord, now int64) {
 	if len(resourceIssues) > 0 {
 		msg += "\n持续资源告警：" + strings.Join(resourceIssues, "、")
 	}
-	m.emit(Event{Type: "scheduled_report", Severity: "info", Message: msg, At: now, Data: map[string]any{"report": "daily", "period": map[bool]string{true: "morning", false: "evening"}[minute == 510], "online": online, "offline": offline, "offline_devices": offlineNames, "resource_issues": resourceIssues}})
+	m.emit(Event{Type: "scheduled_report", Severity: "info", Message: msg, At: now, Data: map[string]any{"report": "daily", "period": map[bool]string{true: "morning", false: "evening"}[minute == morningMinute], "online": online, "offline": offline, "offline_devices": offlineNames, "resource_issues": resourceIssues}})
 }

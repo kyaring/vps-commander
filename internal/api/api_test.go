@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -220,5 +221,48 @@ func TestProvisionDeviceCredentialForNewOfflineDevice(t *testing.T) {
 	s.ProvisionDeviceCredentialJSON(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("duplicate provision status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestNotificationSettingsAPIValidationAndPersistence(t *testing.T) {
+	store, _, server := newMCPAuditFixture(t)
+	server.AdminToken = "test-admin"
+	get := httptest.NewRecorder()
+	server.NotificationSettingsJSON(get, httptest.NewRequest(http.MethodGet, "/panel/api/notifications/settings", nil))
+	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), `"morning_report_time":"08:30"`) {
+		t.Fatalf("default settings status=%d body=%s", get.Code, get.Body.String())
+	}
+	settings := storage.DefaultNotificationSettings()
+	settings.OfflineReminderMinutes = []int{2, 7, 30}
+	settings.ResourceReminderMinutes = []int{0, 20, 90}
+	settings.MorningReportTime = "07:45"
+	settings.EveningReportTime = "20:15"
+	settings.MemoryThreshold = 82
+	body, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/panel/api/notifications/settings/update", strings.NewReader(string(body)))
+	req.Header.Set("X-Admin-Token", "test-admin")
+	w := httptest.NewRecorder()
+	server.UpdateNotificationSettingsJSON(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", w.Code, w.Body.String())
+	}
+	stored, err := store.GetNotificationSettings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MorningReportTime != "07:45" || stored.OfflineReminderMinutes[1] != 7 || stored.MemoryThreshold != 82 {
+		t.Fatalf("settings not persisted: %+v", stored)
+	}
+	settings.OfflineReminderMinutes = []int{10, 5, 30}
+	bad, _ := json.Marshal(settings)
+	req = httptest.NewRequest(http.MethodPost, "/panel/api/notifications/settings/update", strings.NewReader(string(bad)))
+	req.Header.Set("X-Admin-Token", "test-admin")
+	w = httptest.NewRecorder()
+	server.UpdateNotificationSettingsJSON(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid settings status=%d body=%s", w.Code, w.Body.String())
 	}
 }

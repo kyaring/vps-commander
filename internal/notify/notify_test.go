@@ -280,3 +280,112 @@ func TestPersistentResourceAlertsAppearInScheduledReport(t *testing.T) {
 		t.Fatalf("scheduled report omitted persistent resource alert: %v", *msgs)
 	}
 }
+
+func TestWebhookRetriesOnceAndTracksConsecutiveFailures(t *testing.T) {
+	st, err := storage.Open(t.TempDir() + "/webhook-state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	attempts := 0
+	mode := 500
+	responses := []int{500, 204}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		status := mode
+		if len(responses) > 0 {
+			status = responses[0]
+			responses = responses[1:]
+		}
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "retry", Name: "retry", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(st)
+	m.Client = srv.Client()
+	event := Event{Type: "test", Severity: "info", Message: "retry test", At: time.Now().Unix()}
+	m.emit(event)
+	if attempts != 2 {
+		t.Fatalf("first failure then success attempts=%d want 2", attempts)
+	}
+	items, err := st.ListWebhookTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].ConsecutiveFailures != 0 || items[0].LastError != "" || items[0].LastStatus != 204 {
+		t.Fatalf("success state=%+v", items[0])
+	}
+	attempts = 0
+	responses = nil
+	mode = 500
+	m.emit(event)
+	if attempts != 2 {
+		t.Fatalf("failed delivery attempts=%d want 2", attempts)
+	}
+	items, err = st.ListWebhookTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].ConsecutiveFailures != 1 || items[0].LastError != "webhook http 500" || items[0].LastStatus != 500 {
+		t.Fatalf("first failed delivery state=%+v", items[0])
+	}
+	attempts = 0
+	m.emit(event)
+	items, err = st.ListWebhookTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].ConsecutiveFailures != 2 {
+		t.Fatalf("consecutive failures=%d want 2", items[0].ConsecutiveFailures)
+	}
+	mode = 204
+	m.emit(event)
+	items, err = st.ListWebhookTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].ConsecutiveFailures != 0 || items[0].LastError != "" {
+		t.Fatalf("success did not clear abnormal state: %+v", items[0])
+	}
+}
+
+func TestNotificationSettingsChangeThresholdsAndReportTimes(t *testing.T) {
+	m, st, msgs, clock := offlineFixture(t)
+	settings := storage.DefaultNotificationSettings()
+	settings.MemoryThreshold = 70
+	settings.DiskThreshold = 80
+	settings.CPUThreshold = 85
+	settings.MorningReportTime = "09:15"
+	settings.EveningReportTime = "21:45"
+	settings.ResourceReminderMinutes = []int{0, 1, 2}
+	if err := st.SetNotificationSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	setResourceProfile(t, st, "node-config", `{"mem_percent":75,"disk_percent":30,"cpu_usage_percent":20}`)
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
+	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "resource_threshold") {
+		t.Fatalf("configured threshold not applied: %v", *msgs)
+	}
+	*clock = time.Date(2026, 10, 11, 8, 30, 0, 0, time.Local)
+	m.check()
+	for _, msg := range *msgs {
+		if strings.Contains(msg, "scheduled_report") {
+			t.Fatalf("report sent at old default time: %v", *msgs)
+		}
+	}
+	*clock = time.Date(2026, 10, 11, 9, 15, 0, 0, time.Local)
+	m.check()
+	found := false
+	for _, msg := range *msgs {
+		if strings.Contains(msg, "scheduled_report") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("custom report time was ignored: %v", *msgs)
+	}
+}

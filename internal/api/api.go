@@ -190,6 +190,78 @@ func (s *Server) requireSecurity(w http.ResponseWriter, r *http.Request, device,
 	return false
 }
 
+func (s *Server) NotificationSettingsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	settings, err := s.Store.GetNotificationSettings()
+	if err != nil {
+		http.Error(w, "notification settings unavailable", http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, settings)
+}
+
+func validateNotificationSettings(v storage.NotificationSettings) error {
+	if len(v.OfflineReminderMinutes) != 3 || len(v.ResourceReminderMinutes) != 3 {
+		return fmt.Errorf("each reminder schedule must contain exactly three time points")
+	}
+	for i, n := range v.OfflineReminderMinutes {
+		if n < 1 || n > 10080 || (i > 0 && n <= v.OfflineReminderMinutes[i-1]) {
+			return fmt.Errorf("offline reminder minutes must be ascending values from 1 to 10080")
+		}
+	}
+	for i, n := range v.ResourceReminderMinutes {
+		if n < 0 || n > 10080 || (i > 0 && n <= v.ResourceReminderMinutes[i-1]) {
+			return fmt.Errorf("resource reminder minutes must be ascending values from 0 to 10080")
+		}
+	}
+	morning, err := time.Parse("15:04", v.MorningReportTime)
+	if err != nil {
+		return fmt.Errorf("invalid morning report time")
+	}
+	evening, err := time.Parse("15:04", v.EveningReportTime)
+	if err != nil {
+		return fmt.Errorf("invalid evening report time")
+	}
+	if morning.Hour() == evening.Hour() && morning.Minute() == evening.Minute() {
+		return fmt.Errorf("morning and evening report times must differ")
+	}
+	for _, threshold := range []float64{v.MemoryThreshold, v.DiskThreshold, v.CPUThreshold} {
+		if threshold < 1 || threshold > 100 {
+			return fmt.Errorf("resource thresholds must be between 1 and 100")
+		}
+	}
+	return nil
+}
+
+func (s *Server) UpdateNotificationSettingsJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.AdminToken == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Admin-Token")), []byte(s.AdminToken)) != 1 {
+		http.Error(w, "admin authorization required", http.StatusForbidden)
+		return
+	}
+	var q storage.NotificationSettings
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if err := validateNotificationSettings(q); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.SetNotificationSettings(q); err != nil {
+		http.Error(w, "notification settings save failed", http.StatusInternalServerError)
+		return
+	}
+	_ = s.Store.AuditEntry(storage.AuditEntry{Action: "notification_setting", ActorType: "panel", ActorID: "panel", ActorName: "panel:admin", Transport: "panel", TargetType: "setting", Target: "notification_settings", Result: "ok"})
+	jsonOut(w, map[string]any{"ok": true, "settings": q})
+}
+
 func (s *Server) WebhookTargetsJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)

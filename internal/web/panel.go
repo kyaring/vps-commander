@@ -95,6 +95,8 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
 	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
 	mux.HandleFunc("/panel/api/security/device-credentials/provision", p.protected(p.provisionDeviceCredential))
+	mux.HandleFunc("/panel/api/notifications/settings", p.protected(p.notificationSettings))
+	mux.HandleFunc("/panel/api/notifications/settings/update", p.protected(p.updateNotificationSettings))
 	mux.HandleFunc("/panel/api/notifications/webhooks", p.protected(p.webhookTargets))
 	mux.HandleFunc("/panel/api/notifications/webhook/update", p.protected(p.updateWebhookTarget))
 	mux.HandleFunc("/panel/api/notifications/webhook/delete", p.protected(p.deleteWebhookTarget))
@@ -270,6 +272,28 @@ func (p *Panel) testMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "MCP API unavailable", 501)
+}
+
+func (p *Panel) notificationSettings(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(interface {
+		NotificationSettingsJSON(http.ResponseWriter, *http.Request)
+	}); ok {
+		v.NotificationSettingsJSON(w, r)
+		return
+	}
+	http.Error(w, "notification settings API unavailable", http.StatusNotImplemented)
+}
+func (p *Panel) updateNotificationSettings(w http.ResponseWriter, r *http.Request) {
+	if p.AdminToken != "" {
+		r.Header.Set("X-Admin-Token", p.AdminToken)
+	}
+	if v, ok := p.Runner.(interface {
+		UpdateNotificationSettingsJSON(http.ResponseWriter, *http.Request)
+	}); ok {
+		v.UpdateNotificationSettingsJSON(w, r)
+		return
+	}
+	http.Error(w, "notification settings API unavailable", http.StatusNotImplemented)
 }
 
 type notificationPanelRunner interface {

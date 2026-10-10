@@ -78,7 +78,7 @@ func (s *Store) init() error {
 	if _, err := s.DB.Exec("PRAGMA wal_autocheckpoint = 1000"); err != nil {
 		return err
 	}
-	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS hub_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
+	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS hub_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS webhook_delivery_state (target_id TEXT PRIMARY KEY, consecutive_failures INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', last_status INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS webhook_targets (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, url TEXT NOT NULL, config_json TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS idx_webhook_targets_enabled ON webhook_targets(enabled); CREATE TABLE IF NOT EXISTS devices (" +
 		"name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'offline', is_local INTEGER NOT NULL DEFAULT 0, " +
 		"arch TEXT, os TEXT, last_seen INTEGER NOT NULL DEFAULT 0, last_heartbeat INTEGER NOT NULL DEFAULT 0, " +
 		"offline_at INTEGER, profile_json TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0); " +
@@ -726,14 +726,18 @@ func (s *Store) Audit(ip, device, action, command string, code int, ms int64, ms
 }
 
 type WebhookTarget struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	URL       string `json:"url"`
-	Config    string `json:"config_json"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Type                string `json:"type"`
+	URL                 string `json:"url"`
+	Config              string `json:"config_json"`
+	Enabled             bool   `json:"enabled"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	LastError           string `json:"last_error"`
+	LastStatus          int    `json:"last_status"`
+	LastAttemptAt       int64  `json:"last_attempt_at"`
 }
 
 func (s *Store) SaveWebhookTarget(v WebhookTarget) error {
@@ -750,10 +754,14 @@ func (s *Store) SaveWebhookTarget(v WebhookTarget) error {
 }
 func (s *Store) DeleteWebhookTarget(id string) error {
 	_, err := s.DB.Exec(`DELETE FROM webhook_targets WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(`DELETE FROM webhook_delivery_state WHERE target_id=?`, id)
 	return err
 }
 func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
-	rows, err := s.DB.Query(`SELECT id,name,type,url,COALESCE(config_json,''),enabled,created_at,updated_at FROM webhook_targets ORDER BY id`)
+	rows, err := s.DB.Query(`SELECT w.id,w.name,w.type,w.url,COALESCE(w.config_json,''),w.enabled,w.created_at,w.updated_at,COALESCE(d.consecutive_failures,0),COALESCE(d.last_error,''),COALESCE(d.last_status,0),COALESCE(d.updated_at,0) FROM webhook_targets w LEFT JOIN webhook_delivery_state d ON d.target_id=w.id ORDER BY w.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -762,13 +770,57 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 	for rows.Next() {
 		var v WebhookTarget
 		var en int
-		if err := rows.Scan(&v.ID, &v.Name, &v.Type, &v.URL, &v.Config, &en, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.Type, &v.URL, &v.Config, &en, &v.CreatedAt, &v.UpdatedAt, &v.ConsecutiveFailures, &v.LastError, &v.LastStatus, &v.LastAttemptAt); err != nil {
 			return nil, err
 		}
 		v.Enabled = en != 0
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+type NotificationSettings struct {
+	OfflineReminderMinutes  []int   `json:"offline_reminder_minutes"`
+	ResourceReminderMinutes []int   `json:"resource_reminder_minutes"`
+	MorningReportTime       string  `json:"morning_report_time"`
+	EveningReportTime       string  `json:"evening_report_time"`
+	MemoryThreshold         float64 `json:"memory_threshold"`
+	DiskThreshold           float64 `json:"disk_threshold"`
+	CPUThreshold            float64 `json:"cpu_threshold"`
+}
+
+func DefaultNotificationSettings() NotificationSettings {
+	return NotificationSettings{OfflineReminderMinutes: []int{1, 10, 60}, ResourceReminderMinutes: []int{0, 30, 120}, MorningReportTime: "08:30", EveningReportTime: "22:00", MemoryThreshold: 90, DiskThreshold: 90, CPUThreshold: 95}
+}
+
+func (s *Store) GetNotificationSettings() (NotificationSettings, error) {
+	v := DefaultNotificationSettings()
+	var raw string
+	err := s.DB.QueryRow(`SELECT value FROM hub_settings WHERE key='notification_settings'`).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return v, nil
+	}
+	if err != nil {
+		return v, err
+	}
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return v, err
+	}
+	return v, nil
+}
+
+func (s *Store) SetNotificationSettings(v NotificationSettings) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(`INSERT INTO hub_settings(key,value,updated_at) VALUES('notification_settings',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, string(b), time.Now().Unix())
+	return err
+}
+
+func (s *Store) RecordWebhookDelivery(targetID string, status int, failure string) error {
+	_, err := s.DB.Exec(`INSERT INTO webhook_delivery_state(target_id,consecutive_failures,last_error,last_status,updated_at) VALUES(?,CASE WHEN ?='' THEN 0 ELSE 1 END,?,?,?) ON CONFLICT(target_id) DO UPDATE SET consecutive_failures=CASE WHEN excluded.last_error='' THEN 0 ELSE webhook_delivery_state.consecutive_failures+1 END,last_error=excluded.last_error,last_status=excluded.last_status,updated_at=excluded.updated_at`, targetID, failure, failure, status, time.Now().Unix())
+	return err
 }
 
 func (s *Store) LegacyKeyDisabled() (bool, error) {

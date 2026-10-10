@@ -505,6 +505,10 @@ $("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/upd
 
 let webhookEditingId = "";
 
+async function loadNotificationSettings(){const x=await api("/notifications/settings");$("#offlineReminderMinutes").value=(x.offline_reminder_minutes||[1,10,60]).join(",");$("#resourceReminderMinutes").value=(x.resource_reminder_minutes||[0,30,120]).join(",");$("#morningReportTime").value=x.morning_report_time||"08:30";$("#eveningReportTime").value=x.evening_report_time||"22:00";$("#memoryThreshold").value=x.memory_threshold??90;$("#diskThreshold").value=x.disk_threshold??90;$("#cpuThreshold").value=x.cpu_threshold??95}
+function parseMinuteList(value,label){const out=value.split(",").map(x=>x.trim()).filter(Boolean).map(Number);if(out.length!==3||out.some(x=>!Number.isInteger(x)))throw Error(label+"必须填写 3 个整数，以逗号分隔");return out}
+$("#notificationSettingsSave").onclick=async function(){const b=this,status=$("#notificationSettingsStatus");b.disabled=true;try{const settings={offline_reminder_minutes:parseMinuteList($("#offlineReminderMinutes").value,"离线提醒时间点"),resource_reminder_minutes:parseMinuteList($("#resourceReminderMinutes").value,"资源告警时间点"),morning_report_time:$("#morningReportTime").value,evening_report_time:$("#eveningReportTime").value,memory_threshold:Number($("#memoryThreshold").value),disk_threshold:Number($("#diskThreshold").value),cpu_threshold:Number($("#cpuThreshold").value)};await api("/notifications/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(settings)});status.textContent="通知策略已保存并立即生效。";await loadNotificationSettings()}catch(e){status.textContent="保存失败："+e.message}finally{b.disabled=false}};
+
 async function loadWebhooks() {
   const list = await api("/notifications/webhooks");
   const el = $("#webhookList");
@@ -519,6 +523,7 @@ async function loadWebhooks() {
       <div class="mcp-meta">
         ${esc(x.type)} · ${x.enabled ? '<span style="color:var(--dot-online)">启用</span>' : '<span style="color:var(--text-muted)">停用</span>'}<br>
         <code>${esc(x.url)}</code>
+        ${Number(x.consecutive_failures)>0 ? `<div class="warning-text" role="status">异常：连续失败 ${Number(x.consecutive_failures)} 次 · ${esc(x.last_error||"未知错误")} · 最近 HTTP ${Number(x.last_status)||"—"}</div>` : `<div class="muted">${Number(x.last_attempt_at)>0?"最近投递："+esc(new Date(Number(x.last_attempt_at)*1000).toLocaleString())+" · 正常":"尚无投递记录"}</div>`}
       </div>
       <div class="mcp-actions">
         <button type="button" onclick="editWebhook('${esc(x.id)}')">编辑</button>
@@ -649,7 +654,7 @@ if ($("#webhookTest")) $("#webhookTest").onclick = async () => {
   }
 };
 
-if ($("#notificationRefresh")) $("#notificationRefresh").onclick = () => loadWebhooks().catch(console.error);
+if ($("#notificationRefresh")) $("#notificationRefresh").onclick = () => Promise.all([loadWebhooks(),loadNotificationSettings()]).catch(console.error);
 
 // 开启 5 秒平滑实时自动轮询
 let devicePollTimer = null;
@@ -684,7 +689,7 @@ async function activatePanelTab(tab, force=false){
   try{
     if(tab==="devices"||tab==="console"){await loadDevices();if(tab==="devices")renderTokenDevices();}
     if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();await loadOAuthAdmin();wizardGenerate();}
-    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadLegacyUsage(),loadLegacyKeyStatus(),loadWebhooks()]);}
+    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadLegacyUsage(),loadLegacyKeyStatus(),loadWebhooks(),loadNotificationSettings()]);}
     if(tab==="logs"){await loadTokens();await loadAudits(true);}
     loadedPanelTabs.add(tab);
   }catch(e){console.error(e);const status=$("#tokenFormStatus");if(status&&tab==="access")status.textContent="加载失败："+e.message;const auditStatus=$("#auditStatus");if(auditStatus&&tab==="logs")auditStatus.textContent="加载失败："+e.message;}
