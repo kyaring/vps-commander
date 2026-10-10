@@ -738,7 +738,9 @@ tr:hover td {
 .audit-filters label { display:flex; flex-direction:column; gap:5px; min-width:0; color:var(--text-muted); font-size:12px; }
 .audit-filters select, .audit-filters input { width:100%; min-width:0; max-width:100%; }
 .audit-tablewrap { width:100%; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; }
-.audit-table { min-width:1400px; table-layout:auto; }
+.audit-table { min-width:1180px; table-layout:auto; }
+.audit-table td.audit-actor { white-space:nowrap; }
+.audit-via { margin-top:2px; font-size:11px; color:var(--text-muted); white-space:nowrap; }
 .audit-table td.audit-command { max-width:420px; white-space:normal; overflow-wrap:anywhere; }
 .audit-table td.audit-command code { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; cursor:pointer; }
 .audit-table td.audit-command code:focus { outline:2px solid var(--accent, #4f46e5); outline-offset:2px; }

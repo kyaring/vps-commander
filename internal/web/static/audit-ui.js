@@ -29,11 +29,18 @@
     if(tokens.some(t=>t.is_legacy&&t.name===row.actor_name))return "legacy";
     return row.actor_name||"unknown(legacy)";
   }
-  function renderAuditRow(row,tokens){
-    const target=row.target_type&&row.target?row.target_type+":"+row.target:"—";
+  function oauthClientLabel(row,clients){
+    if(!row.oauth_client_id)return "";
+    const name=clients&&clients[row.oauth_client_id];
+    return '<div class="audit-via" title="OAuth 客户端 ID：'+escapeHTML(row.oauth_client_id)+'">经 OAuth · '+escapeHTML(name||row.oauth_client_id)+'</div>';
+  }
+  function renderAuditRow(row,tokens,clients){
     const result=row.result||((Number(row.exit_code)===0)?"ok":"error");
-    const command=String(row.command||"");
-    return '<tr data-audit-id="'+escapeHTML(row.id)+'"><td>'+escapeHTML(new Date(Number(row.timestamp)*1000).toLocaleString())+'</td><td>'+escapeHTML(actorLabel(row,tokens))+'</td><td>'+escapeHTML(row.oauth_client_id||"—")+'</td><td>'+escapeHTML(row.transport||"legacy")+'</td><td>'+escapeHTML(row.device||"—")+'</td><td>'+escapeHTML(row.action||"—")+'</td><td class="audit-command"><code class="audit-command-text" tabindex="0" role="button" aria-expanded="false" title="'+escapeHTML(command)+'">'+escapeHTML(command)+'</code></td><td>'+escapeHTML(row.exit_code??"")+'</td><td>'+escapeHTML(row.duration_ms??0)+'ms</td><td><span class="audit-result '+escapeHTML(result)+'">'+escapeHTML(result)+'</span></td><td>'+escapeHTML(target)+'</td><td>'+escapeHTML(row.caller_ip||"")+'</td></tr>';
+    // Device rows target the same node shown in the 设备 column, so only a
+    // non-device target (e.g. a file path) is useful when no command exists.
+    const fallback=row.target&&row.target_type!=="device"?row.target:"";
+    const command=String(row.command||fallback||"");
+    return '<tr data-audit-id="'+escapeHTML(row.id)+'"><td>'+escapeHTML(new Date(Number(row.timestamp)*1000).toLocaleString())+'</td><td class="audit-actor">'+escapeHTML(actorLabel(row,tokens))+oauthClientLabel(row,clients)+'</td><td>'+escapeHTML(row.transport||"legacy")+'</td><td>'+escapeHTML(row.device||"—")+'</td><td>'+escapeHTML(row.action||"—")+'</td><td class="audit-command"><code class="audit-command-text" tabindex="0" role="button" aria-expanded="false" title="'+escapeHTML(command)+'">'+escapeHTML(command||"—")+'</code></td><td>'+escapeHTML(row.exit_code??"")+'</td><td>'+escapeHTML(row.duration_ms??0)+'ms</td><td><span class="audit-result '+escapeHTML(result)+'">'+escapeHTML(result)+'</span></td><td>'+escapeHTML(row.caller_ip||"")+'</td></tr>';
   }
   const api={buildAuditQuery,renderAuditRow,actorLabel};
   root.AuditUI=api;

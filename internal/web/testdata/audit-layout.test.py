@@ -107,7 +107,9 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
         assert state.get("path") == "/panel" and state.get("rows", 0) >= 2, f"real panel did not render seeded rows: {state}"
         assert evaluate("location.hash==='#logs' && document.querySelector('[data-tab=logs]').classList.contains('active')"), "direct #logs link did not select logs tab"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.textContent.includes('scope_denied')&&r.textContent.includes('denied'))"), "denied row is missing"
-        assert evaluate("document.querySelectorAll('.audit-table thead th')[2]?.textContent.trim()==='OAuth 客户端' && [...document.querySelectorAll('#audits tr')].some(r=>r.children[2]?.textContent==='oauth-client-layout-123') && [...document.querySelectorAll('#audits tr')].some(r=>r.children[2]?.textContent==='oauth-client-denied-456')"), "OAuth client column is missing, misaligned, or does not render API values"
+        assert evaluate("(()=>{const h=[...document.querySelectorAll('.audit-table thead th')].map(e=>e.textContent.trim());return h.length===10&&!h.includes('OAuth 客户端')&&!h.includes('目标')&&h[1]==='令牌'})()"), "audit header should have 10 columns without separate OAuth/目标 columns"
+        assert evaluate("[...document.querySelectorAll('#audits tr')].every(r=>r.children.length===10)"), "audit rows misaligned with header"
+        assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.children[1]?.querySelector('.audit-via')?.title.includes('oauth-client-layout-123')) && [...document.querySelectorAll('#audits tr')].some(r=>r.children[1]?.querySelector('.audit-via')?.title.includes('oauth-client-denied-456'))"), "OAuth client is not shown inside the token cell"
         assert evaluate("[...document.querySelectorAll('#audits tr')].some(r=>r.querySelector('.audit-command-text')?.title.length===512)"), "512-character tooltip is missing"
         for width in (1280, 390, 320):
             page_command("Emulation.setDeviceMetricsOverride", {"width": width, "height": 1000,
@@ -119,7 +121,8 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
             if width <= 390: assert nav_metrics["scroll"] > nav_metrics["width"] and nav_metrics["nowrap"], f"narrow tabs must scroll without wrapping: {nav_metrics}"
             assert metrics["documentWidth"] <= width, f"document overflows at {width}px: {metrics}"
             assert metrics["cardWidth"] <= width, f"card overflows at {width}px: {metrics}"
-            assert metrics["wrapScrollWidth"] > metrics["wrapWidth"], f"table cannot scroll at {width}px: {metrics}"
+            if width >= 1280: assert metrics["wrapScrollWidth"] <= metrics["wrapWidth"], f"audit table should fit without horizontal scroll at {width}px: {metrics}"
+            else: assert metrics["wrapScrollWidth"] > metrics["wrapWidth"], f"table cannot scroll at {width}px: {metrics}"
             children = metrics["filters"]
             for i, a in enumerate(children):
                 for b in children[i+1:]:

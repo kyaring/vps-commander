@@ -264,13 +264,15 @@ $("#tokenCreate").onclick=async()=>{
 function currentAuditFilters(){
   return {actor:$("#auditActor").value,device:$("#auditDevice").value,action:$("#auditAction").value,result:$("#auditResult").value,transport:$("#auditTransport").value,from:$("#auditFrom").value,to:$("#auditTo").value};
 }
+let auditOAuthClients={};
 async function loadAudits(reset=true){
   if(reset){auditCursor=0;auditHasMore=false;$("#audits").innerHTML="";$("#auditStatus").textContent="加载中…";}
+  if(reset){try{auditOAuthClients={};(await api("/oauth/clients")||[]).forEach(c=>{auditOAuthClients[c.client_id]=c.client_name})}catch(e){}}
   const params=AuditUI.buildAuditQuery(currentAuditFilters(),reset?0:auditCursor);
   const rows=await api("/audits?"+params.toString());
   rows.forEach(x=>{if(x.action)auditActionOptions.add(x.action);if(x.device&&!auditDeviceOptions.includes(x.device))auditDeviceOptions.push(x.device)});
   refreshAuditFilterOptions();
-  $("#audits").insertAdjacentHTML("beforeend",rows.map(x=>AuditUI.renderAuditRow(x,auditTokens)).join(""));
+  $("#audits").insertAdjacentHTML("beforeend",rows.map(x=>AuditUI.renderAuditRow(x,auditTokens,auditOAuthClients)).join(""));
   if(rows.length){auditCursor=Number(rows[rows.length-1].id)||0;}
   auditHasMore=rows.length===200;
   $("#auditLoadMore").disabled=!auditHasMore;
