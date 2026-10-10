@@ -186,3 +186,52 @@ func TestRateLimitAuditThrottlesPerTokenAndCountsDenials(t *testing.T) {
 		t.Fatalf("expected suppressed denial count, got %q", msg)
 	}
 }
+
+func TestOAuthAndDirectTokenShareRateAndExecQuotas(t *testing.T) {
+	server := &Server{TokenLimiter: NewTokenLimiter(1)}
+	h := server.TokenRateLimitMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	direct := auth.Principal{Type: "api_token", ID: "api-1", Name: "shared-token", TokenID: "api-1", RateRPS: 1}
+	oauth := auth.Principal{Type: "api_token", ID: "api-1", Name: "shared-token", TokenID: "oauth:grant-1", QuotaTokenID: "api-1", AuthMethod: "oauth", OAuthClient: "chatgpt-app", RateRPS: 1}
+	call := func(p auth.Principal) int {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(auth.WithPrincipal(context.Background(), p))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := call(direct); got != http.StatusOK {
+		t.Fatalf("direct status=%d", got)
+	}
+	if got := call(oauth); got != http.StatusTooManyRequests {
+		t.Fatalf("OAuth bypassed shared rate bucket: status=%d", got)
+	}
+
+	release, ok := server.acquireTokenExec(direct)
+	if !ok {
+		t.Fatal("direct token failed to acquire exec slot")
+	}
+	defer release()
+	if _, ok := server.acquireTokenExec(oauth); ok {
+		t.Fatal("OAuth bypassed shared exec concurrency limit")
+	}
+}
+
+func TestOAuthRateLimitAuditIncludesViaClient(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "oauth-audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := &Server{Store: store, TokenLimiter: NewTokenLimiter(1)}
+	p := auth.Principal{Type: "api_token", ID: "api-1", Name: "chatgpt-app", TokenID: "oauth:grant-1", QuotaTokenID: "api-1", AuthMethod: "oauth", OAuthClient: "chatgpt-client"}
+	server.auditRateLimited(httptest.NewRequest(http.MethodPost, "/mcp", nil), p)
+	if err := store.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	var actor string
+	if err := store.DB.QueryRow("SELECT actor_name FROM audit_logs ORDER BY id DESC LIMIT 1").Scan(&actor); err != nil {
+		t.Fatal(err)
+	}
+	if actor != "chatgpt-app via=oauth:chatgpt-client" {
+		t.Fatalf("actor=%q", actor)
+	}
+}

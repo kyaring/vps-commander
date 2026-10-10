@@ -41,9 +41,9 @@ type OAuthToken struct {
 	ReplacedBy                   string
 }
 type OAuthAccessPrincipal struct {
-	APITokenID, GrantID, TokenName, ClientName string
-	Scopes, Devices                            map[string]bool
-	RateRPS, MaxSessions                       int
+	APITokenID, GrantID, TokenName, ClientID, ClientName string
+	Scopes, Devices                                      map[string]bool
+	RateRPS, MaxSessions                                 int
 }
 
 func (s *Store) migrateOAuth() error {
@@ -540,7 +540,7 @@ func (s *Store) ValidateOAuthAccessToken(raw, resource, ip string, now int64) (O
 	var grantScopes, apiScopesJSON, grantDevicesJSON, currentDevicesJSON, grantResource string
 	var tokenExpiry int64
 	var legacy int
-	err := s.DB.QueryRow("SELECT g.api_token_id,g.id,a.name,c.client_name,g.scopes_json,a.scopes_json,g.devices_json,COALESCE(a.devices_json,'[]'),a.rate_rps,a.max_sessions,t.revoked_at,g.revoked_at,a.revoked_at,a.expires_at,t.expires_at,c.disabled_at,g.resource,a.is_legacy FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN api_tokens a ON a.id=g.api_token_id JOIN oauth_clients c ON c.client_id=g.client_id WHERE t.token_hash=? AND t.kind='access'", HashAPIToken(raw)).Scan(&out.APITokenID, &out.GrantID, &out.TokenName, &out.ClientName, &grantScopes, &apiScopesJSON, &grantDevicesJSON, &currentDevicesJSON, &out.RateRPS, &out.MaxSessions, &tokenRevoked, &grantRevoked, &apiRevoked, &apiExpires, &tokenExpiry, &clientDisabled, &grantResource, &legacy)
+	err := s.DB.QueryRow("SELECT g.api_token_id,g.id,a.name,c.client_id,c.client_name,g.scopes_json,a.scopes_json,g.devices_json,COALESCE(a.devices_json,'[]'),a.rate_rps,a.max_sessions,t.revoked_at,g.revoked_at,a.revoked_at,a.expires_at,t.expires_at,c.disabled_at,g.resource,a.is_legacy FROM oauth_tokens t JOIN oauth_grants g ON g.id=t.grant_id JOIN api_tokens a ON a.id=g.api_token_id JOIN oauth_clients c ON c.client_id=g.client_id WHERE t.token_hash=? AND t.kind='access'", HashAPIToken(raw)).Scan(&out.APITokenID, &out.GrantID, &out.TokenName, &out.ClientID, &out.ClientName, &grantScopes, &apiScopesJSON, &grantDevicesJSON, &currentDevicesJSON, &out.RateRPS, &out.MaxSessions, &tokenRevoked, &grantRevoked, &apiRevoked, &apiExpires, &tokenExpiry, &clientDisabled, &grantResource, &legacy)
 	if err != nil || resource == "" || grantResource != resource || legacy != 0 || tokenRevoked.Valid || grantRevoked.Valid || apiRevoked.Valid || clientDisabled.Valid || (apiExpires.Valid && apiExpires.Int64 <= now) || tokenExpiry <= now {
 		return OAuthAccessPrincipal{}, false
 	}

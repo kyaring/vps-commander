@@ -281,10 +281,12 @@ func main() {
 				return auth.Principal{}, false
 			}
 			// Keep the underlying named API token visible in audit actor labels;
-			// use a grant-specific limiter/session identity for this OAuth grant.
+			// keep grant-specific session ownership while sharing quotas with the underlying API token.
 			return auth.Principal{
 				Type: "api_token", ID: o.APITokenID, Name: o.TokenName,
-				TokenID: "oauth:" + o.GrantID, Scopes: o.Scopes, Devices: o.Devices,
+				TokenID: "oauth:" + o.GrantID, QuotaTokenID: o.APITokenID,
+				AuthMethod: "oauth", OAuthClient: o.ClientID,
+				Scopes: o.Scopes, Devices: o.Devices,
 				MaxSessions: o.MaxSessions, RateRPS: o.RateRPS,
 			}, true
 		},

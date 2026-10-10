@@ -140,11 +140,11 @@ func (l *TokenLimiter) rateLimitAuditDecision(tokenID string, now time.Time) (bo
 func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, ok := auth.PrincipalFromContext(r.Context())
-		if !ok || p.Type != "api_token" || p.TokenID == "" || s.TokenLimiter == nil {
+		if !ok || p.Type != "api_token" || p.QuotaID() == "" || s.TokenLimiter == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
-		allowed, retryAfter := s.TokenLimiter.Allow(p.TokenID, p.RateRPS, time.Now())
+		allowed, retryAfter := s.TokenLimiter.Allow(p.QuotaID(), p.RateRPS, time.Now())
 		if !allowed {
 			s.auditRateLimited(r, p)
 			seconds := int(math.Ceil(retryAfter.Seconds()))
@@ -162,10 +162,10 @@ func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) acquireTokenExec(p auth.Principal) (func(), bool) {
-	if s.TokenLimiter == nil || p.Type != "api_token" || p.TokenID == "" {
+	if s.TokenLimiter == nil || p.Type != "api_token" || p.QuotaID() == "" {
 		return func() {}, true
 	}
-	return s.TokenLimiter.AcquireExec(p.TokenID, time.Now())
+	return s.TokenLimiter.AcquireExec(p.QuotaID(), time.Now())
 }
 
 func (s *Server) auditRateLimited(r *http.Request, p auth.Principal) {
@@ -189,7 +189,7 @@ func (s *Server) auditRateLimitedEntry(clientIP, device, command, transport, met
 	}
 	count := 1
 	if s.TokenLimiter != nil {
-		shouldLog, n := s.TokenLimiter.rateLimitAuditDecision(p.TokenID, time.Now())
+		shouldLog, n := s.TokenLimiter.rateLimitAuditDecision(p.QuotaID(), time.Now())
 		if !shouldLog {
 			return
 		}
@@ -204,7 +204,7 @@ func (s *Server) auditRateLimitedEntry(clientIP, device, command, transport, met
 	if device != "" {
 		targetType, target = "device", device
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
 }
 
 func rateLimitIntent(r *http.Request) (device, action, command, method string) {

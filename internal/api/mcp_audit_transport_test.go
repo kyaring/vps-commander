@@ -384,3 +384,23 @@ func TestAuditCSVExportUsesCurrentFiltersAndActorLabels(t *testing.T) {
 		t.Fatalf("panel CSV label mismatch: %v", panelRows)
 	}
 }
+
+func TestAuditActorFilterIncludesOAuthViaRows(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "oauth-actor-filter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, name := range []string{"chatgpt-app", "chatgpt-app via=oauth:client-123"} {
+		if err := store.AuditEntry(storage.AuditEntry{ActorID: "token-id", ActorType: "api_token", ActorName: name, Transport: "mcp-http", Action: "mcp_call", Result: "ok"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := store.QueryAudits("chatgpt-app", "", "", "", "", 0, 0, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("named-token actor filter returned %d rows, want direct + OAuth", len(rows))
+	}
+}

@@ -248,18 +248,24 @@ const (
 )
 
 type session struct {
-	ch           chan []byte
-	done         chan struct{}
-	ownerTokenID string
-	closeOnce    sync.Once
-	lastActivity atomic.Int64
+	ch                chan []byte
+	done              chan struct{}
+	ownerTokenID      string
+	ownerQuotaTokenID string
+	closeOnce         sync.Once
+	lastActivity      atomic.Int64
 }
 
-func newSession(ownerTokenID string) *session {
+func newSession(ownerTokenID string, quotaIDs ...string) *session {
+	ownerQuotaTokenID := ownerTokenID
+	if len(quotaIDs) > 0 && quotaIDs[0] != "" {
+		ownerQuotaTokenID = quotaIDs[0]
+	}
 	sess := &session{
-		ch:           make(chan []byte, 64),
-		done:         make(chan struct{}),
-		ownerTokenID: ownerTokenID,
+		ch:                make(chan []byte, 64),
+		done:              make(chan struct{}),
+		ownerTokenID:      ownerTokenID,
+		ownerQuotaTokenID: ownerQuotaTokenID,
 	}
 	sess.touch()
 	return sess
@@ -282,9 +288,10 @@ func (sess *session) close() {
 }
 
 type streamSession struct {
-	ownerTokenID    string
-	protocolVersion string
-	lastActivity    time.Time
+	ownerTokenID      string
+	ownerQuotaTokenID string
+	protocolVersion   string
+	lastActivity      time.Time
 }
 
 type Server struct {
@@ -366,13 +373,13 @@ func (s *Server) CloseSessionsForToken(tokenID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, sess := range s.sessions {
-		if sess.ownerTokenID == tokenID {
+		if sess.ownerTokenID == tokenID || sess.ownerQuotaTokenID == tokenID {
 			delete(s.sessions, id)
 			sess.close()
 		}
 	}
 	for id, sess := range s.streamSessions {
-		if sess.ownerTokenID == tokenID {
+		if sess.ownerTokenID == tokenID || sess.ownerQuotaTokenID == tokenID {
 			delete(s.streamSessions, id)
 		}
 	}
@@ -404,17 +411,17 @@ func (s *Server) HandleSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID := s.newSessionID()
-	sess := newSession(p.TokenID)
+	sess := newSession(p.TokenID, p.QuotaID())
 	s.mu.Lock()
 	if len(s.sessions) >= 500 {
 		s.mu.Unlock()
 		http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
 		return
 	}
-	if p.MaxSessions > 0 && p.TokenID != "" {
+	if p.MaxSessions > 0 && p.QuotaID() != "" {
 		count := 0
 		for _, current := range s.sessions {
-			if current.ownerTokenID == p.TokenID {
+			if current.ownerQuotaTokenID == p.QuotaID() {
 				count++
 			}
 		}
@@ -687,10 +694,10 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
 				return
 			}
-			if p.MaxSessions > 0 && p.TokenID != "" {
+			if p.MaxSessions > 0 && p.QuotaID() != "" {
 				count := 0
 				for _, stored := range s.streamSessions {
-					if stored.ownerTokenID == p.TokenID {
+					if stored.ownerQuotaTokenID == p.QuotaID() {
 						count++
 					}
 				}
@@ -701,7 +708,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			clientSessionID = s.newSessionID()
-			s.streamSessions[clientSessionID] = streamSession{ownerTokenID: p.TokenID, protocolVersion: protocolVersion, lastActivity: now}
+			s.streamSessions[clientSessionID] = streamSession{ownerTokenID: p.TokenID, ownerQuotaTokenID: p.QuotaID(), protocolVersion: protocolVersion, lastActivity: now}
 			s.mu.Unlock()
 		}
 		w.Header().Set("Mcp-Session-Id", clientSessionID)

@@ -102,7 +102,7 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 		mcp.MarkAuditRecorded(ctx)
 		return nil
 	}
-	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: result})
 	mcp.MarkAuditRecorded(ctx)
 	return err
 }
@@ -152,7 +152,7 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	if transport == "" {
 		transport = "mcp"
 	}
-	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.Name, Transport: transport, TargetType: targetType, Target: target, Result: result})
+	err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Device: device, Action: action, Command: command, ExitCode: code, DurationMS: ms, ErrorMsg: msg, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), Transport: transport, TargetType: targetType, Target: target, Result: result})
 	mcp.MarkAuditRecorded(ctx)
 	return err
 }

@@ -123,3 +123,17 @@ func TestClientIPIgnoresProxyHeadersWhenDisabled(t *testing.T) {
 		t.Fatalf("clientIP=%q, want 127.0.0.1", got)
 	}
 }
+
+func TestPrincipalQuotaIDAndAuditName(t *testing.T) {
+	p := Principal{TokenID: "oauth:grant-1", QuotaTokenID: "api-1", Name: "chatgpt-app", AuthMethod: "oauth", OAuthClient: "chatgpt-client"}
+	if got := p.QuotaID(); got != "api-1" {
+		t.Fatalf("QuotaID=%q", got)
+	}
+	if got := p.AuditName(); got != "chatgpt-app via=oauth:chatgpt-client" {
+		t.Fatalf("AuditName=%q", got)
+	}
+	direct := Principal{TokenID: "api-1", Name: "chatgpt-app"}
+	if got := direct.QuotaID(); got != "api-1" || direct.AuditName() != "chatgpt-app" {
+		t.Fatalf("direct principal identity changed: quota=%q audit=%q", got, direct.AuditName())
+	}
+}

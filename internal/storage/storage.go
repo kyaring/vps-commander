@@ -771,8 +771,10 @@ func (s *Store) QueryAudits(actor, device, action, result, transport string, fro
 		case "panel":
 			q += " AND (actor_type='panel' OR transport='panel')"
 		default:
-			q += " AND actor_name=?"
-			args = append(args, actor)
+			// Selecting a named token includes its OAuth-attributed audit rows too.
+			q += " AND (actor_name=? OR substr(actor_name,1,length(?))=?)"
+			prefix := actor + " via=oauth:"
+			args = append(args, actor, prefix, prefix)
 		}
 	}
 	if device != "" {

@@ -513,3 +513,37 @@ func TestSessionCountsByTransport(t *testing.T) {
 		t.Fatalf("session counts = (%d,%d), want (1,1)", sse, streamable)
 	}
 }
+
+func TestOAuthAndDirectSessionsShareQuotaAndRevokeTogether(t *testing.T) {
+	srv := NewServer(&mockBackend{}, nil)
+	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}`
+	initialize := func(p auth.Principal) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(initBody))
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(auth.WithPrincipal(req.Context(), p))
+		w := httptest.NewRecorder()
+		srv.HandleStreamableHTTP(w, req)
+		return w
+	}
+	direct := auth.Principal{Type: "api_token", ID: "api-1", TokenID: "api-1", QuotaTokenID: "api-1", MaxSessions: 1}
+	oauth := auth.Principal{Type: "api_token", ID: "api-1", TokenID: "oauth:grant-1", QuotaTokenID: "api-1", MaxSessions: 1}
+	if w := initialize(direct); w.Code != http.StatusOK {
+		t.Fatalf("direct initialize status=%d: %s", w.Code, w.Body.String())
+	}
+	if w := initialize(oauth); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("OAuth bypassed shared session quota: status=%d: %s", w.Code, w.Body.String())
+	}
+
+	srv.mu.Lock()
+	srv.sessions["oauth-sse"] = newSession("oauth:grant-1", "api-1")
+	srv.streamSessions["oauth-stream"] = streamSession{ownerTokenID: "oauth:grant-1", ownerQuotaTokenID: "api-1", lastActivity: time.Now()}
+	srv.mu.Unlock()
+	srv.CloseSessionsForToken("api-1")
+	srv.mu.RLock()
+	_, sseExists := srv.sessions["oauth-sse"]
+	_, streamExists := srv.streamSessions["oauth-stream"]
+	srv.mu.RUnlock()
+	if sseExists || streamExists {
+		t.Fatalf("revoked API token left OAuth sessions: sse=%v stream=%v", sseExists, streamExists)
+	}
+}

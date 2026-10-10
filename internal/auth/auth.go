@@ -14,14 +14,33 @@ import (
 )
 
 type Principal struct {
-	Type        string
-	ID          string
-	Name        string
-	Scopes      map[string]bool
-	Devices     map[string]bool
-	TokenID     string
-	MaxSessions int
-	RateRPS     int
+	Type         string
+	ID           string
+	Name         string
+	Scopes       map[string]bool
+	Devices      map[string]bool
+	TokenID      string
+	QuotaTokenID string // shared quota identity; empty falls back to TokenID
+	AuthMethod   string // direct token or oauth
+	OAuthClient  string // OAuth client ID used for audit attribution
+	MaxSessions  int
+	RateRPS      int
+}
+
+// QuotaID returns the stable API-token identity shared by direct and OAuth access.
+func (p Principal) QuotaID() string {
+	if p.QuotaTokenID != "" {
+		return p.QuotaTokenID
+	}
+	return p.TokenID
+}
+
+// AuditName preserves the named token and attributes OAuth use without changing direct-token labels.
+func (p Principal) AuditName() string {
+	if p.AuthMethod == "oauth" && p.OAuthClient != "" {
+		return p.Name + " via=oauth:" + p.OAuthClient
+	}
+	return p.Name
 }
 
 func (p Principal) HasScope(scope string) bool {
