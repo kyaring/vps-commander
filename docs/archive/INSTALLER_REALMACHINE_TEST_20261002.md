@@ -1,5 +1,7 @@
 # vps-commander 一键安装脚本真机等效测试报告（2026-10-02）
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 - **测试人**：测试工程师（独立真机测试）
 - **测试时间**：2026-10-02 17:55–18:15（+08，UTC 09:55–10:15）
 - **测试对象**：`deploy/install.sh`、`deploy/upgrade-hub.sh`、`deploy/upgrade-agent.sh`（commit 888efd1）
@@ -12,7 +14,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| 宿主机 | wjyhk（仅作为容器宿主，**未在宿主机运行任何安装脚本**） |
+| 宿主机 | hub-host（仅作为容器宿主，**未在宿主机运行任何安装脚本**） |
 | 网络 | 专用 docker network `vpsc-test` |
 | c-hub | `jrei/systemd-debian:13`，privileged + `--cgroupns=host` + cgroup rw，systemd 正常运行 |
 | c-agent | 同上 |

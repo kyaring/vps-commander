@@ -1,5 +1,7 @@
 # B3 修复记录：MCP Streamable HTTP 传输
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 - **发现日期**：2026-10-02
 - **发现人**：审核专家 B（生产问题分析）
 - **状态**：代码已实现，待 B 系列最终压力验收（B7 后由用户实测）
@@ -32,7 +34,7 @@ Caused by: io.modelcontextprotocol.kotlin.sdk.client.StreamableHttpError: Stream
 ## 验证
 
 ```bash
-curl -i -X POST https://vpstool.kory.kdns.fr/mcp/sse \
+curl -i -X POST https://hub.example.com/mcp/sse \
   -H "Content-Type: application/json" -d '{}'
 # 预期：405 method not allowed（坐实协议不匹配）
 ```

@@ -1,0 +1,74 @@
+# REST API
+
+适用版本：v1.1.30。机器可读描述：`GET /openapi.json`（OpenAPI 3.1，可导入 GPT Actions）。
+
+所有 `/api/v1/*` 与 `/metrics` 需要 `Authorization: Bearer <TOKEN>`；POST 请求使用 `Content-Type: application/json`。`device` 省略时默认 Hub 本机（别名 `local`），建议始终显式指定。
+
+---
+
+## 1. 运维接口
+
+| 接口 | 方法 | scope | 请求体 / 说明 |
+| :--- | :--- | :--- | :--- |
+| `/api/v1/devices` | GET | `devices:read` | 设备列表、状态、架构、国家、资源画像 |
+| `/api/v1/exec` | POST | `exec` | `{device, command, workdir?, timeout?}`，`timeout` 秒，默认 30，最大 300；返回 `{device, exit_code, stdout, stderr, duration_ms}` |
+| `/api/v1/file/read` | POST | `files:read` | `{device, path, offset?, limit?}`，`limit` 默认 256 KiB、最大 1 MiB；返回 `content, bytes, total_size, has_more, eof` |
+| `/api/v1/file/list` | POST | `files:read` | `{device, path, recursive?, max_entries?}` |
+| `/api/v1/file/info` | POST | `files:read` | `{device, path}` |
+| `/api/v1/file/search` | POST | `files:read` | `{device, root, query, max_results?}` |
+| `/api/v1/file/write` | POST | `files:write` | `{device, path, content}`，创建或整体覆写 |
+| `/api/v1/devices/file/edit_block` | POST | `files:write` | `{device, path, old_text, new_text}`，`old_text` 必须唯一匹配 |
+| `/api/v1/process/session?action=start\|read\|input\|stop\|list` | POST | `process` | `{device, session_id?, command?, workdir?, data?}` |
+| `/api/v1/mcp/list` | GET | `mcp:call` | `?device=`，列出该 Agent 挂载的 MCP 服务 |
+| `/api/v1/mcp/call` | POST | `mcp:call` | `{device, server, tool, arguments}` |
+| `/api/v1/mcp/test` | POST | `mcp:call` | `{device, service}`，测试一个 MCP 服务配置 |
+
+执行类与文件修改类接口还受节点安全等级约束（见 [security.md](security.md)）。
+
+## 2. 管理接口（需要 `admin`）
+
+| 接口 | 方法 | 说明 |
+| :--- | :--- | :--- |
+| `/api/v1/tokens` | GET / POST | 列出 / 创建命名令牌（创建时返回完整密钥，仅此一次） |
+| `/api/v1/tokens/{id}` | PATCH | 修改名称、备注、scope、设备白名单、限速、会话数 |
+| `/api/v1/tokens/{id}/rotate` | POST | 轮换密钥 |
+| `/api/v1/tokens/{id}/revoke` | POST | 吊销 |
+| `/api/v1/audits` | GET | 审计查询：`actor`、`device`、`action`、`result`、`transport`、`from`、`to`，游标分页，每页最多 500 条 |
+| `/api/v1/audits/export.csv` | GET | 按同样条件导出 CSV（有行数上限，超出时末尾带截断标记） |
+| `/api/v1/security/settings` | GET | 全局与各节点安全等级 |
+| `/api/v1/security/settings/update` | POST | 修改安全等级 |
+| `/api/v1/security/device-credentials/provision` | POST | 为设备签发独立凭据 |
+| `/api/v1/mcp/services` | GET / POST | Agent MCP 服务列表 / 保存（热更新到 Agent） |
+| `/api/v1/mcp/service` | DELETE | 删除 Agent MCP 服务 |
+| `/api/v1/notifications/webhooks` | GET | Webhook 列表 |
+| `/api/v1/notifications/webhook/update` | POST | 新增 / 修改 Webhook |
+| `/api/v1/notifications/webhook/delete` | DELETE | 删除 Webhook |
+| `/api/v1/notifications/webhook/test` | POST | 测试 Webhook |
+| `/metrics` | GET | Prometheus 指标 |
+
+## 3. 无需认证的端点
+
+| 接口 | 说明 |
+| :--- | :--- |
+| `/healthz` | 健康检查 |
+| `/openapi.json` | OpenAPI 描述 |
+| `/probe/summary` | 公共探针摘要（2 秒缓存，支持 `ETag`） |
+| `/.well-known/oauth-*` | 仅为兼容 MCP 客户端探测；`/oauth/*` 固定返回 `501`，不签发令牌 |
+| `/agent/ws` | Agent WebSocket（使用设备凭据认证） |
+| `/panel/*` | 管理面板（面板密码登录） |
+
+## 4. 状态码
+
+| 状态码 | 含义 |
+| :--- | :--- |
+| `401` | 未认证或令牌无效 / 已吊销 |
+| `403` | scope 不足、设备不在白名单，或节点安全等级拒绝 |
+| `404` | 路径不存在（注意结尾斜杠）、MCP 会话已失效；文件读取时目标节点离线也返回 404 |
+| `409` | 目标节点离线（`device offline`） |
+| `405` | 方法不对 |
+| `429` | 超过令牌限速、会话数或 exec 并发；见 `Retry-After` |
+| `503` | 服务内部组件不可用，或 SSE 会话发送队列超时 |
+
+## 5. 指标
+
+`/metrics` 包含：`vps_commander_online_agents`、`vps_commander_mcp_sessions`（按传输方式）、`vps_commander_in_flight_exec`、`vps_commander_audit_queue_depth`、`vps_commander_sqlite_write_latency_seconds`（最近一次审计写入）、HTTP 429 计数、`vps_commander_goroutines`、`vps_commander_process_resident_memory_bytes`、`vps_commander_process_cpu_seconds_total`。

@@ -41,8 +41,9 @@ The tool writes progress to stderr and a final JSON summary to stdout. It includ
 - `-startup-timeout`: wait for all Agents before starting MCP clients; default 2 minutes.
 - `-interval`: delay between MCP `tools/list` and `tools/call` cycles; default 30 seconds.
 - `-mcp-token-file`: newline-separated token list, assigned round-robin.
+- `-mcp-token` / `VPS_COMMANDER_LOADTEST_MCP_TOKEN`: a single MCP token, used when no token file is supplied.
 - `-sample-interval`: periodic sampling interval for `/metrics` and `/api/v1/devices` latency; default 5 seconds.
-- `-metrics-token`: admin-scope token used for `/metrics` and devices latency sampling.
+- `-metrics-token` / `VPS_COMMANDER_LOADTEST_METRICS_TOKEN`: admin-scope token used for `/metrics` and devices latency sampling.
 - `-strict`: exit nonzero if target populations/sessions are not present at the end, no tool call succeeds, or exec is denied by policy.
 
 

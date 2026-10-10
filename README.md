@@ -2,232 +2,144 @@
 
 # VPS-Commander
 
-**面向 AI Agent、MCP 与个人运维的高性能、轻量、多节点私有基础设施调度中枢**
+**面向 AI Agent、MCP 与个人运维的轻量级多节点私有运维控制中枢**
 
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Architecture](https://img.shields.io/badge/Arch-Linux%20AMD64%20%7C%20ARM64-orange)](#)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](#开源协议)
+[![Architecture](https://img.shields.io/badge/Arch-Linux%20amd64%20%7C%20arm64%20%7C%20armv7-orange)](#)
 
 </div>
 
----
-
-## 🌟 核心特性
-
-- ⚡ **轻量单体部署**：纯 Go 原生编译，Hub、Agent、MCP stdio 均可独立部署。
-- 🤖 **原生 AI / MCP 接入**：提供 HTTP API、MCP SSE、stdio 以及 Agent WebSocket，多种客户端可以共用同一套安全模型。
-- 🌐 **Hub & Agent 双通道架构**：Hub 负责控制与授权，Agent 通过 WSS 主动回连，不要求远端开放入站管理端口。
-- 🛡️ **认证与授权分离**：HTTP/MCP 使用 Bearer API Key；Agent 使用每设备独立 Credential；Tool Registry + Security Snapshot 实现 Low / Medium / High 风险门禁。
-- 📋 **完整审计链**：SQLite 持久化设备、凭据哈希、策略版本、操作审计与 Webhook 配置。
-- 🧩 **多节点能力聚合**：文件、Shell、进程、Session、Agent MCP 等能力由 Hub 统一调度。
-- 🖥️ **内嵌 Web 管理面板**：Go embed 打包，无需 Node.js 运行时。
+> 当前版本：**v1.1.30**（2026-10-10）。发布 tag 采用 `v1.1.x`；文档中出现的 “v2.0 / v2.1 / v2.2” 是内部设计阶段名称，不是发布版本号。
 
 ---
 
-## 🏁 研发最初目标
+## 核心特性
 
-VPS-Commander 最初并不是一个简单的远程 Shell 工具，而是为 AI Agent 建立一个**用户自己控制的私有化 Linux 运维控制面**。
-
-### 1.1 私有化
-- 运维请求通过用户自己的 Hub 和 VPS 节点完成。
-- 不依赖第三方运维 Relay。
-- 凭据、策略和审计数据由用户自己的基础设施控制。
-
-### 1.2 Host-centric 运维
-- 全局 Shell。
-- 全局文件读写。
-- 进程与长任务 Session。
-- 远程 Agent MCP。
-
-### 1.3 多节点统一调度
-- 一个 Hub 管理多个 VPS。
-- 使用节点名称选择目标。
-- 节点离线后保留设备身份与持久化状态。
-
-### 1.4 AI 原生接口
-- HTTP API。
-- MCP。
-- OpenAPI 契约。
-- Web 管理面板。
+- **轻量单体部署**：Go 原生编译，Hub、Agent、MCP stdio 均为单个二进制；Web 面板通过 Go embed 内嵌，无需 Node.js。
+- **三种客户端接入**：REST（`/api/v1/*`）、MCP Streamable HTTP（`POST /mcp`）、旧版 MCP SSE（`/mcp/sse`），以及本地 stdio。三者共用同一套令牌、scope、设备白名单、限流和审计。
+- **Hub & Agent 双通道**：Agent 通过 WSS 主动回连 Hub，远端节点不需要开放入站管理端口。
+- **命名令牌**：每个客户端一个独立令牌，可配置 scope、设备白名单、限速（rps）和最大会话数；Hub 只保存哈希，完整密钥仅在创建时显示一次。
+- **双层授权**：令牌 scope + 设备白名单决定“谁能调用什么”，Low / Medium / High 安全等级决定“这台节点允许什么风险”。未注册或离线的远程节点一律拒绝。
+- **完整审计**：记录操作人、传输方式（rest / mcp-http / mcp-sse / panel / stdio）、目标设备、命令或路径（脱敏、截断）与结果；面板支持筛选、游标分页与 CSV 导出。
+- **可观测与限流**：管理员可读 `/metrics`（Prometheus）；按令牌限速与 exec 并发限制，Agent 握手令牌桶限流。
+- **内嵌管理面板**：设备、控制台、接入与令牌（含 AI 接入向导）、安全与通知、日志五个分区，适配手机屏幕。
 
 ---
 
-## 🏗️ 当前总体架构
+## 架构概览
 
 ```text
-                  +--------------------------------------+
-                  |      AI / MCP Client / Web Panel    |
-                  +------------------+-------------------+
-                                     | HTTPS / MCP / WSS
-                                     v
-                  +--------------------------------------+
-                  |       Reverse Proxy / TLS            |
-                  +------------------+-------------------+
-                                     | 127.0.0.1:9521
-                                     v
-        +-----------------------------------------------------------+
-        |                    VPS-Commander Hub                     |
-        |-----------------------------------------------------------|
-        | Auth / API / MCP / Web Panel                             |
-        | Security Snapshot / Tool Registry / Audit                |
-        | Cluster Router / Session / Rate Limiter                  |
-        +----------------------+-------------------+---------------+
-                               |                   |
-                         Local Executor       Agent WSS
-                               |                   |
-                               v                   v
-                         Hub 本机             Remote VPS
-                                                   |
-                                            Host Executor
-                                            File / Shell / Process
+   AI 客户端 / MCP 客户端 / 脚本 / Web 面板
+                    │  HTTPS（REST、MCP、Panel）
+                    ▼
+            反向代理（TLS 终止）
+                    │  127.0.0.1:9521
+                    ▼
+  ┌──────────────────────────────────────────┐
+  │              VPS-Commander Hub           │
+  │  认证（命名令牌）/ REST / MCP / Panel     │
+  │  Scope + 设备白名单 / 安全策略快照        │
+  │  集群路由 / Session / 限流 / 审计 / 通知  │
+  │  SQLite                                  │
+  └───────────────┬──────────────┬───────────┘
+                  │              │ Agent WSS（/agent/ws）
+           本机执行器            ▼
+                           远程 VPS 上的 Agent
+                           Shell / 文件 / 进程 / Agent MCP
+```
+
+详见 [docs/architecture.md](docs/architecture.md)。
+
+---
+
+## 5 分钟快速开始
+
+以下示例中的 `hub.example.com` 请替换为你自己的域名。
+
+### 1. 安装 Hub
+
+```bash
+curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/install.sh | sudo bash
+```
+
+选择 Hub。脚本自动识别 `amd64 / arm64 / armv7`，从 GitHub Release 下载并做 SHA256 校验，生成 `/etc/vps-commander/hub.env`（权限 0600）并注册 systemd 服务。Hub 默认只监听 `127.0.0.1:9521`。
+
+### 2. 配置反向代理
+
+把 `https://hub.example.com` 反代到 `127.0.0.1:9521`，需支持 WebSocket Upgrade，并对 `/mcp/sse` 关闭响应缓冲。若使用反代，在 `hub.env` 中设置 `VPS_COMMANDER_TRUST_PROXY=on`（见 [docs/deploy/hub.md](docs/deploy/hub.md)）。
+
+### 3. 接入 Agent
+
+在面板“设备”分区的“设备接入”中点击“添加设备”→“生成接入凭证”，为该节点签发独立凭据；然后在目标节点运行同一个安装脚本并选择 Agent，填入：
+
+- Hub 地址：`wss://hub.example.com/agent/ws`
+- 节点名称
+- 该设备的独立凭据
+
+### 4. 创建命名令牌并接入客户端
+
+打开 `https://hub.example.com/panel/`，进入“接入与令牌”：
+
+1. 创建命名令牌（默认只读；需要执行命令或写文件时选“运维”），完整密钥只显示一次，请立即复制保存。
+2. 用“AI 接入向导”生成 GPT Actions、MCP 或 REST 配置，并一键测试连通。
+
+```bash
+curl -s https://hub.example.com/api/v1/devices \
+  -H "Authorization: Bearer $VPS_COMMANDER_TOKEN"
 ```
 
 ---
 
-## 🔐 当前安全模型
+## 客户端接入方式
 
-### 1. Client Authentication
-`Authorization: Bearer <API_KEY>` 是 HTTP / MCP 的主要客户端认证方式。
+| 方式 | 地址 | 适用 |
+| :--- | :--- | :--- |
+| MCP Streamable HTTP | `POST https://hub.example.com/mcp` | 原生 MCP 客户端（推荐） |
+| MCP SSE（旧版） | `GET /mcp/sse` + `POST /mcp/message` | 只支持 SSE 的旧客户端 |
+| REST | `https://hub.example.com/api/v1/*` | Skills、脚本、GPT Actions；一次调用一个请求 |
+| stdio | `vps-commander-mcp-stdio -hub … -key …` | 本地桌面 MCP 客户端 |
 
-### 2. Agent Authentication
-每个 Agent 使用独立的 `VPS_COMMANDER_AGENT_TOKEN`。
-Hub SQLite 只保存 Credential Hash，不保存明文 Token。
+常见坑：Streamable HTTP 客户端的地址必须是 `/mcp`，不要填成 `/mcp/sse`（会返回 405），结尾也不要加 `/`（会返回 404）。完整说明见 [docs/mcp-clients.md](docs/mcp-clients.md)。
 
-### 3. Authorization
-Tool Registry 首先确定操作风险：
+### MCP 工具（12 个）
 
-| 风险 | 典型能力 |
+| 工具 | 所需 scope | 风险等级 |
+| :--- | :--- | :--- |
+| `list_devices` | `devices:read` | Low |
+| `read_file` / `read_multiple_files` | `files:read` | Low |
+| `diagnostic_command`（白名单只读诊断） | `files:read` | Low |
+| `list_agent_mcp` | `files:read` | Low |
+| `list_processes` | `process` | Low |
+| `create_directory` / `move_file` / `edit_block` / `write_file` | `files:write` | Medium |
+| `call_agent_mcp` | `mcp:call` | Medium |
+| `exec_command` | `exec` | High |
+
+`tools/list` 只返回当前令牌 scope 允许的工具。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
 | :--- | :--- |
-| Low | 读取、搜索、设备/进程观察 |
-| Medium | 文件修改、目录创建/移动、Agent MCP |
-| High | Shell、进程启动、交互、终止 |
+| [docs/README.md](docs/README.md) | 文档索引与维护规则 |
+| [docs/architecture.md](docs/architecture.md) | 架构、Agent 协议、执行模型 |
+| [docs/security.md](docs/security.md) | 令牌、scope、白名单、安全等级、审计 |
+| [docs/mcp-clients.md](docs/mcp-clients.md) | MCP / REST 客户端接入与工具参数 |
+| [docs/api.md](docs/api.md) | REST 接口与 scope 对照 |
+| [docs/deploy/hub.md](docs/deploy/hub.md) | Hub 部署、环境变量全表、反向代理 |
+| [docs/deploy/agent.md](docs/deploy/agent.md) | Agent 安装、升级、排查 |
+| [docs/operations.md](docs/operations.md) | 升级回滚、备份、日志、指标、FAQ |
+| [docs/development.md](docs/development.md) | 构建、测试、发布与验收门禁 |
+| [docs/loadtest.md](docs/loadtest.md) | 500 Agent / 50 MCP 压测工具 |
+| [docs/roadmap.md](docs/roadmap.md) | 当前进度与后续计划 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 
-未知设备、未知身份或策略无法解析时不得获得 High 权限。
-
-### 4. Shared Secret
-生产环境已经关闭 Cluster Secret / Shared Secret fallback。
-
----
-
-## 🤖 当前 MCP 能力
-
-目前共 **12 个 MCP Tools**：
-
-| Tool | Risk | 功能 |
-| :--- | :--- | :--- |
-| `list_devices` | Low | 节点列表与状态 |
-| `exec_command` | High | Shell 执行 |
-| `read_file` | Low | 分页读取文件 |
-| `read_multiple_files` | Low | 批量读取文件 |
-| `create_directory` | Medium | 创建目录 |
-| `move_file` | Medium | 移动/重命名 |
-| `list_processes` | Low | 进程观察 |
-| `edit_block` | Medium | 原子文本修改 |
-| `write_file` | Medium | 创建/覆写文件 |
-| `list_agent_mcp` | Low | 查看 Agent MCP |
-| `call_agent_mcp` | Medium | 调用 Agent MCP |
-
-远程 MCP 当前使用 **legacy HTTP + SSE**；本地客户端使用 stdio。
-Streamable HTTP 作为下一阶段 transport 演进方向。
+历史评审、事故与交接记录已移入 [docs/archive/](docs/archive/)，仅供追溯，不代表当前状态。
 
 ---
 
-## 📊 HTTP / Web 能力
+## 开源协议
 
-| 接口 | 方法 | 功能 |
-| :--- | :--- | :--- |
-| `/api/v1/devices` | GET | 设备状态与资源画像 |
-| `/api/v1/exec` | POST | 远程 Shell |
-| `/api/v1/file/read` | POST | 文件读取 |
-| `/api/v1/file/list` | POST | 目录列表 |
-| `/api/v1/file/info` | POST | 文件信息 |
-| `/api/v1/file/search` | POST | 文件搜索 |
-| `/api/v1/file/write` | POST | 文件写入 |
-| `/api/v1/devices/file/edit_block` | POST | 安全块编辑 |
-| `/api/v1/process/session` | POST | Session 操作 |
-| `/api/v1/mcp/*` | GET/POST/DELETE | MCP 服务管理与调用 |
-| `/api/v1/security/*` | GET/POST | 安全策略 |
-| `/api/v1/notifications/webhook*` | GET/POST/DELETE | Webhook |
-| `/agent/ws` | WebSocket | Agent 长连接 |
-| `/panel/*` | GET/POST | Web 管理面板 |
-
----
-
-## 🚀 生产部署
-
-Hub：
-```text
-/opt/vps-commander/vps-commander-hub
-/etc/vps-commander/hub.env
-/opt/vps-commander/data/commander.db
-127.0.0.1:9521
-```
-
-Agent：
-```text
-/opt/vps-commander/vps-commander-agent
-/etc/vps-commander/agent.env
-wss://vpstool.kory.kdns.fr/agent/ws
-```
-
-Agent 只主动连接 Hub，不需要公网入站端口。
-
-### Hub 运行参数
-
-- `VPS_COMMANDER_PROFILE_INTERVAL_SECONDS`：Agent 资源画像的最长上报间隔，默认 `300` 秒；Hub 会通过心跳消息下发给新版 Agent，范围限制为 `60–3600` 秒。旧版 Agent 忽略该可选协议字段，不影响原有心跳。
-- 审计日志由存储层单写协程异步批量持久化：队列容量 `1024`，每累计 `100` 条或每 `500ms` 刷写；队列满时告警并同步写入。Hub 正常退出时会等待队列刷写完成。
-- Agent 断线重连使用 full jitter 指数退避（`rand(0, min(cap, base*2^n))`，起步 `1s`、上限 `30s`）；首次重连额外随机等待 `0–10s`，并遵守握手响应的 `Retry-After`。连接稳定运行 2 分钟后退避重置。
-- Agent WebSocket 握手使用令牌桶限流：全局 `50/s`、突发 `200`；单 IP `5/s`、突发 `20`。超过限额返回 HTTP `429` 和 `Retry-After: 1`。共享同一公网 IP/NAT 的 Agent 共用单 IP 限额，集体重连时可能触发 429。WebSocket 入站帧大小限制为 `8 MiB`。
-- 若 Hub 位于 Lucky 等反向代理之后，必须设置 `VPS_COMMANDER_TRUST_PROXY=on`，并在部署前确认代理会正确覆盖/追加 `X-Forwarded-For` 的客户端公网 IP。启用后 Hub 只信任 XFF 最右侧有效 IP，不信任 `X-Real-IP`；Hub 后端应限制为仅可由可信代理访问。
-
-生产发布顺序：
-`backup → clean build → 单节点灰度 → Hub restart recovery → rolling Agent → MCP/security/audit 验收`。
-
----
-
-## 🚀 一键安装与升级
-
-### 一键安装
-
-```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/install.sh | bash
-```
-
-安装脚本自动识别 `amd64/arm64` 并进入 Hub / Agent 安装流程。
-
-### 一键升级 Agent
-
-```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-agent.sh | bash
-```
-
-### 一键升级 Hub
-
-Hub 升级不会修改 `hub.env`：
-
-```bash
-curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/upgrade-hub.sh | bash
-```
-
-升级脚本下载目标 Release、校验文件大小、备份旧版本并在启动失败时自动回滚。
-
-生产环境的 Agent 凭据以独立设备凭据为准；不要将 Cluster Secret 作为长期生产凭据重新启用。
-
----
-
-## 📄 文档索引
-
-- [文档基线与全局索引](docs/DOCUMENTATION_BASELINE_20261002.md)
-- [系统架构与开发设计规范](docs/ARCHITECTURE.md)
-- [研发与协议规范](docs/DEV_SPEC.md)
-- [MCP 接入指南](docs/MCP_INTEGRATION.md)
-- [生产部署与运维指南](deploy/README.md)
-- [发布验收标准](docs/ACCEPTANCE_CRITERIA.md)
-- [项目进度与路线图](docs/PROGRESS_TRACKING.md)
-- [v2.1 安全加固规范](docs/VPS_COMMANDER_V2_1_SECURITY_HARDENING_SPEC.md)
-
----
-
-## 📜 开源协议
-
-本项目基于 [MIT](LICENSE) 协议开源。
+本项目声明采用 MIT 协议开源。仓库目前尚未包含 `LICENSE` 文件，待补充。

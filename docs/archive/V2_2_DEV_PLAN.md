@@ -1,7 +1,9 @@
 # VPS-Commander v2.2 开发方案：令牌治理 / 连接扩展 / 功能完善 / 文档
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 - 编写：代码审核员 C　日期：2026-10-09
-- 适用代码：`/root/.openclaw/workspace/vps-commander`（基线 `7377e30` + 工作区未提交改动）
+- 适用代码：`<repo>`（基线 `7377e30` + 工作区未提交改动）
 - 交付方式：按下文 Phase 拆分提交，每个 Phase 完成后提供 commit hash，由审核员 C 按「验收标准」逐条实测。审核通过前**不得**替换 `/opt/vps-commander` 生产二进制、不得重启 `vps-commander-hub` / `vps-commander-agent`。
 
 ---

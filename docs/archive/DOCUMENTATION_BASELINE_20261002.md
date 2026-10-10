@@ -1,5 +1,7 @@
 # VPS-Commander 全仓库文档基线与索引
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 本文档作为 2026-10-02 之后的文档总入口，用于区分当前设计、历史记录与下一版本研发计划。
 
 ---
@@ -94,12 +96,12 @@ VPS-Commander 是自托管、多节点、AI Agent 友好的 Linux 运维控制�
 ## 六、当前生产基线
 
 当前生产集群包括：
-- `wjyhk`
-- `N3450`
-- `hwhk`
-- `hwsg`
-- `m4-live-agent`
-- `qnvn`
+- `hub-host`
+- `node-a`
+- `node-b`
+- `node-c`
+- `node-d`
+- `node-e`
 
 Hub：`/opt/vps-commander/vps-commander-hub`。
 Database：`/opt/vps-commander/data/commander.db`。

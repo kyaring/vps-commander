@@ -1,5 +1,7 @@
 # VPS-Commander 双通道架构与安全整改——送审交接文档
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 **文档版本：** 2026-10-02 / Review Handoff v1  
 **项目：** VPS-Commander v2.0  
 **用途：** 提交外部审核，审核通过后作为生产上线前置依据
@@ -408,7 +410,7 @@ connected
 - Hub 已部署最终版本并验证启动；共享 Cluster Secret fallback 已关闭。
 - 5 个远程 Agent 均已配置独立设备凭证，数据库仅保存 SHA-256 hash。
 - 5 个远程 Agent 均已滚动升级到最终 Agent 构建，且重新上线。
-- `wjyhk / N3450 / hwhk / hwsg / m4-live-agent / qnvn` 六个节点全部 online。
+- `hub-host / node-a / node-b / node-c / node-d / node-e` 六个节点全部 online。
 - 六个节点均已通过实际执行请求验证控制链路可用。
 - Hub 全局安全级别保持 `medium`；节点级策略保持 `high`，未通过降低全局策略绕过门禁。
 - 审计写入增加敏感字段脱敏、换行清理和长度上限。

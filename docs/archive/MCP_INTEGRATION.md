@@ -1,5 +1,7 @@
 # VPS-Commander MCP（Model Context Protocol）接入指南
 
+> **归档说明（2026-10-10）**：本文为历史快照，反映写作当时的状态，可能与现行 v1.1.30 不一致，不作为当前行为依据。已脱敏：域名、节点名与本地路径替换为占位符。现行文档见 [docs/README.md](../README.md)。
+
 本文介绍 VPS-Commander 当前 MCP 能力、客户端接入方式、工具权限以及后续 transport 演进方向。
 
 ---
