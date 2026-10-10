@@ -331,3 +331,44 @@ func TestOAuthConsentRejectsForgedAdminTokenSelection(t *testing.T) {
 		t.Fatalf("forged admin-token approval created grant(s): %+v err=%v", grants, err)
 	}
 }
+
+func TestOAuthConsentCSPAllowsValidatedRedirectOrigin(t *testing.T) {
+	srv, _, clientID, _, redirect, verifierChallenge := oauthFlowFixture(t)
+	parts := strings.SplitN(verifierChallenge, "|", 2)
+	q := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {"csp-state"}, "code_challenge": {parts[1]}, "code_challenge_method": {"S256"}, "resource": {"https://hub.example.test/mcp"}, "scope": {"devices:read"}}
+	get := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+q.Encode(), nil)
+	get.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-panel-session"})
+	gw := httptest.NewRecorder()
+	srv.HandleAuthorize(gw, get)
+	if gw.Code != http.StatusOK {
+		t.Fatalf("consent status=%d body=%s", gw.Code, gw.Body.String())
+	}
+	u, _ := url.Parse(redirect)
+	want := "form-action 'self' " + u.Scheme + "://" + u.Host + ";"
+	if csp := gw.Header().Get("Content-Security-Policy"); !strings.Contains(csp, want) || !strings.Contains(csp, "default-src 'none'") || !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("consent CSP=%q, want it to contain %q", csp, want)
+	}
+	// Error pages and non-consent responses keep the strict self-only form-action.
+	bad := httptest.NewRequest(http.MethodGet, "/oauth/authorize?response_type=code", nil)
+	bw := httptest.NewRecorder()
+	srv.HandleAuthorize(bw, bad)
+	if csp := bw.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self';") {
+		t.Fatalf("non-consent CSP=%q", csp)
+	}
+}
+
+func TestOAuthRedirectOrigin(t *testing.T) {
+	cases := map[string]string{
+		"https://chatgpt.com/connector/oauth/YBlg7hoG2cx-": "https://chatgpt.com",
+		"http://127.0.0.1:8765/cb":                         "http://127.0.0.1:8765",
+		"https://user:pw@evil.example/cb":                  "",
+		"javascript:alert(1)":                              "",
+		"https://a.example;script-src*/cb":                 "",
+		"":                                                 "",
+	}
+	for in, want := range cases {
+		if got := oauthRedirectOrigin(in); got != want {
+			t.Errorf("oauthRedirectOrigin(%q)=%q want %q", in, got, want)
+		}
+	}
+}

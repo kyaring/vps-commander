@@ -48,9 +48,34 @@ func (s *Server) setOAuthBrowserHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", oauthBrowserCSP(""))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+}
+
+// oauthBrowserCSP returns the CSP for OAuth browser pages. Browsers enforce
+// form-action on redirects that follow a form submission, so the consent page
+// must also allow the origin of the already-validated redirect URI; otherwise
+// the approve/deny 302 back to the client is blocked and the flow hangs.
+func oauthBrowserCSP(redirectURI string) string {
+	formAction := "'self'"
+	if origin := oauthRedirectOrigin(redirectURI); origin != "" {
+		formAction += " " + origin
+	}
+	return "default-src 'none'; style-src 'unsafe-inline'; form-action " + formAction + "; base-uri 'none'; frame-ancestors 'none'"
+}
+
+// oauthRedirectOrigin returns scheme://host[:port] for an http(s) redirect URI,
+// or "" when the value cannot be used safely as a CSP source expression.
+func oauthRedirectOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+		return ""
+	}
+	if strings.ContainsAny(u.Host, " ;,'\"\t\r\n*") {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }
 func randomOAuthValue(prefix string, n int) (string, error) {
 	b := make([]byte, n)
@@ -264,6 +289,7 @@ func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request)
 	}
 	s.oauthPending[csrf] = pending
 	s.oauthMu.Unlock()
+	w.Header().Set("Content-Security-Policy", oauthBrowserCSP(pending.RedirectURI))
 	data := struct {
 		ClientName, CSRF string
 		Tokens           []authorizeTokenOption
