@@ -33,6 +33,11 @@ const unknown = AuditUI.renderAuditRow({id:2,timestamp:1,actor_name:'x',oauth_cl
 assert.ok(unknown.includes('经 OAuth · vpc_client_x'), 'unknown client falls back to client id');
 const fileRow = AuditUI.renderAuditRow({id:3,timestamp:1,actor_name:'x',transport:'rest',device:'n',action:'file_read',command:'',target_type:'file',target:'/etc/os-release'}, [], {});
 assert.ok(fileRow.includes('/etc/os-release'), 'file target shown in command/path when command is empty');
+const scopeRow = AuditUI.renderAuditRow({id:4,timestamp:1,actor_name:'x',transport:'rest',device:'',action:'scope_denied',command:'/metrics',target_type:'scope',target:'admin',result:'denied'}, [], {});
+assert.ok(scopeRow.includes('目标：scope:admin'), 'target that adds information must stay visible');
+const mismatch = AuditUI.renderAuditRow({id:5,timestamp:1,actor_name:'x',transport:'rest',device:'node-a',action:'exec',command:'ls',target_type:'device',target:'node-b'}, [], {});
+assert.ok(mismatch.includes('目标：device:node-b'), 'device target differing from device column must be shown');
+assert.ok(!plain.includes('目标：') && !fileRow.includes('目标：'), 'redundant targets stay hidden');
 assert.equal(AuditUI.actorLabel({actor_name:'legacy-env',actor_type:'api_token'}, []), 'legacy');
 assert.equal(AuditUI.actorLabel({actor_name:'panel:admin',actor_type:'panel',transport:'panel'}, []), '面板');
 console.log('PASS audit-ui token filtering, date/result/transport/cursor query, merged OAuth client into token cell, dropped redundant target column, denied styling, actor aliases, and HTML escaping');
