@@ -302,12 +302,10 @@ func (s *Store) UpdateDeviceStatus(name, status string, lastHeartbeat int64) err
 	if lastHeartbeat <= 0 {
 		lastHeartbeat = now
 	}
-	var offlineAt any
-	if status == "offline" {
-		offlineAt = now
-	}
-	_, err := s.DB.Exec("UPDATE devices SET status=?, last_seen=?, last_heartbeat=?, offline_at=?, updated_at=? WHERE name=? AND is_local=0",
-		status, lastHeartbeat, lastHeartbeat, offlineAt, now, name)
+	// Keep the original offline_at while a node stays offline (e.g. Hub restart
+	// re-marks known nodes offline) so offline duration and alerts stay correct.
+	_, err := s.DB.Exec("UPDATE devices SET status=?, last_seen=?, last_heartbeat=?, offline_at=CASE WHEN ?='offline' THEN COALESCE(offline_at, ?) ELSE NULL END, updated_at=? WHERE name=? AND is_local=0",
+		status, lastHeartbeat, lastHeartbeat, status, now, now, name)
 	return err
 }
 
