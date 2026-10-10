@@ -85,6 +85,18 @@ func TestOAuthMetadataRejectsInvalidPublicURL(t *testing.T) {
 	}
 }
 
+func TestOAuthResourceURLMatchesConfiguredPublicOrigin(t *testing.T) {
+	t.Setenv("VPS_COMMANDER_PUBLIC_URL", "https://hub.example.test/")
+	got, ok := OAuthResourceURL()
+	if !ok || got != "https://hub.example.test/mcp" {
+		t.Fatalf("OAuthResourceURL()=(%q,%v), want configured origin + /mcp", got, ok)
+	}
+	t.Setenv("VPS_COMMANDER_PUBLIC_URL", "")
+	if got, ok := OAuthResourceURL(); ok || got != "" {
+		t.Fatalf("OAuthResourceURL() while disabled=(%q,%v)", got, ok)
+	}
+}
+
 func TestOAuthWWWAuthenticateAdvertisesProtectedResourceMetadata(t *testing.T) {
 	t.Setenv("VPS_COMMANDER_PUBLIC_URL", "https://hub.example.test")
 	want := `Bearer realm="vps-commander", resource_metadata="https://hub.example.test/.well-known/oauth-protected-resource/mcp"`

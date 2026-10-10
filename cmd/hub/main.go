@@ -270,9 +270,25 @@ func main() {
 	mux.Handle("/api/", protected)
 	mux.Handle("/metrics", protected)
 
-	// MCP Endpoints. Advertise Protected Resource Metadata only when OAuth is
-	// explicitly enabled with a trusted public origin.
-	mcpAuth := auth.Middleware{Manager: authManager, WWWAuthenticate: mcp.OAuthWWWAuthenticate()}
+	// MCP Endpoints. OAuth access tokens are accepted only on the canonical
+	// Streamable HTTP endpoint, and only for the configured PUBLIC_URL/mcp resource.
+	oauthResource, _ := mcp.OAuthResourceURL()
+	mcpAuth := auth.Middleware{
+		Manager: authManager, WWWAuthenticate: mcp.OAuthWWWAuthenticate(), OAuthResource: oauthResource,
+		OAuthTokenValidator: func(raw, resource, ip string, now int64) (auth.Principal, bool) {
+			o, ok := store.ValidateOAuthAccessToken(raw, resource, ip, now)
+			if !ok {
+				return auth.Principal{}, false
+			}
+			// Keep the underlying named API token visible in audit actor labels;
+			// use a grant-specific limiter/session identity for this OAuth grant.
+			return auth.Principal{
+				Type: "api_token", ID: o.APITokenID, Name: o.TokenName,
+				TokenID: "oauth:" + o.GrantID, Scopes: o.Scopes, Devices: o.Devices,
+				MaxSessions: o.MaxSessions, RateRPS: o.RateRPS,
+			}, true
+		},
+	}
 	mux.Handle("/mcp", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleStreamableHTTP))))
 	mux.Handle("/mcp/sse", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleSSE))))
 	mux.Handle("/mcp/message", mcpAuth.Handler(s.TokenRateLimitMiddleware(http.HandlerFunc(mcpServer.HandleMessage))))

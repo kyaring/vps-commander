@@ -21,6 +21,78 @@ func TestMiddlewareUsesConfiguredWWWAuthenticateChallenge(t *testing.T) {
 	}
 }
 
+func TestMiddlewareOAuthTokenOnlyAuthenticatesCanonicalMCPResource(t *testing.T) {
+	wantResource := "https://hub.example.test/mcp"
+	calls := 0
+	challenge := `Bearer realm="vps-commander", resource_metadata="https://hub.example.test/.well-known/oauth-protected-resource/mcp"`
+	h := (Middleware{
+		WWWAuthenticate: challenge,
+		OAuthResource:   wantResource,
+		OAuthTokenValidator: func(token, resource, ip string, now int64) (Principal, bool) {
+			calls++
+			if token != "vpc_oat_valid" || resource != wantResource || now <= 0 {
+				t.Errorf("validator inputs token=%q resource=%q now=%d", token, resource, now)
+			}
+			return Principal{Type: "api_token", ID: "api-id", Name: "named-api-token", TokenID: "oauth:grant-id", Scopes: map[string]bool{"mcp:call": true}}, true
+		},
+	}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := PrincipalFromContext(r.Context())
+		if !ok || p.Name != "named-api-token" || p.TokenID != "oauth:grant-id" {
+			t.Errorf("OAuth principal not propagated: %+v, ok=%v", p, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, path := range []string{"/mcp/sse", "/mcp/message", "/api/v1/devices"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer vpc_oat_valid")
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("path %s status=%d, want 401", path, rec.Code)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("OAuth validator called %d times for non-/mcp paths", calls)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer vpc_oat_valid")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("/mcp status=%d validator calls=%d", rec.Code, calls)
+	}
+}
+
+func TestMiddlewareInvalidBearerAddsInvalidTokenChallenge(t *testing.T) {
+	challenge := `Bearer realm="vps-commander", resource_metadata="https://hub.example.test/.well-known/oauth-protected-resource/mcp"`
+	h := (Middleware{WWWAuthenticate: challenge}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, tc := range []struct {
+		name, authorization, want string
+	}{
+		{"missing token", "", challenge},
+		{"invalid token", "Bearer bad-token", `Bearer realm="vps-commander", error="invalid_token", resource_metadata="https://hub.example.test/.well-known/oauth-protected-resource/mcp"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			if tc.authorization != "" {
+				req.Header.Set("Authorization", tc.authorization)
+			}
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d, want 401", rec.Code)
+			}
+			if got := rec.Header().Get("WWW-Authenticate"); got != tc.want {
+				t.Fatalf("challenge=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClientIPTrustProxy(t *testing.T) {
 	t.Setenv("VPS_COMMANDER_TRUST_PROXY", "on")
 	r := httptest.NewRequest(http.MethodGet, "/", nil)

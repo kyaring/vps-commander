@@ -94,16 +94,34 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+type OAuthTokenValidator func(token, resource, ip string, now int64) (Principal, bool)
+
 type Middleware struct {
-	Token           string
-	Manager         *Manager
-	Optional        bool
-	WWWAuthenticate string
+	Token               string
+	Manager             *Manager
+	Optional            bool
+	WWWAuthenticate     string
+	OAuthResource       string
+	OAuthTokenValidator OAuthTokenValidator
 }
 
 func (m Middleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := bearer(r); got != "" {
+		got := bearer(r)
+		if got != "" {
+			// OAuth access tokens are intentionally restricted to the canonical
+			// Streamable HTTP resource endpoint. They must never authenticate
+			// REST APIs or the legacy SSE transports.
+			if strings.HasPrefix(got, "vpc_oat_") {
+				if r.URL.Path == "/mcp" && m.OAuthResource != "" && m.OAuthTokenValidator != nil {
+					if p, ok := m.OAuthTokenValidator(got, m.OAuthResource, ClientIP(r), time.Now().Unix()); ok {
+						next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
+						return
+					}
+				}
+				unauthorizedWithChallenge(w, m.WWWAuthenticate, true)
+				return
+			}
 			if m.Manager != nil {
 				if p, ok := m.Manager.PrincipalFromRequest(r); ok {
 					next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
@@ -120,7 +138,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		unauthorizedWithChallenge(w, m.WWWAuthenticate)
+		unauthorizedWithChallenge(w, m.WWWAuthenticate, got != "")
 	})
 }
 
@@ -154,13 +172,20 @@ func ClientIP(r *http.Request) string {
 }
 
 func unauthorized(w http.ResponseWriter) {
-	unauthorizedWithChallenge(w, "")
+	unauthorizedWithChallenge(w, "", false)
 }
 
-func unauthorizedWithChallenge(w http.ResponseWriter, challenge string) {
+func unauthorizedWithChallenge(w http.ResponseWriter, challenge string, invalidToken bool) {
 	w.Header().Set("Content-Type", "application/json")
 	if challenge == "" {
 		challenge = `Bearer realm="vps-commander"`
+	}
+	if invalidToken {
+		if strings.Contains(challenge, `resource_metadata=`) {
+			challenge = strings.Replace(challenge, `, resource_metadata=`, `, error="invalid_token", resource_metadata=`, 1)
+		} else {
+			challenge += `, error="invalid_token"`
+		}
 	}
 	w.Header().Set("WWW-Authenticate", challenge)
 	w.WriteHeader(http.StatusUnauthorized)

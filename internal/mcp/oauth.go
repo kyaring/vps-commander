@@ -40,6 +40,16 @@ func OAuthResourceMetadataURL() (string, bool) {
 	return base + "/.well-known/oauth-protected-resource/mcp", true
 }
 
+// OAuthResourceURL returns the exact resource identifier used to validate
+// OAuth access tokens. It is empty while OAuth is disabled.
+func OAuthResourceURL() (string, bool) {
+	base, ok := oauthPublicURL()
+	if !ok {
+		return "", false
+	}
+	return base + "/mcp", true
+}
+
 // OAuthWWWAuthenticate returns the challenge used by the MCP resource server.
 func OAuthWWWAuthenticate() string {
 	if metadataURL, ok := OAuthResourceMetadataURL(); ok {
