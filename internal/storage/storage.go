@@ -771,6 +771,29 @@ func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 	return out, rows.Err()
 }
 
+type LegacyUsage struct {
+	Count     int64  `json:"count"`
+	LastAt    int64  `json:"last_at"`
+	IP        string `json:"ip"`
+	Transport string `json:"transport"`
+	UserAgent string `json:"user_agent"`
+}
+
+func (s *Store) LegacyUsageSummary(since int64) (LegacyUsage, error) {
+	var v LegacyUsage
+	if err := s.FlushAudits(); err != nil {
+		return v, err
+	}
+	if err := s.DB.QueryRow(`SELECT COUNT(*),COALESCE(MAX(timestamp),0) FROM audit_logs WHERE action='legacy_auth' AND timestamp>=?`, since).Scan(&v.Count, &v.LastAt); err != nil {
+		return v, err
+	}
+	if v.LastAt == 0 {
+		return v, nil
+	}
+	err := s.DB.QueryRow(`SELECT COALESCE(caller_ip,''),COALESCE(transport,''),COALESCE(command,'') FROM audit_logs WHERE action='legacy_auth' AND timestamp=? ORDER BY id DESC LIMIT 1`, v.LastAt).Scan(&v.IP, &v.Transport, &v.UserAgent)
+	return v, err
+}
+
 func (s *Store) QueryAudits(actor, device, action, result, transport string, from, to, cursor int64, limit int) ([]AuditLog, error) {
 	if err := s.FlushAudits(); err != nil {
 		return nil, err

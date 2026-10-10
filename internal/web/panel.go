@@ -89,6 +89,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/mcp/list", p.protected(p.listAgentMCP))
 	mux.HandleFunc("/panel/api/mcp/call", p.protected(p.callAgentMCP))
 	mux.HandleFunc("/panel/api/mcp/test", p.protected(p.testMCP))
+	mux.HandleFunc("/panel/api/security/legacy-usage", p.protected(p.legacyUsage))
 	mux.HandleFunc("/panel/api/security/settings", p.protected(p.securitySettings))
 	mux.HandleFunc("/panel/api/security/settings/update", p.protected(p.updateSecuritySettings))
 	mux.HandleFunc("/panel/api/security/device-credentials/provision", p.protected(p.provisionDeviceCredential))
@@ -200,6 +201,16 @@ func (p *Panel) callAgentMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "MCP API unavailable", 501)
 }
+func (p *Panel) legacyUsage(w http.ResponseWriter, r *http.Request) {
+	if v, ok := p.Runner.(interface {
+		LegacyUsageJSON(http.ResponseWriter, *http.Request)
+	}); ok {
+		v.LegacyUsageJSON(w, r)
+		return
+	}
+	http.Error(w, "legacy usage API unavailable", http.StatusNotImplemented)
+}
+
 func (p *Panel) securitySettings(w http.ResponseWriter, r *http.Request) {
 	if v, ok := p.Runner.(securityPanelRunner); ok {
 		v.SecuritySettingsJSON(w, r)

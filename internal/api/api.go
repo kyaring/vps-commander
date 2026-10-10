@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +57,8 @@ type Server struct {
 	LocalSessions  *executor.SessionManager
 	inFlightExec   atomic.Int64
 	http429Count   atomic.Uint64
+	legacyAuthMu   sync.Mutex
+	legacyAuthLast map[string]time.Time
 }
 
 const (
@@ -260,6 +263,24 @@ func (s *Server) TestWebhookJSON(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"ok": true})
 }
 
+func (s *Server) LegacyUsageJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Store == nil {
+		http.Error(w, "storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	summary, err := s.Store.LegacyUsageSummary(time.Now().Add(-7 * 24 * time.Hour).Unix())
+	if err != nil {
+		http.Error(w, "legacy usage query failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(summary)
+}
+
 func (s *Server) SecuritySettingsJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", 405)
@@ -390,6 +411,41 @@ func (s *Server) Panel(password string) *panelweb.Panel {
 	p := panelweb.New(password, s.AdminToken, s)
 	go p.Cleanup()
 	return p
+}
+
+// RecordLegacyAuth records successful legacy-key authentication at most once per
+// source IP and transport in each ten-minute window. The request path is stored
+// as the target and the User-Agent as the command field for existing audit schema.
+func (s *Server) RecordLegacyAuth(r *http.Request, p auth.Principal) {
+	if s.Store == nil || (p.ID != "legacy-env" && p.TokenID != "legacy-env" && p.Name != "legacy-env") {
+		return
+	}
+	ip := auth.ClientIP(r)
+	transport := "rest"
+	switch r.URL.Path {
+	case "/mcp/sse", "/mcp/message":
+		transport = "mcp-sse"
+	case "/mcp":
+		transport = "mcp-http"
+	}
+	key := ip + "\x00" + transport
+	now := time.Now()
+	s.legacyAuthMu.Lock()
+	if s.legacyAuthLast == nil {
+		s.legacyAuthLast = make(map[string]time.Time)
+	}
+	if last := s.legacyAuthLast[key]; !last.IsZero() && now.Sub(last) < 10*time.Minute {
+		s.legacyAuthMu.Unlock()
+		return
+	}
+	for k, last := range s.legacyAuthLast {
+		if now.Sub(last) >= 10*time.Minute {
+			delete(s.legacyAuthLast, k)
+		}
+	}
+	s.legacyAuthLast[key] = now
+	s.legacyAuthMu.Unlock()
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Action: "legacy_auth", Command: r.UserAgent(), ActorType: "api_token", ActorID: "legacy-env", ActorName: "legacy-env", Transport: transport, TargetType: "path", Target: r.URL.Path, Result: "ok"})
 }
 
 func (s *Server) DevicesJSON(w http.ResponseWriter, r *http.Request) { s.devices(w, r) }

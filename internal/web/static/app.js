@@ -496,8 +496,9 @@ $("#deviceProvisionToken").onclick=e=>e.target.select();
 $("#deviceProvisionCommand").onclick=e=>e.target.select();
 
 async function loadSecuritySettings(){const x=await api("/security/settings"),nodes=x.nodes||[],effective=x.effective||{},configured=new Map(nodes.map(n=>[n.node,n.mode])),devices=await api("/devices");$("#globalSecurity").value=x.global||"medium";$("#securityNodes").innerHTML=devices.map(d=>{const mode=configured.get(d.name)||"inherit",eff=effective[d.name]||x.global||"medium";return `<tr><td>${esc(d.name)}</td><td><select data-security-node="${esc(d.name)}"><option value="inherit" ${mode==='inherit'?'selected':''}>跟随全局</option><option value="low" ${mode==='low'?'selected':''}>低 · Low</option><option value="medium" ${mode==='medium'?'selected':''}>中 · Medium</option><option value="high" ${mode==='high'?'selected':''}>高 · High</option></select></td><td>${esc(eff)}</td><td><button type="button" onclick="saveNodeSecurity('${esc(d.name)}')">保存</button></td></tr>`}).join("")}
+async function loadLegacyUsage(){const el=$("#legacyUsageStatus");if(!el)return;try{const x=await api("/security/legacy-usage");if(!x.count){el.textContent="近 7 天未观察到 legacy Key 使用。";return}const last=x.last_at?new Date(Number(x.last_at)*1000).toLocaleString():"未知";el.innerHTML=`近 7 天 ${Number(x.count)||0} 次 · 最后使用：${esc(last)} · IP：${esc(x.ip||"未知")} · 传输：${esc(x.transport||"未知")} · UA：${esc(x.user_agent||"未知")}`}catch(e){el.textContent="读取失败："+e.message}}
 async function saveNodeSecurity(node){const el=document.querySelector(`[data-security-node="${CSS.escape(node)}"]`);if(!el)return;try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node,mode:el.value})});$("#securityStatus").textContent=`${node} 策略已保存。`;await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}}
-$("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>loadSecuritySettings().catch(console.error);
+$("#saveGlobalSecurity").onclick=async()=>{try{await api("/security/settings/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({global:$("#globalSecurity").value})});$("#securityStatus").textContent="全局安全策略已保存。";await loadSecuritySettings()}catch(e){$("#securityStatus").textContent="保存失败: "+e.message}};$("#securityRefresh").onclick=()=>Promise.all([loadSecuritySettings(),loadLegacyUsage()]).catch(console.error);
 
 
 let webhookEditingId = "";
@@ -681,7 +682,7 @@ async function activatePanelTab(tab, force=false){
   try{
     if(tab==="devices"||tab==="console"){await loadDevices();if(tab==="devices")renderTokenDevices();}
     if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();await loadOAuthAdmin();wizardGenerate();}
-    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadWebhooks()]);}
+    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadLegacyUsage(),loadWebhooks()]);}
     if(tab==="logs"){await loadTokens();await loadAudits(true);}
     loadedPanelTabs.add(tab);
   }catch(e){console.error(e);const status=$("#tokenFormStatus");if(status&&tab==="access")status.textContent="加载失败："+e.message;const auditStatus=$("#auditStatus");if(auditStatus&&tab==="logs")auditStatus.textContent="加载失败："+e.message;}

@@ -119,6 +119,7 @@ type Middleware struct {
 	WWWAuthenticate     string
 	OAuthResource       string
 	OAuthTokenValidator OAuthTokenValidator
+	OnAuthenticated     func(*http.Request, Principal)
 }
 
 func (m Middleware) Handler(next http.Handler) http.Handler {
@@ -131,6 +132,9 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			if strings.HasPrefix(got, "vpc_oat_") {
 				if r.URL.Path == "/mcp" && m.OAuthResource != "" && m.OAuthTokenValidator != nil {
 					if p, ok := m.OAuthTokenValidator(got, m.OAuthResource, ClientIP(r), time.Now().Unix()); ok {
+						if m.OnAuthenticated != nil {
+							m.OnAuthenticated(r, p)
+						}
 						next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 						return
 					}
@@ -140,12 +144,18 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			}
 			if m.Manager != nil {
 				if p, ok := m.Manager.PrincipalFromRequest(r); ok {
+					if m.OnAuthenticated != nil {
+						m.OnAuthenticated(r, p)
+					}
 					next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 					return
 				}
 			} else if m.Token != "" && subtle.ConstantTimeCompare([]byte(got), []byte(m.Token)) == 1 {
 				p := Principal{Type: "api_token", ID: "legacy-env", Name: "legacy-env", TokenID: "legacy-env", RateRPS: 10,
 					Scopes: map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}}
+				if m.OnAuthenticated != nil {
+					m.OnAuthenticated(r, p)
+				}
 				next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), p)))
 				return
 			}

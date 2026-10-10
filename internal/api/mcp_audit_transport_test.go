@@ -407,3 +407,60 @@ func TestAuditActorFilterIncludesOAuthViaRows(t *testing.T) {
 		t.Fatalf("named-token actor filter returned %d rows, want direct + OAuth", len(rows))
 	}
 }
+
+func TestLegacyAuthAuditRateLimitedAndVisibleInUsageSummary(t *testing.T) {
+	store, _, server := newMCPAuditFixture(t)
+	legacy := auth.Principal{Type: "api_token", ID: "legacy-env", TokenID: "legacy-env", Name: "legacy-env", Scopes: map[string]bool{"devices:read": true}}
+	manager := auth.NewManagerWithValidator("", auth.TokenValidatorFunc(func(token, ip string) (auth.Principal, bool) {
+		if token != "legacy-secret" {
+			return auth.Principal{}, false
+		}
+		return legacy, true
+	}))
+	handler := auth.Middleware{Manager: manager, OnAuthenticated: server.RecordLegacyAuth}.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	request := func(path, ip, ua string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = ip + ":12345"
+		req.Header.Set("Authorization", "Bearer legacy-secret")
+		req.Header.Set("User-Agent", ua)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, w.Code)
+		}
+	}
+	request("/mcp/sse", "203.0.113.10", "legacy-client/1")
+	request("/mcp/message", "203.0.113.10", "legacy-client/1") // same SSE transport, must be deduplicated
+	request("/mcp", "203.0.113.10", "legacy-http/2")
+	request("/mcp/sse", "203.0.113.11", "legacy-client/3") // another IP gets its own audit row
+	rows := auditRows(t, store)
+	var count int
+	for _, row := range rows {
+		if row.Action == "legacy_auth" {
+			count++
+			if row.ActorName != "legacy-env" || row.Result != "ok" || row.TargetType != "path" || row.Target == "" || row.CallerIP == "" || row.Command == "" {
+				t.Errorf("incomplete legacy audit row: %+v", row)
+			}
+		}
+	}
+	if count != 3 {
+		t.Fatalf("legacy audit rows=%d, want 3 after same-IP/transport dedup", count)
+	}
+	var foundSSE bool
+	for _, row := range rows {
+		if row.Action == "legacy_auth" && row.Target == "/mcp/sse" && row.Transport == "mcp-sse" && row.CallerIP == "203.0.113.10" && row.Command == "legacy-client/1" {
+			foundSSE = true
+		}
+	}
+	if !foundSSE {
+		t.Fatalf("missing SSE path/IP/UA audit: %+v", rows)
+	}
+	summary, err := store.LegacyUsageSummary(time.Now().Add(-7 * 24 * time.Hour).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Count != 3 || summary.LastAt == 0 || summary.IP == "" || summary.Transport == "" || summary.UserAgent == "" {
+		t.Fatalf("incomplete usage summary: %+v", summary)
+	}
+}
