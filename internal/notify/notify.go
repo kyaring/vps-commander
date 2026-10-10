@@ -42,12 +42,13 @@ type Manager struct {
 	offline        map[string]*offlineState
 	clock          func() time.Time
 	strikeCount    map[string]int
+	recoveryCount  map[string]int
 	resourceAlerts map[string]*resourceAlertState
 	lastSchedule   string
 }
 
 func New(s *storage.Store) *Manager {
-	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
+	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
 	m.importOpenClawWebhook()
 	return m
 }
@@ -138,13 +139,27 @@ func (m *Manager) check() {
 			m.mu.Lock()
 			if val >= threshold {
 				m.strikeCount[key]++
+				m.recoveryCount[key] = 0
 			} else {
 				m.strikeCount[key] = 0
+				if _, active := m.resourceAlerts[key]; active {
+					m.recoveryCount[key]++
+				} else {
+					m.recoveryCount[key] = 0
+				}
 			}
 			count := m.strikeCount[key]
+			recoveryCount := m.recoveryCount[key]
 			m.mu.Unlock()
 			if val < threshold {
-				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false, settings.ResourceReminderMinutes)
+				// Do not end an active episode on one transient low reading. Three
+				// consecutive below-threshold samples are required for recovery.
+				if recoveryCount >= 3 {
+					m.mu.Lock()
+					m.recoveryCount[key] = 0
+					m.mu.Unlock()
+					m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false, settings.ResourceReminderMinutes)
+				}
 				return
 			}
 			if count >= 3 {

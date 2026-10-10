@@ -247,7 +247,9 @@ func TestResourceAlertsLimitedToThreeThenRecoveryAndNewEpisode(t *testing.T) {
 		t.Fatalf("persistent alert repeated after third reminder: %v", *msgs)
 	}
 	setResourceProfile(t, st, "node-r", `{"mem_percent":30,"disk_percent":40,"cpu_usage_percent":15}`)
-	m.check()
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
 	if len(*msgs) != 12 {
 		t.Fatalf("recovery events=%d messages=%v want 3", len(*msgs), *msgs)
 	}
@@ -262,6 +264,49 @@ func TestResourceAlertsLimitedToThreeThenRecoveryAndNewEpisode(t *testing.T) {
 	}
 	if len(*msgs) != 15 {
 		t.Fatalf("new episode did not alert again: %v", *msgs)
+	}
+}
+
+func TestResourceRecoveryRequiresThreeConsecutiveBelowThresholdSamples(t *testing.T) {
+	m, st, msgs, _ := offlineFixture(t)
+	setResourceProfile(t, st, "node-flap", `{"mem_percent":95,"disk_percent":95,"cpu_usage_percent":95}`)
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
+	if len(*msgs) != 3 {
+		t.Fatalf("initial alerts=%d, want 3: %v", len(*msgs), *msgs)
+	}
+
+	// Disk dips below threshold twice, but a high sample between them must reset recovery.
+	setResourceProfile(t, st, "node-flap", `{"mem_percent":95,"disk_percent":89,"cpu_usage_percent":95}`)
+	m.check()
+	m.check()
+	if len(*msgs) != 3 {
+		t.Fatalf("recovered before three low samples: %v", *msgs)
+	}
+	setResourceProfile(t, st, "node-flap", `{"mem_percent":95,"disk_percent":91,"cpu_usage_percent":95}`)
+	m.check()
+	setResourceProfile(t, st, "node-flap", `{"mem_percent":95,"disk_percent":89,"cpu_usage_percent":95}`)
+	m.check()
+	m.check()
+	if len(*msgs) != 3 {
+		t.Fatalf("recovered after interrupted low sequence: %v", *msgs)
+	}
+	m.check()
+	if len(*msgs) != 4 || !strings.Contains((*msgs)[3], "resource_recovery") || !strings.Contains((*msgs)[3], "磁盘使用率") {
+		t.Fatalf("three consecutive low samples should recover only disk: %v", *msgs)
+	}
+
+	// After recovery, three consecutive high samples create a new episode.
+	setResourceProfile(t, st, "node-flap", `{"mem_percent":95,"disk_percent":91,"cpu_usage_percent":95}`)
+	m.check()
+	m.check()
+	if len(*msgs) != 4 {
+		t.Fatalf("new episode triggered before three high samples: %v", *msgs)
+	}
+	m.check()
+	if len(*msgs) != 5 || !strings.Contains((*msgs)[4], "resource_threshold") || !strings.Contains((*msgs)[4], "磁盘使用率") {
+		t.Fatalf("new episode did not trigger after three high samples: %v", *msgs)
 	}
 }
 
