@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,20 +33,20 @@ type Event struct {
 	Data     any    `json:"data,omitempty"`
 }
 type Manager struct {
-	Store        *storage.Store
-	Client       *http.Client
-	stop         chan struct{}
-	wg           sync.WaitGroup
-	mu           sync.Mutex
-	offline      map[string]*offlineState
-	clock        func() time.Time
-	sent         map[string]time.Time
-	strikeCount  map[string]int
-	lastSchedule string
+	Store          *storage.Store
+	Client         *http.Client
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	offline        map[string]*offlineState
+	clock          func() time.Time
+	strikeCount    map[string]int
+	resourceAlerts map[string]*resourceAlertState
+	lastSchedule   string
 }
 
 func New(s *storage.Store) *Manager {
-	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, sent: map[string]time.Time{}, strikeCount: map[string]int{}}
+	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
 	m.importOpenClawWebhook()
 	return m
 }
@@ -109,11 +110,12 @@ func (m *Manager) check() {
 		if json.Unmarshal([]byte(d.ProfileJSON), &p) != nil {
 			continue
 		}
-		mem, _ := p["mem_percent"].(float64)
-		disk, _ := p["disk_percent"].(float64)
-		cpu, _ := p["cpu_usage_percent"].(float64)
-		// 防抖逻辑：资源利用率需连续 3 次轮询（约 45 秒）超过阈值才触发告警
-		checkStrike := func(metric string, val float64, threshold float64, msg string) {
+		mem, hasMem := p["mem_percent"].(float64)
+		disk, hasDisk := p["disk_percent"].(float64)
+		cpu, hasCPU := p["cpu_usage_percent"].(float64)
+		// 防抖：连续 3 次轮询超过阈值后进入告警 episode；持续期间只在
+		// 触发、30 分钟和 2 小时提醒，恢复正常时发一次恢复通知。
+		checkStrike := func(metric string, val float64, threshold float64, label string) {
 			key := fmt.Sprintf("%s:%s", metric, d.Name)
 			m.mu.Lock()
 			if val >= threshold {
@@ -123,23 +125,90 @@ func (m *Manager) check() {
 			}
 			count := m.strikeCount[key]
 			m.mu.Unlock()
-
+			if val < threshold {
+				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false)
+				return
+			}
 			if count >= 3 {
-				m.emitOnce(key, Event{
-					Type:     "resource_threshold",
-					Device:   d.Name,
-					Severity: "warning",
-					Message:  msg,
-					At:       now,
-					Data:     map[string]any{"metric": metric, "value": val, "threshold": threshold, "strikes": count},
-				})
+				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, true)
 			}
 		}
 
-		checkStrike("mem", mem, 90, fmt.Sprintf("节点 %s 连续 45s 内存使用率超限: %.0f%%", d.Name, mem))
-		checkStrike("disk", disk, 90, fmt.Sprintf("节点 %s 磁盘使用率 %.0f%%", d.Name, disk))
-		checkStrike("cpu", cpu, 95, fmt.Sprintf("节点 %s 连续 45s CPU 使用率超限: %.0f%%", d.Name, cpu))
+		if hasMem {
+			checkStrike("mem", mem, 90, "内存使用率")
+		}
+		if hasDisk {
+			checkStrike("disk", disk, 90, "磁盘使用率")
+		}
+		if hasCPU {
+			checkStrike("cpu", cpu, 95, "CPU 使用率")
+		}
 	}
+}
+
+type resourceAlertState struct {
+	StartedAt int64
+	Sent      int
+	Value     float64
+	Threshold float64
+	Label     string
+	Metric    string
+	Device    string
+}
+
+func (m *Manager) updateResourceAlert(key, metric, device string, value, threshold float64, label string, now int64, over bool) {
+	var event *Event
+	m.mu.Lock()
+	state := m.resourceAlerts[key]
+	if !over {
+		if state != nil {
+			delete(m.resourceAlerts, key)
+			e := Event{Type: "resource_recovery", Device: device, Severity: "info", Message: fmt.Sprintf("节点 %s %s 已恢复正常：%.0f%%（阈值 %.0f%%）", device, label, value, threshold), At: now, Data: map[string]any{"metric": metric, "value": value, "threshold": threshold, "alerts_sent": state.Sent, "duration_seconds": now - state.StartedAt}}
+			event = &e
+		}
+		m.mu.Unlock()
+		if event != nil {
+			m.emit(*event)
+		}
+		return
+	}
+	if state == nil {
+		state = &resourceAlertState{StartedAt: now, Value: value, Threshold: threshold, Label: label, Metric: metric, Device: device}
+		m.resourceAlerts[key] = state
+	}
+	state.Value = value
+	state.Threshold = threshold
+	due := []int64{0, 30 * 60, 2 * 60 * 60}
+	if state.Sent < 3 && now-state.StartedAt >= due[state.Sent] {
+		state.Sent++
+		stage := state.Sent
+		message := fmt.Sprintf("节点 %s %s 超限：%.0f%%（阈值 %.0f%%）", device, label, value, threshold)
+		if stage == 2 {
+			message += "，已持续 30 分钟"
+		}
+		if stage == 3 {
+			message += "，已持续 2 小时；后续纳入早晚报告，不再重复提醒"
+		}
+		e := Event{Type: "resource_threshold", Device: device, Severity: "warning", Message: message, At: now, Data: map[string]any{"metric": metric, "value": value, "threshold": threshold, "alert": stage, "alerts_sent": stage, "started_at": state.StartedAt}}
+		event = &e
+	}
+	m.mu.Unlock()
+	if event != nil {
+		m.emit(*event)
+	}
+}
+
+func (m *Manager) persistentResourceIssues() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	issues := []string{}
+	for _, st := range m.resourceAlerts {
+		if st.Sent >= 3 {
+			issues = append(issues, fmt.Sprintf("%s %s %.0f%%（阈值 %.0f%%，已提醒 3 次）", st.Device, st.Label, st.Value, st.Threshold))
+		}
+	}
+	sort.Strings(issues)
+	return issues
 }
 
 // offlineAlertSteps are the offline durations (seconds) at which a node_offline
@@ -223,17 +292,6 @@ func humanDuration(sec int64) string {
 	return fmt.Sprintf("%d 天 %d 小时", d, h)
 }
 
-func (m *Manager) emitOnce(key string, e Event) {
-	m.mu.Lock()
-	last := m.sent[key]
-	if !last.IsZero() && time.Since(last) < 30*time.Minute {
-		m.mu.Unlock()
-		return
-	}
-	m.sent[key] = time.Now()
-	m.mu.Unlock()
-	m.emit(e)
-}
 func (m *Manager) emit(e Event) {
 	targets, _ := m.Store.ListWebhookTargets()
 	payload, _ := json.Marshal(e)
@@ -330,5 +388,9 @@ func (m *Manager) checkSchedule(devices []storage.DeviceRecord, now int64) {
 	if len(offlineLines) > 0 {
 		msg += "\n离线节点：" + strings.Join(offlineLines, "、")
 	}
-	m.emit(Event{Type: "scheduled_report", Severity: "info", Message: msg, At: now, Data: map[string]any{"report": "daily", "period": map[bool]string{true: "morning", false: "evening"}[minute == 510], "online": online, "offline": offline, "offline_devices": offlineNames}})
+	resourceIssues := m.persistentResourceIssues()
+	if len(resourceIssues) > 0 {
+		msg += "\n持续资源告警：" + strings.Join(resourceIssues, "、")
+	}
+	m.emit(Event{Type: "scheduled_report", Severity: "info", Message: msg, At: now, Data: map[string]any{"report": "daily", "period": map[bool]string{true: "morning", false: "evening"}[minute == 510], "online": online, "offline": offline, "offline_devices": offlineNames, "resource_issues": resourceIssues}})
 }

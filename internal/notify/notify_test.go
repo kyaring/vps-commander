@@ -205,3 +205,78 @@ func TestWebhookAuditHasSystemAttribution(t *testing.T) {
 		t.Fatalf("unexpected system audit: %q/%q/%q/%q/%q", actorType, actorID, actorName, transport, result)
 	}
 }
+
+func setResourceProfile(t *testing.T, st *storage.Store, name, profile string) {
+	t.Helper()
+	_, err := st.DB.Exec(`INSERT INTO devices(name,status,is_local,profile_json,last_heartbeat,created_at,updated_at) VALUES(?,'online',0,?,1,1,1) ON CONFLICT(name) DO UPDATE SET status='online',profile_json=excluded.profile_json`, name, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResourceAlertsLimitedToThreeThenRecoveryAndNewEpisode(t *testing.T) {
+	m, st, msgs, clock := offlineFixture(t)
+	setResourceProfile(t, st, "node-r", `{"mem_percent":95,"disk_percent":93,"cpu_usage_percent":98}`)
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
+	if len(*msgs) != 3 {
+		t.Fatalf("initial threshold alerts=%d messages=%v want 3", len(*msgs), *msgs)
+	}
+	if !strings.Contains((*msgs)[0], "resource_threshold") {
+		t.Fatalf("initial event=%q", (*msgs)[0])
+	}
+	*clock = clock.Add(29 * time.Minute)
+	m.check()
+	if len(*msgs) != 3 {
+		t.Fatalf("alert before 30m: %v", *msgs)
+	}
+	*clock = clock.Add(2 * time.Minute)
+	m.check()
+	if len(*msgs) != 6 {
+		t.Fatalf("30m reminder count=%d messages=%v", len(*msgs), *msgs)
+	}
+	*clock = clock.Add(90 * time.Minute)
+	m.check()
+	if len(*msgs) != 9 {
+		t.Fatalf("2h reminder count=%d messages=%v", len(*msgs), *msgs)
+	}
+	*clock = clock.Add(3 * time.Hour)
+	m.check()
+	if len(*msgs) != 9 {
+		t.Fatalf("persistent alert repeated after third reminder: %v", *msgs)
+	}
+	setResourceProfile(t, st, "node-r", `{"mem_percent":30,"disk_percent":40,"cpu_usage_percent":15}`)
+	m.check()
+	if len(*msgs) != 12 {
+		t.Fatalf("recovery events=%d messages=%v want 3", len(*msgs), *msgs)
+	}
+	for _, msg := range (*msgs)[9:] {
+		if !strings.Contains(msg, "resource_recovery") {
+			t.Errorf("expected recovery event: %q", msg)
+		}
+	}
+	setResourceProfile(t, st, "node-r", `{"mem_percent":95,"disk_percent":93,"cpu_usage_percent":98}`)
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
+	if len(*msgs) != 15 {
+		t.Fatalf("new episode did not alert again: %v", *msgs)
+	}
+}
+
+func TestPersistentResourceAlertsAppearInScheduledReport(t *testing.T) {
+	m, st, msgs, clock := offlineFixture(t)
+	setResourceProfile(t, st, "node-r", `{"mem_percent":95,"disk_percent":40,"cpu_usage_percent":10}`)
+	for i := 0; i < 3; i++ {
+		m.check()
+	}
+	*clock = time.Date(2026, 10, 11, 8, 29, 0, 0, time.Local)
+	m.check() // overdue 30-minute reminder
+	m.check() // overdue 2-hour reminder, third and final
+	*clock = time.Date(2026, 10, 11, 8, 30, 0, 0, time.Local)
+	m.check()
+	if len(*msgs) < 2 || !strings.Contains((*msgs)[len(*msgs)-1], "scheduled_report") || !strings.Contains((*msgs)[len(*msgs)-1], "持续资源告警") || !strings.Contains((*msgs)[len(*msgs)-1], "node-r") {
+		t.Fatalf("scheduled report omitted persistent resource alert: %v", *msgs)
+	}
+}
