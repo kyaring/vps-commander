@@ -429,6 +429,54 @@ func TestWebhookRetriesOnceAndTracksConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestAsyncWebhookDeliveryIsNonBlockingAndStopDrainsQueue(t *testing.T) {
+	st, err := storage.Open(t.TempDir() + "/async-webhook.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var mu sync.Mutex
+	var attempts int
+	var requestTimes []time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		requestTimes = append(requestTimes, time.Now())
+		current := attempts
+		mu.Unlock()
+		if current == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "async", Name: "async", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	m := New(st)
+	m.Client = srv.Client()
+	defer m.Stop()
+	m.Start()
+
+	started := time.Now()
+	m.emit(Event{Type: "async-test", Severity: "info", Message: "first", At: started.Unix()})
+	m.emit(Event{Type: "async-test", Severity: "info", Message: "second", At: started.Unix()})
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("enqueue blocked for %s", elapsed)
+	}
+	// Stop must wait for the in-flight retry and drain the queued second event.
+	m.Stop()
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 3 {
+		t.Fatalf("webhook attempts=%d, want 3 (one retry plus queued event)", attempts)
+	}
+	if len(requestTimes) != 3 || requestTimes[1].Sub(requestTimes[0]) < 900*time.Millisecond {
+		t.Fatalf("retry was not delayed: request times=%v", requestTimes)
+	}
+}
+
 func TestNotificationSettingsChangeThresholdsAndReportTimes(t *testing.T) {
 	m, st, msgs, clock := offlineFixture(t)
 	settings := storage.DefaultNotificationSettings()

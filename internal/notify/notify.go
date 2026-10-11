@@ -34,22 +34,39 @@ type Event struct {
 	At       int64  `json:"timestamp"`
 	Data     any    `json:"data,omitempty"`
 }
+
+const (
+	notificationQueueCapacity = 256
+	webhookRetryDelay         = time.Second
+	notificationShutdownLimit = 10 * time.Second
+)
+
 type Manager struct {
-	Store          *storage.Store
-	Client         *http.Client
-	stop           chan struct{}
-	wg             sync.WaitGroup
-	mu             sync.Mutex
-	offline        map[string]*offlineState
-	clock          func() time.Time
-	strikeCount    map[string]int
-	recoveryCount  map[string]int
-	resourceAlerts map[string]*resourceAlertState
-	lastSchedule   string
+	Store           *storage.Store
+	Client          *http.Client
+	stop            chan struct{}
+	deliveryStop    chan struct{}
+	wg              sync.WaitGroup
+	deliveryWG      sync.WaitGroup
+	startOnce       sync.Once
+	stopOnce        sync.Once
+	mu              sync.Mutex
+	deliveryQueue   chan Event
+	deliveryCtx     context.Context
+	deliveryCancel  context.CancelFunc
+	deliveryStarted bool
+	stopRequested   bool
+	stopping        bool
+	offline         map[string]*offlineState
+	clock           func() time.Time
+	strikeCount     map[string]int
+	recoveryCount   map[string]int
+	resourceAlerts  map[string]*resourceAlertState
+	lastSchedule    string
 }
 
 func New(s *storage.Store) *Manager {
-	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
+	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), deliveryStop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
 	m.loadResourceAlertStates()
 	m.importOpenClawWebhook()
 	return m
@@ -126,8 +143,55 @@ func (m *Manager) importOpenClawWebhook() {
 	}
 	_ = m.Store.SaveWebhookTarget(storage.WebhookTarget{ID: "openclaw-wecom", Name: "OpenClaw 企业微信", Type: "wecom", URL: string(match[1]), Config: "{}", Enabled: true})
 }
-func (m *Manager) Start() { m.wg.Add(1); go m.loop() }
-func (m *Manager) Stop()  { close(m.stop); m.wg.Wait() }
+func (m *Manager) Start() {
+	m.startOnce.Do(func() {
+		m.mu.Lock()
+		if m.stopRequested {
+			m.mu.Unlock()
+			return
+		}
+		m.deliveryQueue = make(chan Event, notificationQueueCapacity)
+		m.deliveryCtx, m.deliveryCancel = context.WithCancel(context.Background())
+		m.deliveryStarted = true
+		m.wg.Add(1)
+		m.deliveryWG.Add(1)
+		m.mu.Unlock()
+		go m.deliveryLoop()
+		go m.loop()
+	})
+}
+
+func (m *Manager) Stop() {
+	var shutdownTimer *time.Timer
+	m.stopOnce.Do(func() {
+		m.mu.Lock()
+		m.stopRequested = true
+		m.mu.Unlock()
+		close(m.stop)
+		m.wg.Wait() // let the polling loop finish enqueuing its final events
+		m.mu.Lock()
+		m.stopping = true
+		cancel := m.deliveryCancel
+		m.mu.Unlock()
+		close(m.deliveryStop)
+		if cancel != nil {
+			// Allow in-flight and queued work a bounded grace period, then cancel
+			// HTTP requests and retry waits so shutdown cannot hang on bad targets.
+			shutdownTimer = time.AfterFunc(notificationShutdownLimit, cancel)
+		}
+	})
+	m.deliveryWG.Wait()
+	if shutdownTimer != nil {
+		shutdownTimer.Stop()
+	}
+	m.mu.Lock()
+	cancel := m.deliveryCancel
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (m *Manager) loop() {
 	defer m.wg.Done()
 	t := time.NewTicker(15 * time.Second)
@@ -142,6 +206,38 @@ func (m *Manager) loop() {
 		}
 	}
 }
+func (m *Manager) deliveryLoop() {
+	defer m.deliveryWG.Done()
+	for {
+		// Prefer shutdown as soon as it is requested; otherwise a ready queue
+		// could keep winning the select and bypass the bounded drain below.
+		select {
+		case <-m.deliveryStop:
+			m.drainDeliveryQueue()
+			return
+		default:
+		}
+		select {
+		case event := <-m.deliveryQueue:
+			m.deliverEvent(m.deliveryCtx, event)
+		case <-m.deliveryStop:
+			m.drainDeliveryQueue()
+			return
+		}
+	}
+}
+
+func (m *Manager) drainDeliveryQueue() {
+	for m.deliveryCtx.Err() == nil {
+		select {
+		case event := <-m.deliveryQueue:
+			m.deliverEvent(m.deliveryCtx, event)
+		default:
+			return
+		}
+	}
+}
+
 func (m *Manager) notificationSettings() storage.NotificationSettings {
 	defaults := storage.DefaultNotificationSettings()
 	if m.Store == nil {
@@ -415,7 +511,37 @@ func humanDuration(sec int64) string {
 }
 
 func (m *Manager) emit(e Event) {
-	targets, _ := m.Store.ListWebhookTargets()
+	m.mu.Lock()
+	if m.stopping {
+		m.mu.Unlock()
+		log.Printf("dropping notification during shutdown: type=%s device=%s", e.Type, e.Device)
+		return
+	}
+	if m.deliveryStarted {
+		select {
+		case m.deliveryQueue <- e:
+			m.mu.Unlock()
+		default:
+			m.mu.Unlock()
+			log.Printf("notification queue full; dropping event: type=%s device=%s", e.Type, e.Device)
+		}
+		return
+	}
+	m.mu.Unlock()
+	// Direct calls before Start remain synchronous for callers that use the
+	// manager without its lifecycle; production starts the queue worker first.
+	m.deliverEvent(context.Background(), e)
+}
+
+func (m *Manager) deliverEvent(parent context.Context, e Event) {
+	if m.Store == nil {
+		return
+	}
+	targets, err := m.Store.ListWebhookTargets()
+	if err != nil {
+		log.Printf("list notification targets: %v", err)
+		return
+	}
 	payload, _ := json.Marshal(e)
 	for _, t := range targets {
 		if !t.Enabled {
@@ -434,30 +560,44 @@ func (m *Manager) emit(e Event) {
 		}
 		delivered, statusCode, failure := false, 0, ""
 		for attempt := 0; attempt < 2; attempt++ {
+			if parent.Err() != nil {
+				failure = "notification delivery canceled"
+				break
+			}
 			req, err := http.NewRequest(http.MethodPost, t.URL, bytes.NewReader(body))
 			if err != nil {
 				failure = "request creation failed"
-				continue
-			}
-			req.Header.Set("Content-Type", "application/json")
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			req = req.WithContext(ctx)
-			resp, err := m.Client.Do(req)
-			if err != nil {
-				failure = "network request failed"
+			} else {
+				ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+				resp, requestErr := m.Client.Do(req.WithContext(ctx))
+				if requestErr != nil {
+					failure = "network request failed"
+				} else {
+					statusCode = resp.StatusCode
+					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+					_ = resp.Body.Close()
+					if statusCode >= 200 && statusCode < 300 {
+						delivered = true
+						failure = ""
+					} else {
+						failure = fmt.Sprintf("webhook http %d", statusCode)
+					}
+				}
 				cancel()
-				continue
+				if delivered {
+					break
+				}
 			}
-			statusCode = resp.StatusCode
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			_ = resp.Body.Close()
-			cancel()
-			if statusCode >= 200 && statusCode < 300 {
-				delivered = true
-				failure = ""
-				break
+			if attempt == 0 {
+				timer := time.NewTimer(webhookRetryDelay)
+				select {
+				case <-parent.Done():
+					timer.Stop()
+					failure = "notification delivery canceled"
+					attempt = 2
+				case <-timer.C:
+				}
 			}
-			failure = fmt.Sprintf("webhook http %d", statusCode)
 		}
 		if !delivered && failure == "" {
 			failure = "webhook delivery failed"
