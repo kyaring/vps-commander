@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"regexp"
@@ -49,8 +50,65 @@ type Manager struct {
 
 func New(s *storage.Store) *Manager {
 	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
+	m.loadResourceAlertStates()
 	m.importOpenClawWebhook()
 	return m
+}
+
+func (m *Manager) loadResourceAlertStates() {
+	if m.Store == nil {
+		return
+	}
+	states, err := m.Store.ListResourceAlertStates()
+	if err != nil {
+		log.Printf("load resource alert state: %v", err)
+		return
+	}
+	for _, v := range states {
+		key := resourceAlertKey(v.Metric, v.Device)
+		if v.StrikeCount > 0 {
+			m.strikeCount[key] = v.StrikeCount
+		}
+		if v.RecoveryCount > 0 {
+			m.recoveryCount[key] = v.RecoveryCount
+		}
+		if v.Active {
+			m.resourceAlerts[key] = &resourceAlertState{StartedAt: v.StartedAt, Sent: v.Sent, Value: v.Value, Threshold: v.Threshold, Label: v.Label, Metric: v.Metric, Device: v.Device}
+		}
+	}
+}
+
+func resourceAlertKey(metric, device string) string {
+	return metric + "\x00" + device
+}
+
+func (m *Manager) persistResourceAlertState(key, metric, device string) {
+	if m.Store == nil {
+		return
+	}
+	m.mu.Lock()
+	strikeCount := m.strikeCount[key]
+	recoveryCount := m.recoveryCount[key]
+	state := m.resourceAlerts[key]
+	record := storage.ResourceAlertState{Device: device, Metric: metric, StrikeCount: strikeCount, RecoveryCount: recoveryCount}
+	if state != nil {
+		record.Label = state.Label
+		record.StartedAt = state.StartedAt
+		record.Sent = state.Sent
+		record.Value = state.Value
+		record.Threshold = state.Threshold
+		record.Active = true
+	}
+	m.mu.Unlock()
+	var err error
+	if state == nil && strikeCount == 0 && recoveryCount == 0 {
+		err = m.Store.DeleteResourceAlertState(device, metric)
+	} else {
+		err = m.Store.SaveResourceAlertState(record)
+	}
+	if err != nil {
+		log.Printf("persist resource alert state for %s/%s: %v", device, metric, err)
+	}
 }
 
 func (m *Manager) importOpenClawWebhook() {
@@ -135,35 +193,51 @@ func (m *Manager) check() {
 		// 防抖：连续 3 次轮询超过阈值后进入告警 episode；持续期间只在
 		// 触发、30 分钟和 2 小时提醒，恢复正常时发一次恢复通知。
 		checkStrike := func(metric string, val float64, threshold float64, label string) {
-			key := fmt.Sprintf("%s:%s", metric, d.Name)
+			key := resourceAlertKey(metric, d.Name)
 			m.mu.Lock()
+			oldStrike, oldRecovery := m.strikeCount[key], m.recoveryCount[key]
 			if val >= threshold {
-				m.strikeCount[key]++
+				if m.strikeCount[key] < 3 {
+					m.strikeCount[key]++
+				}
 				m.recoveryCount[key] = 0
 			} else {
 				m.strikeCount[key] = 0
-				if _, active := m.resourceAlerts[key]; active {
+				if _, active := m.resourceAlerts[key]; active && m.recoveryCount[key] < 3 {
 					m.recoveryCount[key]++
-				} else {
+				} else if !active {
 					m.recoveryCount[key] = 0
 				}
 			}
 			count := m.strikeCount[key]
 			recoveryCount := m.recoveryCount[key]
+			stateChanged := oldStrike != count || oldRecovery != recoveryCount
 			m.mu.Unlock()
+
 			if val < threshold {
-				// Do not end an active episode on one transient low reading. Three
-				// consecutive below-threshold samples are required for recovery.
 				if recoveryCount >= 3 {
 					m.mu.Lock()
 					m.recoveryCount[key] = 0
 					m.mu.Unlock()
-					m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false, settings.ResourceReminderMinutes)
+					event := m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, false, settings.ResourceReminderMinutes)
+					m.persistResourceAlertState(key, metric, d.Name)
+					if event != nil {
+						m.emit(*event)
+					}
+				} else if stateChanged {
+					m.persistResourceAlertState(key, metric, d.Name)
 				}
 				return
 			}
+			var event *Event
 			if count >= 3 {
-				m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, true, settings.ResourceReminderMinutes)
+				event = m.updateResourceAlert(key, metric, d.Name, val, threshold, label, now, true, settings.ResourceReminderMinutes)
+			}
+			if stateChanged || event != nil {
+				m.persistResourceAlertState(key, metric, d.Name)
+			}
+			if event != nil {
+				m.emit(*event)
 			}
 		}
 
@@ -189,7 +263,7 @@ type resourceAlertState struct {
 	Device    string
 }
 
-func (m *Manager) updateResourceAlert(key, metric, device string, value, threshold float64, label string, now int64, over bool, reminderMinutes []int) {
+func (m *Manager) updateResourceAlert(key, metric, device string, value, threshold float64, label string, now int64, over bool, reminderMinutes []int) *Event {
 	var event *Event
 	m.mu.Lock()
 	state := m.resourceAlerts[key]
@@ -200,10 +274,7 @@ func (m *Manager) updateResourceAlert(key, metric, device string, value, thresho
 			event = &e
 		}
 		m.mu.Unlock()
-		if event != nil {
-			m.emit(*event)
-		}
-		return
+		return event
 	}
 	if state == nil {
 		state = &resourceAlertState{StartedAt: now, Value: value, Threshold: threshold, Label: label, Metric: metric, Device: device}
@@ -231,9 +302,7 @@ func (m *Manager) updateResourceAlert(key, metric, device string, value, thresho
 		event = &e
 	}
 	m.mu.Unlock()
-	if event != nil {
-		m.emit(*event)
-	}
+	return event
 }
 
 func (m *Manager) persistentResourceIssues() []string {

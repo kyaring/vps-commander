@@ -95,7 +95,10 @@ func (s *Store) init() error {
 	if err := s.migrateAudit(); err != nil {
 		return err
 	}
-	return s.migrateOAuth()
+	if err := s.migrateOAuth(); err != nil {
+		return err
+	}
+	return s.migrateResourceAlertStates()
 }
 
 type MCPService struct {

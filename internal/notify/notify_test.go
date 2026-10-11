@@ -467,3 +467,105 @@ func TestNotificationSettingsChangeThresholdsAndReportTimes(t *testing.T) {
 		t.Fatalf("custom report time was ignored: %v", *msgs)
 	}
 }
+
+func TestResourceAlertStateResumesAcrossRestarts(t *testing.T) {
+	dbPath := t.TempDir() + "/resource-restart.db"
+	var mu sync.Mutex
+	var events []Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("decode event: %v", err)
+		}
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	openStore := func() *storage.Store {
+		t.Helper()
+		st, err := storage.Open(dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	st := openStore()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "resource-test", Name: "resource-test", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO devices(name,status,is_local,last_seen,last_heartbeat,profile_json,created_at,updated_at) VALUES('resource-node','online',0,0,0,'{"mem_percent":95}',0,0)`); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 11, 3, 0, 0, 0, time.Local)
+	newManager := func(st *storage.Store) *Manager {
+		m := New(st)
+		m.Client = srv.Client()
+		m.clock = func() time.Time { return now }
+		return m
+	}
+
+	m := newManager(st)
+	m.check() // strike 1
+	now = now.Add(15 * time.Second)
+	m.check() // strike 2, persisted before restart
+	if err := st.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st = openStore()
+	m = newManager(st)
+	now = now.Add(15 * time.Second)
+	m.check() // strike 3: first alert, not a reset to strike 1
+	mu.Lock()
+	if len(events) != 1 || events[0].Type != "resource_threshold" {
+		mu.Unlock()
+		t.Fatalf("after strike-state restart, events = %#v", events)
+	}
+	mu.Unlock()
+	if err := st.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st = openStore()
+	m = newManager(st)
+	now = time.Date(2026, 10, 11, 3, 30, 31, 0, time.Local)
+	m.check() // persisted Sent=1 means this is alert stage 2
+	mu.Lock()
+	if len(events) != 2 || !strings.Contains(events[1].Message, "已持续 30 分钟") {
+		mu.Unlock()
+		t.Fatalf("after active-alert restart, events = %#v", events)
+	}
+	mu.Unlock()
+
+	if _, err := st.DB.Exec(`UPDATE devices SET profile_json='{"mem_percent":80}' WHERE name='resource-node'`); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(15 * time.Second)
+	m.check() // recovery 1
+	now = now.Add(15 * time.Second)
+	m.check() // recovery 2, persisted
+	if err := st.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st = openStore()
+	m = newManager(st)
+	now = now.Add(15 * time.Second)
+	m.check() // recovery 3; closes the existing episode
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 3 || events[2].Type != "resource_recovery" {
+		t.Fatalf("after recovery-state restart, events = %#v", events)
+	}
+	var count int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM resource_alert_states`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("persisted resource states after recovery = %d, want 0", count)
+	}
+	_ = st.DB.Close()
+}
