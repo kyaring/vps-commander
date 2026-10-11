@@ -144,6 +144,39 @@ func TestOfflineFirstSeenLateIsQuiet(t *testing.T) {
 	}
 }
 
+func TestOfflineFirstSeenLateUsesConfiguredReminderSchedule(t *testing.T) {
+	newConfigured := func(t *testing.T) (*Manager, *storage.Store, *[]string, *time.Time, int64) {
+		t.Helper()
+		m, st, msgs, clock := offlineFixture(t)
+		settings := storage.DefaultNotificationSettings()
+		settings.OfflineReminderMinutes = []int{5, 20, 90}
+		if err := st.SetNotificationSettings(settings); err != nil {
+			t.Fatal(err)
+		}
+		start := clock.Unix()
+		setDevice(t, st, "node-configured", "offline", start)
+		return m, st, msgs, clock, start
+	}
+
+	t.Run("just before derived cutoff sends one catch-up alert", func(t *testing.T) {
+		m, _, msgs, clock, start := newConfigured(t)
+		*clock = time.Unix(start, 0).Add(179 * time.Minute)
+		m.check()
+		if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "后续不再重复提醒") || !strings.Contains((*msgs)[0], "2 小时 59 分钟") {
+			t.Fatalf("expected one current-stage catch-up alert at 179m, got %v", *msgs)
+		}
+	})
+
+	t.Run("at derived cutoff stays quiet", func(t *testing.T) {
+		m, _, msgs, clock, start := newConfigured(t)
+		*clock = time.Unix(start, 0).Add(180 * time.Minute)
+		m.check()
+		if len(*msgs) != 0 {
+			t.Fatalf("expected quiet at configured 180m cutoff, got %v", *msgs)
+		}
+	})
+}
+
 func TestDailyReportListsOfflineNodes(t *testing.T) {
 	m, st, msgs, clock := offlineFixture(t)
 	*clock = time.Date(2026, 10, 11, 8, 30, 0, 0, time.Local)

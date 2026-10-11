@@ -254,9 +254,21 @@ func (m *Manager) persistentResourceIssues() []string {
 // reminders. After the last one the node is only listed in the daily report.
 var offlineAlertSteps = []int64{60, 10 * 60, 60 * 60}
 
-// offlineAlertLateStart: an offline episode first observed after this long
-// (e.g. right after a Hub restart) sends no alerts; the daily report covers it.
-const offlineAlertLateStart int64 = 2 * 60 * 60
+// offlineAlertLateStart derives the restart catch-up cutoff from the configured
+// reminder schedule. Keep the historical default behavior: with a final reminder
+// at 60 minutes, episodes first observed after 120 minutes stay quiet.
+func offlineAlertLateStart(alertSteps []int64) int64 {
+	if len(alertSteps) == 0 {
+		alertSteps = offlineAlertSteps
+	}
+	latest := int64(0)
+	for _, step := range alertSteps {
+		if step > latest {
+			latest = step
+		}
+	}
+	return latest * 2
+}
 
 type offlineState struct {
 	since    int64
@@ -287,7 +299,7 @@ func (m *Manager) handleOffline(name string, since, now int64, alertSteps []int6
 	if st == nil || st.since != since {
 		st = &offlineState{since: since}
 		m.offline[name] = st
-		if elapsed >= offlineAlertLateStart {
+		if elapsed >= offlineAlertLateStart(alertSteps) {
 			st.sent = len(alertSteps)
 		}
 	}
