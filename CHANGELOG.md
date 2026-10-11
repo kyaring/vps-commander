@@ -2,7 +2,16 @@
 
 格式：按发布 tag 倒序。完整提交历史见 GitHub Releases。
 
-## v1.1.33（2026-10-11，待发布）
+## v1.1.35（2026-10-11）
+
+- 通知系统 v1：通道（Webhook、Telegram Bot；QQ 官方机器人待确认主动推送能力，暂不投递）、事件模板、任务三层配置，面板新增“通知系统”管理与投递记录（每次尝试结果、单条手动重试）。
+- 自定义事件：`POST /api/v1/events`（`events:emit` scope），按令牌限流 30 次/分钟，支持 `Idempotency-Key`；内置“开发完成”“审核完成”模板与 `scripts/emit-notification-event.py`、`scripts/notify-agent-completion.sh`。
+- 任务策略：重复间隔、单次事件周期内最多提醒次数（恢复后重置）、时区静默时段、合并窗口、恢复事件关闭告警周期及冷却。
+- 投递：持久化 outbox，至少一次投递，失败按 1s/5s/30s 重试，停机中断的投递在重启后继续；Telegram 凭据使用 `VPS_COMMANDER_NOTIFICATION_KEY` 加密存储。
+- 兼容：旧 Webhook 目标自动迁移为通道 + 只读兼容任务（仅内置事件）；内置事件默认仍走旧发送器（`VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE=legacy`），可选 `shadow` / `v1`。
+- 审计：命令执行完成但退出码非 0 记为 `exit_nonzero`，`error` 仅表示 Hub / agent / 工具失败；stderr 为空时保存 stdout 尾部；面板可按 `exit_nonzero` 筛选。新增 `docs/ops/agent-exec-guidelines.md`。
+
+## v1.1.33（2026-10-11）
 
 - OAuth：刷新令牌滑动有效期，闲置 30 天失效，绝对有效期最长 360 天；授权确认提交防双击；忽略未知扩展 scope（如 `offline_access`），仍拒绝 `admin`；授权记录显示最后使用时间，审计日志可按 OAuth 客户端筛选。
 - 审计：系统 Webhook 事件统一归属 `system:notify` / `internal`，启动时幂等修正旧记录；记录 legacy 鉴权成功与拒绝，安全页展示近 7 天使用情况并提供无需重启的 legacy 软停用开关。
