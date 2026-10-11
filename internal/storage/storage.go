@@ -66,6 +66,9 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) init() error {
+	if _, err := s.DB.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return err
+	}
 	if _, err := s.DB.Exec("PRAGMA journal_mode = WAL"); err != nil {
 		return err
 	}
@@ -98,7 +101,10 @@ func (s *Store) init() error {
 	if err := s.migrateOAuth(); err != nil {
 		return err
 	}
-	return s.migrateResourceAlertStates()
+	if err := s.migrateResourceAlertStates(); err != nil {
+		return err
+	}
+	return s.migrateNotificationV1()
 }
 
 type MCPService struct {
@@ -752,17 +758,56 @@ func (s *Store) SaveWebhookTarget(v WebhookTarget) error {
 		v.CreatedAt = now
 	}
 	v.UpdatedAt = now
-	_, err := s.DB.Exec(`INSERT INTO webhook_targets(id,name,type,url,config_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,type=excluded.type,url=excluded.url,config_json=excluded.config_json,enabled=excluded.enabled,updated_at=excluded.updated_at`, v.ID, v.Name, v.Type, v.URL, v.Config, boolInt(v.Enabled), v.CreatedAt, v.UpdatedAt)
-	return err
-}
-func (s *Store) DeleteWebhookTarget(id string) error {
-	_, err := s.DB.Exec(`DELETE FROM webhook_targets WHERE id=?`, id)
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.Exec(`DELETE FROM webhook_delivery_state WHERE target_id=?`, id)
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO webhook_targets(id,name,type,url,config_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,type=excluded.type,url=excluded.url,config_json=excluded.config_json,enabled=excluded.enabled,updated_at=excluded.updated_at`, v.ID, v.Name, v.Type, v.URL, v.Config, boolInt(v.Enabled), v.CreatedAt, v.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if err := syncLegacyNotificationTargetTx(tx, v); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func (s *Store) DeleteWebhookTarget(id string) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM webhook_targets WHERE id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM webhook_delivery_state WHERE target_id=?`, id); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	if _, err := tx.Exec(`UPDATE notification_channels SET enabled=0,updated_at=? WHERE legacy_webhook_id=?`, now, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE notification_tasks SET enabled=0,updated_at=? WHERE id=?`, now, legacyTaskID(id)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+func syncLegacyNotificationTargetTx(tx *sql.Tx, v WebhookTarget) error {
+	now := time.Now().Unix()
+	config := v.Config
+	if config == "" {
+		config = "{}"
+	}
+	if _, err := tx.Exec(`INSERT INTO notification_channels(id,name,type,endpoint,config_json,enabled,created_at,updated_at,last_status,legacy_webhook_id,legacy_type)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(legacy_webhook_id) DO UPDATE SET name=excluded.name,endpoint=excluded.endpoint,config_json=excluded.config_json,enabled=excluded.enabled,updated_at=excluded.updated_at,legacy_type=excluded.legacy_type`, legacyChannelID(v.ID), v.Name, "webhook", v.URL, config, boolInt(v.Enabled), v.CreatedAt, v.UpdatedAt, "unknown", v.ID, v.Type); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO notification_tasks(id,name,channel_id,template_id,enabled,event_types_json,severities_json,policy_json,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,channel_id=excluded.channel_id,enabled=excluded.enabled,updated_at=excluded.updated_at`, legacyTaskID(v.ID), "Legacy webhook: "+v.Name, legacyChannelID(v.ID), legacyEventTemplateID, boolInt(v.Enabled), `["*"]`, `["P1","P2","P3","P4"]`, `{"legacy_compat":true}`, v.CreatedAt, now)
 	return err
 }
+
 func (s *Store) ListWebhookTargets() ([]WebhookTarget, error) {
 	rows, err := s.DB.Query(`SELECT w.id,w.name,w.type,w.url,COALESCE(w.config_json,''),w.enabled,w.created_at,w.updated_at,COALESCE(d.consecutive_failures,0),COALESCE(d.last_error,''),COALESCE(d.last_status,0),COALESCE(d.updated_at,0) FROM webhook_targets w LEFT JOIN webhook_delivery_state d ON d.target_id=w.id ORDER BY w.id`)
 	if err != nil {
@@ -822,8 +867,26 @@ func (s *Store) SetNotificationSettings(v NotificationSettings) error {
 }
 
 func (s *Store) RecordWebhookDelivery(targetID string, status int, failure string) error {
-	_, err := s.DB.Exec(`INSERT INTO webhook_delivery_state(target_id,consecutive_failures,last_error,last_status,updated_at) VALUES(?,CASE WHEN ?='' THEN 0 ELSE 1 END,?,?,?) ON CONFLICT(target_id) DO UPDATE SET consecutive_failures=CASE WHEN excluded.last_error='' THEN 0 ELSE webhook_delivery_state.consecutive_failures+1 END,last_error=excluded.last_error,last_status=excluded.last_status,updated_at=excluded.updated_at`, targetID, failure, failure, status, time.Now().Unix())
-	return err
+	now := time.Now().Unix()
+	if failure == "" && (status < 200 || status >= 300) {
+		failure = fmt.Sprintf("webhook http %d", status)
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO webhook_delivery_state(target_id,consecutive_failures,last_error,last_status,updated_at) VALUES(?,CASE WHEN ?='' THEN 0 ELSE 1 END,?,?,?) ON CONFLICT(target_id) DO UPDATE SET consecutive_failures=CASE WHEN excluded.last_error='' THEN 0 ELSE webhook_delivery_state.consecutive_failures+1 END,last_error=excluded.last_error,last_status=excluded.last_status,updated_at=excluded.updated_at`, targetID, failure, failure, status, now); err != nil {
+		return err
+	}
+	channelStatus := "failed"
+	if failure == "" && status >= 200 && status < 300 {
+		channelStatus = "success"
+	}
+	if _, err := tx.Exec(`UPDATE notification_channels SET last_attempt_at=?,last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,last_status=?,last_http_status=?,consecutive_failures=CASE WHEN ?='success' THEN 0 ELSE consecutive_failures+1 END,last_error=?,updated_at=? WHERE legacy_webhook_id=?`, now, channelStatus, now, channelStatus, status, channelStatus, failure, now, targetID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) LegacyKeyDisabled() (bool, error) {
