@@ -72,23 +72,27 @@ type NotificationEvent struct {
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
 	ActorTokenID   string `json:"actor_token_id,omitempty"`
 	CreatedAt      int64  `json:"created_at"`
+	Shadow         bool   `json:"-"` // transient mode: persist matching decisions without sending
 }
 
 // NotificationDelivery tracks one event's delivery through one task/channel.
 type NotificationDelivery struct {
-	ID             string `json:"id"`
-	EventID        string `json:"event_id"`
-	TaskID         string `json:"task_id"`
-	ChannelID      string `json:"channel_id"`
-	TemplateID     string `json:"template_id"`
-	Status         string `json:"status"`
-	AttemptCount   int    `json:"attempt_count"`
-	NextAttemptAt  int64  `json:"next_attempt_at"`
-	LastError      string `json:"last_error,omitempty"`
-	LastHTTPStatus int    `json:"last_http_status"`
-	CreatedAt      int64  `json:"created_at"`
-	UpdatedAt      int64  `json:"updated_at"`
-	SentAt         int64  `json:"sent_at"`
+	ID              string `json:"id"`
+	EventID         string `json:"event_id"`
+	TaskID          string `json:"task_id"`
+	ChannelID       string `json:"channel_id"`
+	TemplateID      string `json:"template_id"`
+	Status          string `json:"status"`
+	AttemptCount    int    `json:"attempt_count"`
+	RetryCount      int    `json:"retry_count"`
+	RenderedMessage string `json:"rendered_message,omitempty"`
+	MergedCount     int    `json:"merged_count"`
+	NextAttemptAt   int64  `json:"next_attempt_at"`
+	LastError       string `json:"last_error,omitempty"`
+	LastHTTPStatus  int    `json:"last_http_status"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+	SentAt          int64  `json:"sent_at"`
 }
 
 type NotificationDeliveryJob struct {
@@ -164,10 +168,10 @@ func (s *Store) migrateNotificationV1() error {
 		`CREATE INDEX IF NOT EXISTS idx_notification_events_type_severity ON notification_events(event_type,severity,created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS notification_deliveries (
 			id TEXT PRIMARY KEY, event_id TEXT NOT NULL, task_id TEXT NOT NULL, channel_id TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0,
 			next_attempt_at INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
 			last_http_status INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-			sent_at INTEGER NOT NULL DEFAULT 0, UNIQUE(event_id,task_id),
+		sent_at INTEGER NOT NULL DEFAULT 0, rendered_message TEXT NOT NULL DEFAULT '', merged_count INTEGER NOT NULL DEFAULT 1, UNIQUE(event_id,task_id),
 			FOREIGN KEY(event_id) REFERENCES notification_events(id) ON DELETE RESTRICT,
 			FOREIGN KEY(task_id) REFERENCES notification_tasks(id) ON DELETE RESTRICT,
 			FOREIGN KEY(channel_id) REFERENCES notification_channels(id) ON DELETE RESTRICT
@@ -208,6 +212,21 @@ func (s *Store) migrateNotificationV1() error {
 	if err := ensureNotificationColumn(tx, "notification_deliveries", "template_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	if err := ensureNotificationColumn(tx, "notification_deliveries", "retry_count", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_deliveries", "rendered_message", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_deliveries", "merged_count", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS notification_delivery_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, delivery_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL DEFAULT 0, outcome TEXT NOT NULL DEFAULT 'in_flight', http_status INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '', UNIQUE(delivery_id,attempt_number))`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_notification_delivery_attempts_delivery ON notification_delivery_attempts(delivery_id,attempt_number)`); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`UPDATE notification_deliveries SET template_id=COALESCE((SELECT template_id FROM notification_tasks WHERE notification_tasks.id=notification_deliveries.task_id),'') WHERE template_id=''`); err != nil {
 		return err
 	}
@@ -220,6 +239,11 @@ func (s *Store) migrateNotificationV1() error {
 	builtins := []NotificationTemplate{
 		{ID: "development-completed", Name: "开发完成", EventType: "development.completed", Severity: "P3", TitleTemplate: "开发完成：{{commit}}", BodyTemplate: "任务：{{task}}\n提交：{{commit}}\n摘要：{{summary}}", Format: "text", VariablesJSON: `["task","commit","summary"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
 		{ID: "review-completed", Name: "审核完成", EventType: "review.completed", Severity: "P3", TitleTemplate: "审核完成：{{result}}", BodyTemplate: "结果：{{result}}\n提交：{{commit}}\n摘要：{{summary}}", Format: "text", VariablesJSON: `["result","commit","summary"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-node-offline", Name: "节点离线", EventType: "node_offline", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-node-recovery", Name: "节点恢复", EventType: "node_recovery", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-resource-threshold", Name: "资源阈值告警", EventType: "resource_threshold", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-resource-recovery", Name: "资源恢复", EventType: "resource_recovery", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-scheduled-report", Name: "定时报告", EventType: "scheduled_report", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, template := range builtins {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_templates(id,name,event_type,severity,title_template,body_template,format,variables_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, template.ID, template.Name, template.EventType, template.Severity, template.TitleTemplate, template.BodyTemplate, template.Format, template.VariablesJSON, 1, template.CreatedAt, template.UpdatedAt); err != nil {

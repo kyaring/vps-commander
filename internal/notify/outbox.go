@@ -49,48 +49,50 @@ func (m *Manager) notificationOutboxLoop() {
 
 func (m *Manager) deliverNotificationJob(job storage.NotificationDeliveryJob) {
 	if !job.Channel.Enabled || !job.Task.Enabled || !job.Template.Enabled {
-		_ = m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "suppressed", 0, "channel, task or template disabled", 0, 0)
+		m.completeNotificationJob(job, "suppressed", 0, "channel, task or template disabled", 0, 0)
 		return
 	}
 	if job.Channel.Type == "qq_official_bot" {
-		_ = m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "unsupported", 0, "QQ official bot proactive push is not supported by the platform", 0, 0)
+		m.completeNotificationJob(job, "unsupported", 0, "QQ official bot proactive push is not supported by the platform", 0, 0)
 		return
 	}
 	status, failure, retryable := m.sendNotificationDelivery(job)
 	now := m.clock().Unix()
-	if job.Channel.LegacyWebhookID != "" {
-		// Keep legacy delivery history in sync for the existing webhook screen.
-		if err := m.Store.RecordWebhookDelivery(job.Channel.LegacyWebhookID, status, failure); err != nil {
-			log.Printf("mirror legacy webhook delivery %s: %v", job.Channel.LegacyWebhookID, err)
-		}
-	}
 	if failure == "" && status >= 200 && status < 300 {
-		if err := m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "sent", status, "", 0, now); err != nil {
-			log.Printf("complete notification delivery %s: %v", job.Delivery.ID, err)
-		}
+		m.completeNotificationJob(job, "sent", status, "", 0, now)
 		return
 	}
 	if m.deliveryCtx != nil && m.deliveryCtx.Err() != nil {
 		// A shutdown cancellation is not a final delivery failure. Leave a durable
 		// pending row so the next Hub process can retry it.
-		if err := m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "pending", status, failure, now+1, 0); err != nil {
-			log.Printf("preserve interrupted delivery %s: %v", job.Delivery.ID, err)
-		}
+		m.completeNotificationJob(job, "pending", status, failure, now+1, 0)
 		return
 	}
-	if retryable && job.Delivery.AttemptCount < notificationDeliveryMaxAttempts && m.deliveryCtx != nil && m.deliveryCtx.Err() == nil {
+	if retryable && job.Delivery.RetryCount < notificationDeliveryMaxAttempts && m.deliveryCtx != nil && m.deliveryCtx.Err() == nil {
 		delays := []time.Duration{time.Second, 5 * time.Second, 30 * time.Second}
 		delay := delays[len(delays)-1]
-		if job.Delivery.AttemptCount > 0 && job.Delivery.AttemptCount <= len(delays) {
-			delay = delays[job.Delivery.AttemptCount-1]
+		if job.Delivery.RetryCount > 0 && job.Delivery.RetryCount <= len(delays) {
+			delay = delays[job.Delivery.RetryCount-1]
 		}
-		if err := m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "pending", status, failure, now+int64(delay.Seconds()), 0); err != nil {
-			log.Printf("schedule notification retry %s: %v", job.Delivery.ID, err)
-		}
+		m.completeNotificationJob(job, "pending", status, failure, now+int64(delay.Seconds()), 0)
 		return
 	}
-	if err := m.Store.CompleteNotificationDelivery(job.Delivery.ID, job.Channel.ID, "failed", status, failure, 0, 0); err != nil {
-		log.Printf("fail notification delivery %s: %v", job.Delivery.ID, err)
+	m.completeNotificationJob(job, "failed", status, failure, 0, 0)
+}
+
+func (m *Manager) completeNotificationJob(job storage.NotificationDeliveryJob, status string, httpStatus int, failure string, nextAttemptAt, sentAt int64) {
+	applied, err := m.Store.CompleteNotificationDeliveryAttempt(job.Delivery.ID, job.Channel.ID, job.Delivery.AttemptCount, status, httpStatus, failure, nextAttemptAt, sentAt)
+	if err != nil {
+		log.Printf("complete notification delivery %s attempt %d: %v", job.Delivery.ID, job.Delivery.AttemptCount, err)
+		return
+	}
+	if !applied || job.Channel.LegacyWebhookID == "" || status == "suppressed" || status == "unsupported" {
+		return
+	}
+	// Mirror only the winning attempt into the legacy webhook status table. A
+	// stale worker response must not overwrite the status of a newer attempt.
+	if err := m.Store.RecordWebhookDeliveryForAttempt(job.Channel.LegacyWebhookID, job.Delivery.ID, job.Delivery.AttemptCount, status, httpStatus, failure); err != nil {
+		log.Printf("mirror legacy webhook delivery %s: %v", job.Channel.LegacyWebhookID, err)
 	}
 }
 
@@ -112,25 +114,56 @@ func (m *Manager) sendNotificationDelivery(job storage.NotificationDeliveryJob) 
 			variables[key] = fmt.Sprint(value)
 		}
 	}
+	delete(variables, "__vps_legacy_severity")
 	message := job.Event.Message // snapshot rendered at acceptance time; retries must not change if a template is edited
+	if job.Delivery.RenderedMessage != "" {
+		message = job.Delivery.RenderedMessage
+	}
+	if strings.HasPrefix(job.Event.TemplateID, "builtin-") {
+		variables["message"] = message
+	}
 	format := job.Event.TemplateFormat
 	if format == "" {
 		format = job.Template.Format
 	}
-	payload := map[string]any{"id": job.Event.ID, "type": job.Event.EventType, "severity": job.Event.Severity, "source": job.Event.Source, "device": job.Event.Device, "message": message, "at": job.Event.CreatedAt, "data": variables}
+	dataPayload := any(mapStringAny(variables))
+	if strings.HasPrefix(job.Event.TemplateID, "builtin-") {
+		var builtinData map[string]any
+		if json.Unmarshal([]byte(job.Event.DataJSON), &builtinData) == nil {
+			delete(builtinData, "__vps_legacy_severity")
+			delete(builtinData, "__vps_legacy_message")
+			dataPayload = builtinData
+		}
+	}
+	payload := map[string]any{"id": job.Event.ID, "type": job.Event.EventType, "severity": job.Event.Severity, "source": job.Event.Source, "device": job.Event.Device, "message": message, "at": job.Event.CreatedAt, "data": dataPayload}
 	if job.Channel.LegacyWebhookID != "" {
 		var legacyData map[string]any
 		_ = json.Unmarshal([]byte(job.Event.DataJSON), &legacyData)
-		legacyEvent := Event{ID: job.Event.ID, Type: job.Event.EventType, Device: job.Event.Device, Severity: job.Event.Severity, Message: job.Event.Message, At: job.Event.CreatedAt, Data: legacyData}
+		legacySeverity, legacyMessage := "", job.Event.Message
+		if raw, ok := legacyData["__vps_legacy_severity"]; ok {
+			legacySeverity = fmt.Sprint(raw)
+			delete(legacyData, "__vps_legacy_severity")
+		}
+		if raw, ok := legacyData["__vps_legacy_message"]; ok {
+			legacyMessage = fmt.Sprint(raw)
+			delete(legacyData, "__vps_legacy_message")
+		}
+		legacyEvent := Event{ID: job.Event.ID, Type: job.Event.EventType, Device: job.Event.Device, Severity: job.Event.Severity, Message: legacyMessage, At: job.Event.CreatedAt, Data: legacyData}
+		if legacySeverity != "" {
+			legacyEvent.Severity = legacySeverity
+		}
+		if strings.HasPrefix(job.Event.TemplateID, "builtin-") {
+			legacyEvent.ID = ""
+		}
 		if job.Channel.LegacyType == "telegram" {
 			var cfg struct {
 				ChatID string `json:"chat_id"`
 			}
 			_ = json.Unmarshal([]byte(job.Channel.ConfigJSON), &cfg)
-			return m.postJSON(ctx, job.Channel.Endpoint, map[string]any{"chat_id": cfg.ChatID, "text": job.Event.Message}, nil)
+			return m.postJSON(ctx, job.Channel.Endpoint, map[string]any{"chat_id": cfg.ChatID, "text": legacyMessage}, nil)
 		}
 		if job.Channel.LegacyType == "wecom" {
-			return m.postJSON(ctx, job.Channel.Endpoint, map[string]any{"msgtype": "text", "text": map[string]any{"content": job.Event.Message}}, nil)
+			return m.postJSON(ctx, job.Channel.Endpoint, map[string]any{"msgtype": "text", "text": map[string]any{"content": legacyMessage}}, nil)
 		}
 		return m.postJSON(ctx, job.Channel.Endpoint, legacyEvent, nil)
 	}

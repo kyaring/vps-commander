@@ -885,7 +885,8 @@
                     "type": "string"
                   },
                   "config_json": {
-                    "type": "object"
+                    "type": "string",
+                    "description": "JSON string containing only public channel configuration"
                   },
                   "secrets_json": {
                     "type": "string",
@@ -1190,6 +1191,97 @@
           },
           "503": {
             "description": "Notification sender unavailable"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/deliveries": {
+      "get": {
+        "summary": "List recent notification deliveries",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent delivery history; each item includes merged_count. shadow rows are audit-only and are never sent; suppressed rows explain policy decisions."
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/deliveries/attempts": {
+      "get": {
+        "summary": "List attempts for one delivery",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Attempt history"
+          },
+          "404": {
+            "description": "Delivery not found"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/deliveries/retry": {
+      "post": {
+        "summary": "Retry one failed delivery without re-broadcasting the event",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Failed delivery requeued"
+          },
+          "400": {
+            "description": "Only failed deliveries can be retried"
           }
         }
       }

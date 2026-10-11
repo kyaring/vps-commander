@@ -804,3 +804,33 @@ tr:hover td {
 .secret-value-row button,.secret-actions button{flex:0 0 auto;white-space:nowrap;}
 .secret-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:10px;}
 @media(max-width:380px){.secret-value-row{flex-wrap:wrap}.secret-value-row input{flex-basis:100%}.secret-value-row button{margin-left:auto}}
+
+.notification-subtabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0;border-bottom:1px solid var(--border);padding-bottom:8px}
+.notification-subtabs button{padding:7px 12px;border:1px solid var(--border);background:var(--bg-sub);color:var(--text-main);border-radius:8px}
+.notification-subtabs button.active{border-color:var(--accent);background:rgba(10,132,255,.12);font-weight:700}
+.notification-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:10px 0 16px;min-width:0}
+.notification-item{border:1px solid var(--border);border-radius:10px;padding:12px;min-width:0;overflow-wrap:anywhere;background:var(--bg-sub)}
+.notification-item h4{margin:0 0 6px;font-size:14px;overflow-wrap:anywhere}
+.notification-item p{margin:4px 0;color:var(--text-muted);font-size:12px;overflow-wrap:anywhere;white-space:pre-wrap}
+.notification-item .notification-item-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.notification-item .notification-item-actions button{padding:6px 9px;font-size:12px}
+.notification-editor{border:1px solid var(--border);border-radius:10px;padding:14px;margin:14px 0;background:var(--bg-sub);min-width:0}
+.notification-editor[hidden], [data-notify-panel][hidden]{display:none!important}
+.notification-editor h3{margin:0 0 12px}
+.notification-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+.notification-form-grid label{display:flex;flex-direction:column;gap:5px;min-width:0;font-size:12px;color:var(--text-muted)}
+.notification-form-grid label.full{grid-column:1/-1}
+.notification-form-grid input,.notification-form-grid textarea,.notification-form-grid select{width:100%;max-width:100%;min-width:0;box-sizing:border-box;color:var(--text-main);background:var(--bg-input);border:1px solid var(--border);border-radius:7px;padding:8px;font:inherit}
+.notification-form-grid textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+.notification-form-grid small{font-size:11px;color:var(--text-muted);line-height:1.5}
+.notification-delivery-table{min-width:920px}
+.notification-delivery-table td{vertical-align:top;overflow-wrap:anywhere;max-width:280px}
+.notification-status{display:inline-block;border:1px solid var(--border);border-radius:999px;padding:2px 8px;font-size:11px;white-space:nowrap}
+.notification-status.success,.notification-status.sent{color:#16a34a}
+.notification-status.failed,.notification-status.unsupported{color:#ef4444}
+.notification-status.pending,.notification-status.sending{color:#d97706}
+.notification-attempts{margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:10px;overflow-wrap:anywhere}
+.notification-attempts h4{margin:0 0 8px}
+.notification-attempt-row{display:grid;grid-template-columns:90px 100px minmax(0,1fr);gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px}
+.notification-attempt-row:last-child{border-bottom:0}
+@media(max-width:600px){.notification-form-grid{grid-template-columns:minmax(0,1fr)}.notification-form-grid label.full{grid-column:auto}.notification-delivery-table{min-width:860px}.notification-attempt-row{grid-template-columns:1fr}.notification-item .notification-item-actions button{flex:1 1 auto}}

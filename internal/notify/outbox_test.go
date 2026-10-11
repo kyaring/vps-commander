@@ -85,6 +85,17 @@ func TestNotificationOutboxDeliversWebhookAndRetriesDurably(t *testing.T) {
 	if channelStatus != "success" {
 		t.Fatalf("channel status=%s, want success", channelStatus)
 	}
+	var deliveryID string
+	if err := store.DB.QueryRow(`SELECT id FROM notification_deliveries WHERE event_id=?`, event.ID).Scan(&deliveryID); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.ListNotificationDeliveryAttempts(deliveryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[0].Outcome != "retry_scheduled" || history[1].Outcome != "sent" {
+		t.Fatalf("delivery attempt history=%+v", history)
+	}
 }
 
 func TestNotificationOutboxSendsTelegramBotMessageWithoutExposingToken(t *testing.T) {

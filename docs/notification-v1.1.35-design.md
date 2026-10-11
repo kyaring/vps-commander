@@ -29,6 +29,17 @@ Durable runtime entities:
 - Require a bounded JSON body (32 KiB initially), validate event type against registered templates, allowlist variable names/types and cap string lengths. Treat all values as data; escape according to the output format.
 - Apply a per-token fixed-window quota of 30 requests/minute and return `429` with `Retry-After`; audit accepted, rejected, rate-limited and idempotent-replay outcomes without logging credentials or full sensitive payloads.
 - `Idempotency-Key` is optional; when present it is unique per token. A repeated key with the same request returns the original event result; reusing the key with a different request returns `409`.
+- A CLI wrapper is available at `scripts/emit-notification-event.py`. It requires `VPS_COMMANDER_HUB_URL`, `VPS_COMMANDER_EVENT_TOKEN` (a token with `events:emit`), and a stable `--idempotency-key`. Example after a development task has a final commit:
+
+  ```sh
+  export VPS_COMMANDER_HUB_URL='https://hub.example.invalid'
+  export VPS_COMMANDER_EVENT_TOKEN='(read from the one-time token display; do not store in the repository)'
+  python3 scripts/emit-notification-event.py development-completed \
+    --variables '{"task":"notification outbox","commit":"abc1234","summary":"tests and build passed"}' \
+    --idempotency-key 'development:notification-outbox:abc1234'
+  ```
+
+  After review, emit `review-completed` with `result` set to `PASS` or `FAIL`, plus `commit` and `summary`. The script does not print the token. `scripts/notify-agent-completion.sh` is the explicit final-boundary helper: it skips successfully without credentials and treats delivery failures as non-blocking. It is not an automatic external agent hook, and this change does not provision a token or deploy it.
 
 ## Compatibility migration
 
@@ -49,10 +60,38 @@ Durable runtime entities:
 ## Current implementation status (not a release)
 
 - Completed locally: additive schema/backfill, channel/template/task admin APIs, encrypted provider credentials, `events:emit` scope, `POST /api/v1/events`, per-token rate limit, idempotency, event/task routing, durable delivery rows, Webhook/Telegram adapters and retry scheduling.
-- Completed locally in this slice: channel test-send API and channel last-attempt/success/failure status updates.
-- Still to do: delivery-history/retry UI, visual management UI, task repeat/quiet/merge/recovery policy engine, migrate built-in offline/resource/report events, and wire development/review completion emitters.
+- Completed locally in this slice: channel/template/task management UI, channel test-send API and last-attempt/success/failure status, delivery history with per-attempt outcomes, and single-delivery manual retry.
+- Implemented locally in this slice: validated task policy schema, repeat interval/max-reminder suppression, timezone-aware quiet windows, pending-delivery merge windows, recovery episode closure/cooldown, built-in event templates, and legacy/shadow/v1 routing modes. Targeted policy and mode tests pass.
+- Completed locally: legacy/shadow/v1 parity fixtures cover exactly-one legacy send in shadow mode, zero shadow outbox attempts, durable v1 delivery, legacy payload compatibility (including severity/data), and customized built-in template rendering without changing legacy payloads. Full regression is green.
+- Intentionally not performed: production shadow observation, changing the Hub environment, restarting the production Hub, or switching live traffic. These require an operator-approved window; no push, merge, tag, release or deployment has occurred.
 - Delivery semantics are at-least-once. If a provider accepts a message but the response is lost, retry may produce a duplicate; new structured Webhook payloads include the stable event ID for receiver-side deduplication.
 - QQ official bot remains disabled as an asynchronous alert destination until the intended target type and current platform capability are confirmed. The official docs state proactive push has been withdrawn since 2025-04-21 for the relevant user/group scenarios; do not treat QQ credentials as proof of send capability.
+
+## Task policy semantics and built-in notification migration
+
+Task `policy_json` accepts only the documented fields below; unknown fields are rejected:
+
+- `repeat_interval_seconds` (0 disables interval suppression), `max_reminders` (0 means unlimited). The counter records notifications queued by policy, not confirmed provider deliveries.
+- `quiet_start` + `quiet_end` are both required when configured, in local `HH:MM`; `timezone` is an IANA name and defaults to UTC. The start is inclusive and the end exclusive; overnight windows are supported.
+- `merge_window_seconds` (0 disables merging). The first pending delivery opens a window; later events for the same task/event/device/source inside that window append to the delivery snapshot. Original event rows stay immutable; the extra per-event delivery rows are marked `suppressed` with a reference to the aggregate delivery.
+- `recovery_event_types` identifies recovery event types handled by this task; `recovery_for_event_types` explicitly lists the alert event types they resolve. Recovery closes matching active episodes for the same channel and device/source, not unrelated alerts. `notify_recovery` defaults to true; `recovery_cooldown_seconds` suppresses repeated recovery notices while still closing the episode.
+
+Built-in `node_offline`, `node_recovery`, `resource_threshold`, `resource_recovery`, and `scheduled_report` events have seeded templates. `VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE` is read by the running Hub for each event; set it in the Hub environment before startup:
+
+- `legacy` (default): existing sender remains the only sender.
+- `shadow`: persist normalized events and shadow delivery rows, while the existing sender continues to deliver. Shadow rows are never claimed by the outbox worker.
+- `v1`: route supported built-in events through the durable outbox. If the event cannot be persisted/routed, log the failure and fall back to the legacy sender rather than silently dropping the alert.
+
+Use `shadow` to compare event/template/task matching and record counts before enabling `v1`; do not run both senders for the same built-in event. Suggested operator runbook (not executed by this change):
+
+1. Keep `legacy` while capturing the current sender's payloads in a staging sink for every supported built-in event type.
+2. In a staging Hub, set `shadow` before startup. Confirm each supported event produces shadow rows with zero outbox attempts and that the legacy sink receives exactly one payload per configured legacy destination. Compare event type, device, message, timestamp, severity and data; the automated parity fixtures cover payload structure.
+3. Investigate every count or payload mismatch before switching. Check `notification_deliveries` status counts and legacy delivery-state/audit records; don't use shadow row count alone as proof that a provider accepted a message.
+4. In an operator-approved window, set `v1` before startup and verify delivery success/failure and outbox backlog. If anything regresses, set `legacy` before the next startup; the legacy sender and tables remain intact.
+
+The default remains `legacy` until an operator explicitly selects another mode. This implementation does not change the production Hub environment or restart the service.
+
+The repository agent guidance in `AGENTS.md` describes the development/review completion CLI. Emit only at final acceptance boundaries, never for intermediate commits. Missing runtime URL/token means skip and report; it must not block development. This is repository workflow guidance, not an automatically installed external agent hook.
 
 ## Non-goals for the first slice
 

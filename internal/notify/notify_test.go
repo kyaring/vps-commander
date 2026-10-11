@@ -617,3 +617,155 @@ func TestResourceAlertStateResumesAcrossRestarts(t *testing.T) {
 	}
 	_ = st.DB.Close()
 }
+
+func TestBuiltInNotificationShadowRecordsWithoutSending(t *testing.T) {
+	requests := 0
+	var received Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	st, err := storage.Open(t.TempDir() + "/builtin-shadow.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "builtin-hook", Name: "Built-in legacy", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE", "shadow")
+	m := New(st)
+	m.Client = srv.Client()
+	e := Event{Type: "node_offline", Device: "wjyhk", Severity: "critical", Message: "node is offline", At: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC).Unix(), Data: map[string]any{"alert": "first", "offline_seconds": 60}}
+	m.emit(e)
+	if requests != 1 {
+		t.Fatalf("shadow mode legacy send count=%d want exactly 1", requests)
+	}
+	if received.Type != e.Type || received.Severity != e.Severity || received.Message != e.Message || received.Device != e.Device {
+		t.Fatalf("shadow-mode legacy payload changed: %+v", received)
+	}
+	var status, rendered string
+	if err := st.DB.QueryRow(`SELECT d.status,d.rendered_message FROM notification_deliveries d JOIN notification_events e ON e.id=d.event_id WHERE e.event_type='node_offline'`).Scan(&status, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if status != "shadow" || rendered != e.Message {
+		t.Fatalf("shadow delivery status=%s rendered=%q", status, rendered)
+	}
+	var attempts int
+	if err := st.DB.QueryRow(`SELECT COUNT(*) FROM notification_delivery_attempts`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("shadow mode created %d outbox send attempts", attempts)
+	}
+	var severity, message string
+	if err := st.DB.QueryRow(`SELECT severity,message FROM notification_events WHERE event_type='node_offline'`).Scan(&severity, &message); err != nil {
+		t.Fatal(err)
+	}
+	if severity != "P1" || message != e.Message {
+		t.Fatalf("normalized event severity=%s message=%q", severity, message)
+	}
+}
+
+func TestBuiltInNotificationV1ModeUsesDurableOutbox(t *testing.T) {
+	requests := 0
+	var received Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	st, err := storage.Open(t.TempDir() + "/builtin-v1.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "builtin-v1-hook", Name: "V1 legacy", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE", "v1")
+	m := New(st)
+	m.emit(Event{Type: "node_offline", Device: "node-v1", Severity: "critical", Message: "node offline through outbox", At: time.Now().Unix(), Data: map[string]any{"offline_seconds": 65, "alert": 1}})
+	if requests != 0 {
+		t.Fatalf("v1 mode called legacy sender synchronously %d times", requests)
+	}
+	jobs, err := st.ClaimNotificationDeliveries(time.Now().Unix()+1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Delivery.Status != "sending" || jobs[0].Channel.LegacyWebhookID != "builtin-v1-hook" {
+		t.Fatalf("v1 outbox jobs=%+v", jobs)
+	}
+	m.Client = srv.Client()
+	m.deliverNotificationJob(jobs[0])
+	if requests != 1 {
+		t.Fatalf("durable outbox send count=%d want 1", requests)
+	}
+	if received.ID != "" || received.Severity != "critical" || received.Type != "node_offline" || received.Device != "node-v1" || received.Message != "node offline through outbox" {
+		t.Fatalf("legacy payload mismatch: %+v", received)
+	}
+	data, ok := received.Data.(map[string]any)
+	if !ok || data["offline_seconds"] != float64(65) || data["alert"] != float64(1) {
+		t.Fatalf("legacy event data mismatch: %#v", received.Data)
+	}
+	job, err := st.GetNotificationDeliveryJob(jobs[0].Delivery.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Delivery.Status != "sent" {
+		t.Fatalf("v1 delivery status=%s", job.Delivery.Status)
+	}
+}
+
+func TestBuiltInTemplateRenderingPreservesLegacyPayload(t *testing.T) {
+	var received Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	st, err := storage.Open(t.TempDir() + "/builtin-template-render.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SaveWebhookTarget(storage.WebhookTarget{ID: "builtin-render-hook", Name: "Legacy", Type: "generic", URL: srv.URL, Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	template, err := st.GetNotificationTemplate("builtin-node-offline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template.TitleTemplate = "OPS ALERT"
+	template.BodyTemplate = "Alert detail: {{message}}"
+	template.VariablesJSON = `["message"]`
+	if err := st.SaveNotificationTemplate(template); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE", "v1")
+	m := New(st)
+	m.Client = srv.Client()
+	original := Event{Type: "node_offline", Device: "node-render", Severity: "critical", Message: "original offline text", At: time.Now().Unix(), Data: map[string]any{"offline_seconds": 120}}
+	m.emit(original)
+	jobs, err := st.ClaimNotificationDeliveries(time.Now().Unix()+1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs=%d", len(jobs))
+	}
+	m.deliverNotificationJob(jobs[0])
+	if received.Message != original.Message || received.Severity != original.Severity {
+		t.Fatalf("legacy payload changed after template customization: %+v", received)
+	}
+	var storedMessage string
+	if err := st.DB.QueryRow(`SELECT message FROM notification_events WHERE event_type='node_offline'`).Scan(&storedMessage); err != nil {
+		t.Fatal(err)
+	}
+	if storedMessage != "OPS ALERT\nAlert detail: original offline text" {
+		t.Fatalf("rendered event message=%q", storedMessage)
+	}
+}

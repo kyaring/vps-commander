@@ -872,6 +872,16 @@ func (s *Store) SetNotificationSettings(v NotificationSettings) error {
 }
 
 func (s *Store) RecordWebhookDelivery(targetID string, status int, failure string) error {
+	return s.recordWebhookDelivery(targetID, status, failure, "", 0, "")
+}
+
+// RecordWebhookDeliveryForAttempt mirrors a new outbox result to the legacy
+// status tables only while that attempt is still the current delivery attempt.
+func (s *Store) RecordWebhookDeliveryForAttempt(targetID, deliveryID string, attemptNumber int, expectedStatus string, status int, failure string) error {
+	return s.recordWebhookDelivery(targetID, status, failure, deliveryID, attemptNumber, expectedStatus)
+}
+
+func (s *Store) recordWebhookDelivery(targetID string, status int, failure, deliveryID string, attemptNumber int, expectedStatus string) error {
 	now := time.Now().Unix()
 	if failure == "" && (status < 200 || status >= 300) {
 		failure = fmt.Sprintf("webhook http %d", status)
@@ -881,6 +891,19 @@ func (s *Store) RecordWebhookDelivery(targetID string, status int, failure strin
 		return err
 	}
 	defer tx.Rollback()
+	if deliveryID != "" {
+		result, err := tx.Exec(`UPDATE notification_deliveries SET updated_at=updated_at WHERE id=? AND status=? AND attempt_count=?`, deliveryID, expectedStatus, attemptNumber)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return tx.Commit()
+		}
+	}
 	if _, err := tx.Exec(`INSERT INTO webhook_delivery_state(target_id,consecutive_failures,last_error,last_status,updated_at) VALUES(?,CASE WHEN ?='' THEN 0 ELSE 1 END,?,?,?) ON CONFLICT(target_id) DO UPDATE SET consecutive_failures=CASE WHEN excluded.last_error='' THEN 0 ELSE webhook_delivery_state.consecutive_failures+1 END,last_error=excluded.last_error,last_status=excluded.last_status,updated_at=excluded.updated_at`, targetID, failure, failure, status, now); err != nil {
 		return err
 	}

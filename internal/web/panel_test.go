@@ -195,3 +195,54 @@ func TestPanelIndexContainsOAuthManagementAndLoginCookieIsLax(t *testing.T) {
 		t.Fatalf("panel login cookie SameSite=%v", cookies)
 	}
 }
+
+type notificationTestRunner struct{ testRunner }
+
+func (notificationTestRunner) NotificationChannelsV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`[]`))
+}
+func (notificationTestRunner) NotificationChannelTestJSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+func (notificationTestRunner) NotificationTemplatesV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`[]`))
+}
+func (notificationTestRunner) NotificationTasksV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`[]`))
+}
+func (notificationTestRunner) NotificationDeliveriesV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"items":[]}`))
+}
+func (notificationTestRunner) NotificationDeliveryAttemptsV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"items":[]}`))
+}
+func (notificationTestRunner) NotificationDeliveryRetryV1JSON(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+func TestPanelNotificationV1RoutesRequirePanelAuthAndReachRunner(t *testing.T) {
+	p := New("test-password", "admin", notificationTestRunner{})
+	h := p.Handler()
+	unauth := httptest.NewRecorder()
+	h.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/panel/api/notifications/channels", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", unauth.Code)
+	}
+	p.mu.Lock()
+	p.sessions["test-session"] = time.Now().Add(time.Hour)
+	p.mu.Unlock()
+	req := httptest.NewRequest(http.MethodGet, "/panel/api/notifications/channels", nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "test-session"})
+	authed := httptest.NewRecorder()
+	h.ServeHTTP(authed, req)
+	if authed.Code != http.StatusOK || authed.Body.String() != "[]" {
+		t.Fatalf("authenticated status=%d body=%s", authed.Code, authed.Body.String())
+	}
+}

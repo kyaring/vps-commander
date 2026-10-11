@@ -158,6 +158,18 @@ func TestNotificationMigrationAddsSecretsColumnToExistingSchema(t *testing.T) {
 	if count != 1 {
 		t.Fatal("migration did not add template_id to existing notification deliveries")
 	}
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notification_deliveries') WHERE name='retry_count'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("migration did not add retry_count to existing notification deliveries")
+	}
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notification_delivery_attempts'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("migration did not create notification_delivery_attempts")
+	}
 }
 
 func TestWebhookChannelBlankEndpointUpdatePreservesStoredURL(t *testing.T) {

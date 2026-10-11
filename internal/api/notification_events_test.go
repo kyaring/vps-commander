@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -189,5 +190,55 @@ func TestEventsEmitIsAcceptedAsAPITokenScope(t *testing.T) {
 	bad := notificationAPIRequest(t, h, http.MethodPatch, "/api/v1/tokens/token-events-scope", `{"scopes":["events:admin"]}`, "system", nil)
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("unknown scope status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}
+
+func TestNotificationDeliveryHistoryAndManualRetryAPI(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "delivery-history-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveNotificationChannel(storage.NotificationChannel{ID: "history-hook", Name: "History", Type: "webhook", Endpoint: "https://example.invalid", ConfigJSON: "{}", Enabled: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTask(storage.NotificationTask{ID: "history-task", Name: "History task", ChannelID: "history-hook", TemplateID: "review-completed", Enabled: true, EventTypesJSON: `["review.completed"]`, SeveritiesJSON: `["P3"]`, PolicyJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	event := storage.NotificationEvent{ID: "evt-history", TemplateID: "review-completed", RequestHash: "history", EventType: "review.completed", Severity: "P3", Source: "test", Message: "failed", DataJSON: "{}", CreatedAt: time.Now().Unix()}
+	if _, matched, _, err := store.AcceptNotificationEvent(event); err != nil || matched != 1 {
+		t.Fatalf("accept matched=%d err=%v", matched, err)
+	}
+	jobs, err := store.ClaimNotificationDeliveries(time.Now().Unix()+1, 1)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("claim jobs=%d err=%v", len(jobs), err)
+	}
+	if err := store.CompleteNotificationDelivery(jobs[0].Delivery.ID, jobs[0].Channel.ID, "failed", 500, "webhook http 500", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{Store: store}).Routes()
+	list := notificationAPIRequest(t, h, http.MethodGet, "/api/v1/notifications/deliveries?limit=50", "", "system", nil)
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), "webhook http 500") {
+		t.Fatalf("delivery list status=%d body=%s", list.Code, list.Body.String())
+	}
+	attempts := notificationAPIRequest(t, h, http.MethodGet, "/api/v1/notifications/deliveries/attempts?id="+jobs[0].Delivery.ID, "", "system", nil)
+	if attempts.Code != http.StatusOK || !strings.Contains(attempts.Body.String(), `"outcome":"failed"`) {
+		t.Fatalf("attempt history status=%d body=%s", attempts.Code, attempts.Body.String())
+	}
+	retryBody, _ := json.Marshal(map[string]string{"id": jobs[0].Delivery.ID})
+	retry := notificationAPIRequest(t, h, http.MethodPost, "/api/v1/notifications/deliveries/retry", string(retryBody), "system", nil)
+	if retry.Code != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s", retry.Code, retry.Body.String())
+	}
+	retryAgain := notificationAPIRequest(t, h, http.MethodPost, "/api/v1/notifications/deliveries/retry", string(retryBody), "system", nil)
+	if retryAgain.Code != http.StatusBadRequest {
+		t.Fatalf("second retry while pending status=%d body=%s", retryAgain.Code, retryAgain.Body.String())
+	}
+	items, err := store.ListNotificationDeliveries(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != "pending" || items[0].AttemptCount != 1 {
+		t.Fatalf("delivery after retry=%+v", items)
 	}
 }

@@ -140,6 +140,28 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
                 time.sleep(.2)
                 panel_metrics=evaluate("(()=>({doc:document.documentElement.scrollWidth,viewport:innerWidth,active:document.querySelector('[data-tab].active')?.dataset.tab,tabScroll:document.querySelector('.panel-tabs').scrollWidth,tabWidth:document.querySelector('.panel-tabs').clientWidth}))()")
                 assert panel_metrics["doc"]<=width and panel_metrics["active"]==tab_name, f"tab {tab_name} overflows or did not activate at {width}px: {panel_metrics}"
+                if tab_name == "security":
+                    notify_deadline = time.time() + 5
+                    notify_status = ""
+                    while time.time() < notify_deadline:
+                        notify_status = evaluate("document.querySelector('#notifyV1Status')?.textContent || ''")
+                        if notify_status.startswith("已加载") or "加载失败" in notify_status: break
+                        time.sleep(.1)
+                    assert notify_status.startswith("已加载"), f"notification APIs did not load in panel at {width}px: {notify_status}"
+                    notify_card = evaluate("(() => {const e=document.querySelector('#notificationV1Card');return e?{width:e.getBoundingClientRect().width,doc:document.documentElement.scrollWidth,panels:document.querySelectorAll('[data-notify-panel]').length,channels:document.querySelectorAll('#notifyChannelsList .notification-item').length}:null})()")
+                    assert notify_card and notify_card["panels"] == 4 and notify_card["doc"] <= width and notify_card["width"] <= width, f"notification manager missing or overflowing at {width}px: {notify_card}"
+                    for form_tab, new_button, editor_id, cancel_button in (("channels","notifyChannelNew","notifyChannelEditor","notifyChannelCancel"),("templates","notifyTemplateNew","notifyTemplateEditor","notifyTemplateCancel"),("tasks","notifyTaskNew","notifyTaskEditor","notifyTaskCancel")):
+                        evaluate("document.querySelector('[data-notify-tab="+json.dumps(form_tab)+"]').click()")
+                        evaluate("document.getElementById("+json.dumps(new_button)+").click()")
+                        editor_state=evaluate("(() => {const e=document.getElementById("+json.dumps(editor_id)+");return {hidden:e.hidden,doc:document.documentElement.scrollWidth,viewport:innerWidth}})()")
+                        assert not editor_state["hidden"] and editor_state["doc"] <= width, f"notification {form_tab} editor failed or overflowed at {width}px: {editor_state}"
+                        evaluate("document.getElementById("+json.dumps(cancel_button)+").click()")
+                    print(f"PASS notification manager API/data, editors and layout {width}px: channels={notify_card['channels']}, panels={notify_card['panels']}")
+                    for notify_tab in ("channels", "templates", "tasks", "deliveries"):
+                        evaluate("document.querySelector('[data-notify-tab="+json.dumps(notify_tab)+"]').click()")
+                        time.sleep(.08)
+                        subpanel = evaluate("(() => ({doc:document.documentElement.scrollWidth,active:document.querySelector('[data-notify-tab].active')?.dataset.notifyTab,visible:[...document.querySelectorAll('[data-notify-panel]')].filter(e=>!e.hidden).map(e=>e.dataset.notifyPanel)}))()")
+                        assert subpanel["doc"] <= width and subpanel["active"] == notify_tab and subpanel["visible"] == [notify_tab], f"notification tab {notify_tab} overflowed or failed at {width}px: {subpanel}"
             evaluate("document.querySelector('[data-tab=logs]').click()")
         # Verify tab switching and persistence through reload.
         evaluate("document.querySelector('[data-tab=access]').click()")

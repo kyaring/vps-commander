@@ -146,7 +146,7 @@ let secretCopied = false;
 const tokenTemplates = {
   read:["devices:read","files:read"],
   ops:["devices:read","files:read","exec","files:write","process","mcp:call"],
-  all:["devices:read","files:read","exec","files:write","process","mcp:call","admin"]
+  all:["devices:read","files:read","exec","files:write","process","mcp:call","events:emit","admin"]
 };
 function selectedTokenScopes(){return [...document.querySelectorAll("[data-token-scope]:checked")].map(x=>x.dataset.tokenScope)}
 function setTokenScopes(scopes){document.querySelectorAll("[data-token-scope]").forEach(x=>x.checked=scopes.includes(x.dataset.tokenScope))}
@@ -689,7 +689,7 @@ async function activatePanelTab(tab, force=false){
   try{
     if(tab==="devices"||tab==="console"){await loadDevices();if(tab==="devices")renderTokenDevices();}
     if(tab==="access"){await loadDevices();await loadTokens();renderTokenDevices();await loadMCPServices();await loadOAuthAdmin();wizardGenerate();}
-    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadLegacyUsage(),loadLegacyKeyStatus(),loadWebhooks(),loadNotificationSettings()]);}
+    if(tab==="security"){await Promise.all([loadSecuritySettings(),loadLegacyUsage(),loadLegacyKeyStatus(),loadWebhooks(),loadNotificationSettings(),loadNotificationV1()]);}
     if(tab==="logs"){await loadTokens();await loadAudits(true);}
     loadedPanelTabs.add(tab);
   }catch(e){console.error(e);const status=$("#tokenFormStatus");if(status&&tab==="access")status.textContent="加载失败："+e.message;const auditStatus=$("#auditStatus");if(auditStatus&&tab==="logs")auditStatus.textContent="加载失败："+e.message;}
@@ -705,3 +705,111 @@ setDeviceBoardExpanded(boardExpanded);deviceToggle.addEventListener("click",()=>
 setTokenTemplate("read",false);
 $("#addDeviceTop").addEventListener("click",()=>{activatePanelTab("devices");$("#deviceProvisionNew").click();setTimeout(()=>$("#provisionDeviceName").focus(),0)});
 activatePanelTab(location.hash.slice(1)||"devices",true);
+
+// Notification system v1.1.35 management UI.
+const notificationV1State = {channels:[],templates:[],tasks:[],deliveries:[],activeTab:"channels",editingChannel:"",editingTemplate:"",editingTask:""};
+function notificationStatus(message,isError=false){const el=$("#notifyV1Status");if(!el)return;el.textContent=message;el.className=isError?"mcp-status test-fail":"mcp-status";}
+function notificationTime(value){if(!value)return "—";const d=new Date(Number(value)*1000);return Number.isNaN(d.getTime())?"—":d.toLocaleString();}
+function notificationEnabled(value){return value?"启用":"停用";}
+function notificationStatusClass(value){return ["success","sent"].includes(value)?"success":["failed","unsupported"].includes(value)?"failed":["pending","sending"].includes(value)?"pending":"";}
+function notificationStatusBadge(value){return `<span class="notification-status ${notificationStatusClass(value)}">${esc(value||"unknown")}</span>`;}
+function notificationJSONText(value,fallback){try{return JSON.stringify(value==null?fallback:value,null,2)}catch(_){return JSON.stringify(fallback,null,2)}}
+function notificationSetTab(tab){notificationV1State.activeTab=tab;document.querySelectorAll("[data-notify-tab]").forEach(b=>b.classList.toggle("active",b.dataset.notifyTab===tab));document.querySelectorAll("[data-notify-panel]").forEach(p=>p.hidden=p.dataset.notifyPanel!==tab);if(tab==="deliveries")loadNotificationDeliveries().catch(e=>notificationStatus(e.message,true));}
+async function loadNotificationV1(){
+  notificationStatus("正在加载通道、模板和任务…");
+  try{
+    const [channels,templates,tasks]=await Promise.all([api("/notifications/channels"),api("/notifications/templates"),api("/notifications/tasks")]);
+    notificationV1State.channels=Array.isArray(channels)?channels:[];
+    notificationV1State.templates=Array.isArray(templates)?templates:[];
+    notificationV1State.tasks=Array.isArray(tasks)?tasks:[];
+    document.querySelectorAll("[data-notify-tab]").forEach(b=>b.classList.toggle("active",b.dataset.notifyTab===notificationV1State.activeTab));
+    document.querySelectorAll("[data-notify-panel]").forEach(p=>p.hidden=p.dataset.notifyPanel!==notificationV1State.activeTab);
+    renderNotificationChannels();renderNotificationTemplates();renderNotificationTasks();fillNotificationTaskSelects();
+    notificationStatus(`已加载 ${notificationV1State.channels.length} 个通道、${notificationV1State.templates.length} 个模板、${notificationV1State.tasks.length} 个任务。`);
+    if(notificationV1State.activeTab==="deliveries")await loadNotificationDeliveries();
+  }catch(e){notificationStatus("通知系统加载失败："+e.message,true);throw e;}
+}
+function renderNotificationChannels(){
+  const host=$("#notifyChannelsList");if(!host)return;
+  if(!notificationV1State.channels.length){host.innerHTML='<p class="muted">尚无通道。可先新增 Webhook 或 Telegram Bot。</p>';return;}
+  host.innerHTML=notificationV1State.channels.map(c=>{
+    const legacy=!!c.legacy;
+    const typeName=({webhook:"Webhook",telegram_bot:"Telegram Bot",qq_official_bot:"QQ 官方机器人"})[c.type]||c.type;
+    const state=`最近尝试：${notificationTime(c.last_attempt_at)}；最近成功：${notificationTime(c.last_success_at)}；HTTP ${c.last_http_status||0}`;
+    return `<article class="notification-item"><h4>${esc(c.name)} ${notificationStatusBadge(c.last_status)}</h4><p>ID：${esc(c.id)} · 类型：${esc(typeName)}</p><p>状态：${esc(notificationEnabled(c.enabled))} · URL 已配置：${c.endpoint_configured?"是":"否"} · 凭据已配置：${c.has_secrets?"是":"否"}</p><p>${esc(state)}</p>${c.last_error?`<p class="test-fail">最近错误：${esc(c.last_error)}</p>`:""}${legacy?'<p>旧版兼容通道：请在上方旧 Webhook 管理区编辑。</p>':`<div class="notification-item-actions"><button type="button" data-notify-action="edit-channel" data-id="${esc(c.id)}">编辑</button><button type="button" data-notify-action="test-channel" data-id="${esc(c.id)}">测试发送</button><button type="button" data-notify-action="disable-channel" data-id="${esc(c.id)}" class="danger-button">停用</button></div>`}</article>`;
+  }).join("");
+}
+function renderNotificationTemplates(){
+  const host=$("#notifyTemplatesList");if(!host)return;
+  if(!notificationV1State.templates.length){host.innerHTML='<p class="muted">尚无事件模板。</p>';return;}
+  host.innerHTML=notificationV1State.templates.map(t=>`<article class="notification-item"><h4>${esc(t.name)} ${notificationStatusBadge(t.enabled?"enabled":"disabled")}</h4><p>ID：${esc(t.id)}</p><p>事件：${esc(t.event_type)} · 级别：${esc(t.severity)} · 格式：${esc(t.format)}</p><p>标题：${esc(t.title_template||"（无标题）")}</p><p>正文：${esc(t.body_template||"")}</p><div class="notification-item-actions"><button type="button" data-notify-action="edit-template" data-id="${esc(t.id)}">编辑</button><button type="button" data-notify-action="disable-template" data-id="${esc(t.id)}" class="danger-button">停用</button></div></article>`).join("");
+}
+function renderNotificationTasks(){
+  const host=$("#notifyTasksList");if(!host)return;
+  if(!notificationV1State.tasks.length){host.innerHTML='<p class="muted">尚无通知任务。创建任务后，匹配的事件才会进入对应通道。</p>';return;}
+  const channels=new Map(notificationV1State.channels.map(x=>[x.id,x.name]));const templates=new Map(notificationV1State.templates.map(x=>[x.id,x.name]));
+  host.innerHTML=notificationV1State.tasks.map(t=>`<article class="notification-item"><h4>${esc(t.name)} ${notificationStatusBadge(t.enabled?"enabled":"disabled")}</h4><p>ID：${esc(t.id)}</p><p>通道：${esc(channels.get(t.channel_id)||t.channel_id)} · 模板：${esc(templates.get(t.template_id)||t.template_id)}</p><p>事件过滤：${esc(t.event_types_json)} · 级别过滤：${esc(t.severities_json)}</p><p>策略：${esc(t.policy_json||"{}")}</p><div class="notification-item-actions"><button type="button" data-notify-action="edit-task" data-id="${esc(t.id)}">编辑</button><button type="button" data-notify-action="disable-task" data-id="${esc(t.id)}" class="danger-button">停用</button></div></article>`).join("");
+}
+function fillNotificationTaskSelects(){
+  const channelSelect=$("#notifyTaskChannel"),templateSelect=$("#notifyTaskTemplate");if(!channelSelect||!templateSelect)return;
+  const channelValue=channelSelect.value,templateValue=templateSelect.value;
+  channelSelect.innerHTML=notificationV1State.channels.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}${c.enabled?"":"（停用）"}</option>`).join("");
+  templateSelect.innerHTML=notificationV1State.templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}${t.enabled?"":"（停用）"}</option>`).join("");
+  if(channelValue)channelSelect.value=channelValue;if(templateValue)templateSelect.value=templateValue;
+}
+function resetNotificationChannelForm(){notificationV1State.editingChannel="";$("#notifyChannelEditorTitle").textContent="新增通道";$("#notifyChannelID").disabled=false;$("#notifyChannelID").value="";$("#notifyChannelName").value="";$("#notifyChannelType").value="webhook";$("#notifyChannelEnabled").value="1";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value="{}";$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=true;}
+function newNotificationChannel(){resetNotificationChannelForm();$("#notifyChannelEditor").hidden=false;$("#notifyChannelID").focus();}
+function editNotificationChannel(id){const c=notificationV1State.channels.find(x=>x.id===id);if(!c)return;notificationV1State.editingChannel=id;$("#notifyChannelEditorTitle").textContent="编辑通道";$("#notifyChannelID").value=c.id;$("#notifyChannelID").disabled=true;$("#notifyChannelName").value=c.name||"";$("#notifyChannelType").value=c.type;$("#notifyChannelEnabled").value=c.enabled?"1":"0";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value=notificationJSONText(c.config,{});$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=false;$("#notifyChannelName").focus();}
+async function saveNotificationChannel(){
+  try{
+    const config=JSON.parse($("#notifyChannelConfig").value||"{}");if(!config||typeof config!=="object"||Array.isArray(config))throw Error("公开配置必须是 JSON 对象");
+    const payload={id:$("#notifyChannelID").value.trim(),name:$("#notifyChannelName").value.trim(),type:$("#notifyChannelType").value,endpoint:$("#notifyChannelEndpoint").value.trim(),config_json:JSON.stringify(config),secrets_json:$("#notifyChannelSecrets").value.trim(),enabled:$("#notifyChannelEnabled").value==="1"};
+    await api("/notifications/channels",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    resetNotificationChannelForm();await loadNotificationV1();notificationStatus("通道已保存。测试发送后可查看最近成功/失败状态。");
+  }catch(e){notificationStatus("保存通道失败："+e.message,true);}
+}
+function resetNotificationTemplateForm(){notificationV1State.editingTemplate="";$("#notifyTemplateEditorTitle").textContent="新增模板";$("#notifyTemplateID").disabled=false;$("#notifyTemplateID").value="";$("#notifyTemplateName").value="";$("#notifyTemplateEventType").value="";$("#notifyTemplateSeverity").value="P3";$("#notifyTemplateFormat").value="text";$("#notifyTemplateEnabled").value="1";$("#notifyTemplateTitle").value="";$("#notifyTemplateBody").value="";$("#notifyTemplateVariables").value='["task","commit","summary"]';$("#notifyTemplateEditor").hidden=true;}
+function editNotificationTemplate(id){const t=notificationV1State.templates.find(x=>x.id===id);if(!t)return;notificationV1State.editingTemplate=id;$("#notifyTemplateEditorTitle").textContent="编辑模板";$("#notifyTemplateID").value=t.id;$("#notifyTemplateID").disabled=true;$("#notifyTemplateName").value=t.name||"";$("#notifyTemplateEventType").value=t.event_type||"";$("#notifyTemplateSeverity").value=t.severity||"P3";$("#notifyTemplateFormat").value=t.format||"text";$("#notifyTemplateEnabled").value=t.enabled?"1":"0";$("#notifyTemplateTitle").value=t.title_template||"";$("#notifyTemplateBody").value=t.body_template||"";$("#notifyTemplateVariables").value=notificationJSONText(JSON.parse(t.variables_json||"[]"),[]);$("#notifyTemplateEditor").hidden=false;}
+async function saveNotificationTemplate(){
+  try{const variables=JSON.parse($("#notifyTemplateVariables").value||"[]");if(!Array.isArray(variables)||variables.some(x=>typeof x!=="string"))throw Error("允许的变量必须是 JSON 字符串数组");
+    const payload={id:$("#notifyTemplateID").value.trim(),name:$("#notifyTemplateName").value.trim(),event_type:$("#notifyTemplateEventType").value.trim(),severity:$("#notifyTemplateSeverity").value,format:$("#notifyTemplateFormat").value,title_template:$("#notifyTemplateTitle").value,body_template:$("#notifyTemplateBody").value,variables_json:JSON.stringify(variables),enabled:$("#notifyTemplateEnabled").value==="1"};
+    await api("/notifications/templates",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});resetNotificationTemplateForm();await loadNotificationV1();notificationStatus("事件模板已保存。");
+  }catch(e){notificationStatus("保存模板失败："+e.message,true);}
+}
+function resetNotificationTaskForm(){notificationV1State.editingTask="";$("#notifyTaskEditorTitle").textContent="新增任务";$("#notifyTaskID").disabled=false;$("#notifyTaskID").value="";$("#notifyTaskName").value="";fillNotificationTaskSelects();$("#notifyTaskEnabled").value="1";$("#notifyTaskEventTypes").value='["development.completed"]';$("#notifyTaskSeverities").value='["P3"]';$("#notifyTaskPolicy").value="{}";$("#notifyTaskEditor").hidden=true;}
+function editNotificationTask(id){const t=notificationV1State.tasks.find(x=>x.id===id);if(!t)return;notificationV1State.editingTask=id;$("#notifyTaskEditorTitle").textContent="编辑任务";$("#notifyTaskID").value=t.id;$("#notifyTaskID").disabled=true;$("#notifyTaskName").value=t.name||"";fillNotificationTaskSelects();$("#notifyTaskChannel").value=t.channel_id;$("#notifyTaskTemplate").value=t.template_id;$("#notifyTaskEnabled").value=t.enabled?"1":"0";$("#notifyTaskEventTypes").value=notificationJSONText(JSON.parse(t.event_types_json||"[]"),[]);$("#notifyTaskSeverities").value=notificationJSONText(JSON.parse(t.severities_json||"[]"),[]);$("#notifyTaskPolicy").value=notificationJSONText(JSON.parse(t.policy_json||"{}"),{});$("#notifyTaskEditor").hidden=false;}
+async function saveNotificationTask(){
+  try{const eventTypes=JSON.parse($("#notifyTaskEventTypes").value||"[]"),severities=JSON.parse($("#notifyTaskSeverities").value||"[]"),policy=JSON.parse($("#notifyTaskPolicy").value||"{}");if(!Array.isArray(eventTypes)||!Array.isArray(severities)||!policy||typeof policy!=="object"||Array.isArray(policy))throw Error("事件/级别过滤必须是数组，策略必须是 JSON 对象");
+    const payload={id:$("#notifyTaskID").value.trim(),name:$("#notifyTaskName").value.trim(),channel_id:$("#notifyTaskChannel").value,template_id:$("#notifyTaskTemplate").value,enabled:$("#notifyTaskEnabled").value==="1",event_types_json:JSON.stringify(eventTypes),severities_json:JSON.stringify(severities),policy_json:JSON.stringify(policy)};
+    await api("/notifications/tasks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});resetNotificationTaskForm();await loadNotificationV1();notificationStatus("通知任务已保存。");
+  }catch(e){notificationStatus("保存任务失败："+e.message,true);}
+}
+async function loadNotificationDeliveries(){
+  const host=$("#notifyDeliveriesList");if(!host)return;
+  try{const result=await api("/notifications/deliveries?limit=100");notificationV1State.deliveries=result.items||[];
+    if(!notificationV1State.deliveries.length){host.innerHTML='<tr><td colspan="7">暂无投递记录。</td></tr>';return;}
+    host.innerHTML=notificationV1State.deliveries.map(d=>`<tr><td>${esc(notificationTime(d.updated_at||d.created_at))}</td><td>${esc(d.event_type)}<br><small>${esc(d.severity)} · ${esc(d.source)} ${d.device?"· "+esc(d.device):""}</small></td><td>${esc(d.channel_name)}<br><small>${esc(d.task_name)}</small></td><td>${notificationStatusBadge(d.status)}</td><td>${esc(d.attempt_count)} 总 / ${esc(d.retry_count)} 本轮${d.merged_count>1?` · 合并 ${esc(d.merged_count)} 条`:""}</td><td>${esc(d.last_error||"—")}${d.last_http_status?`<br><small>HTTP ${esc(d.last_http_status)}</small>`:""}</td><td><div class="notification-item-actions"><button type="button" data-notify-attempts="${esc(d.id)}">尝试记录</button>${d.status==="failed"?`<button type="button" data-notify-retry="${esc(d.id)}">重试此投递</button>`:""}</div></td></tr>`).join("");
+  }catch(e){host.innerHTML=`<tr><td colspan="7">加载失败：${esc(e.message)}</td></tr>`;}
+}
+async function loadNotificationAttempts(id){
+  const host=$("#notifyDeliveryAttempts");try{const result=await api("/notifications/deliveries/attempts?id="+encodeURIComponent(id));const items=result.items||[];host.hidden=false;host.innerHTML=`<h4>投递尝试 · ${esc(id)}</h4>`+(items.length?items.map(a=>`<div class="notification-attempt-row"><span>${esc(notificationTime(a.started_at))}</span><span>${notificationStatusBadge(a.outcome)} · HTTP ${esc(a.http_status||0)}</span><span>${esc(a.error||"—")}${a.finished_at?`<br><small>结束：${esc(notificationTime(a.finished_at))}</small>`:""}</span></div>`).join(""):'<p class="muted">暂无尝试记录。</p>');}catch(e){notificationStatus("读取投递尝试失败："+e.message,true);}
+}
+async function retryNotificationDelivery(id){if(!confirm("只重试这条失败投递，不会重新广播给所有任务。继续？"))return;try{await api("/notifications/deliveries/retry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});notificationStatus("已将该投递重新排队。");await loadNotificationDeliveries();}catch(e){notificationStatus("重试失败："+e.message,true);}}
+$("#notifyV1Refresh")?.addEventListener("click",()=>loadNotificationV1().catch(()=>{}));
+$("#notifyDeliveriesRefresh")?.addEventListener("click",()=>loadNotificationDeliveries());
+$("#notifyChannelNew")?.addEventListener("click",newNotificationChannel);
+$("#notifyChannelSave")?.addEventListener("click",saveNotificationChannel);
+$("#notifyChannelCancel")?.addEventListener("click",resetNotificationChannelForm);
+$("#notifyTemplateNew")?.addEventListener("click",()=>{resetNotificationTemplateForm();$("#notifyTemplateEditor").hidden=false;$("#notifyTemplateID").focus();});
+$("#notifyTemplateSave")?.addEventListener("click",saveNotificationTemplate);
+$("#notifyTemplateCancel")?.addEventListener("click",resetNotificationTemplateForm);
+$("#notifyTaskNew")?.addEventListener("click",()=>{resetNotificationTaskForm();$("#notifyTaskEditor").hidden=false;$("#notifyTaskID").focus();});
+$("#notifyTaskSave")?.addEventListener("click",saveNotificationTask);
+$("#notifyTaskCancel")?.addEventListener("click",resetNotificationTaskForm);
+document.addEventListener("click",async event=>{
+  const tab=event.target.closest("[data-notify-tab]");if(tab){notificationSetTab(tab.dataset.notifyTab);return;}
+  const action=event.target.closest("[data-notify-action]");if(action){const id=action.dataset.id;try{switch(action.dataset.notifyAction){case"edit-channel":editNotificationChannel(id);break;case"test-channel":try{await api("/notifications/channels/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});notificationStatus("测试发送成功。");}catch(testError){await loadNotificationV1().catch(()=>{});throw testError;}await loadNotificationV1();break;case"disable-channel":if(confirm("停用此通道并停用依赖它的任务？")){await api("/notifications/channels?id="+encodeURIComponent(id),{method:"DELETE"});await loadNotificationV1();notificationStatus("通道及其依赖任务已停用。");}break;case"edit-template":editNotificationTemplate(id);break;case"disable-template":if(confirm("停用此模板及依赖任务？")){await api("/notifications/templates?id="+encodeURIComponent(id),{method:"DELETE"});await loadNotificationV1();notificationStatus("模板及其依赖任务已停用。");}break;case"edit-task":editNotificationTask(id);break;case"disable-task":if(confirm("停用此通知任务？")){await api("/notifications/tasks?id="+encodeURIComponent(id),{method:"DELETE"});await loadNotificationV1();notificationStatus("通知任务已停用。");}break;}}catch(e){notificationStatus("操作失败："+e.message,true);}return;}
+  const attempts=event.target.closest("[data-notify-attempts]");if(attempts){await loadNotificationAttempts(attempts.dataset.notifyAttempts);return;}
+  const retry=event.target.closest("[data-notify-retry]");if(retry){await retryNotificationDelivery(retry.dataset.notifyRetry);}
+});
+$("#notifyChannelType")?.addEventListener("change",()=>{const type=$("#notifyChannelType").value;$("#notifyChannelEndpoint").placeholder=type==="webhook"?"https://…（编辑时留空保留原地址）":"该类型不使用 Webhook URL";$("#notifyChannelSecrets").placeholder=type==="telegram_bot"?'{"bot_token":"…"}':type==="webhook"?'{"headers":{"Authorization":"Bearer …"}}':'{"app_secret":"…"}';});

@@ -28,6 +28,16 @@ type Runner interface {
 	DeleteDevice(http.ResponseWriter, *http.Request)
 }
 
+type notificationV1PanelRunner interface {
+	NotificationChannelsV1JSON(http.ResponseWriter, *http.Request)
+	NotificationChannelTestJSON(http.ResponseWriter, *http.Request)
+	NotificationTemplatesV1JSON(http.ResponseWriter, *http.Request)
+	NotificationTasksV1JSON(http.ResponseWriter, *http.Request)
+	NotificationDeliveriesV1JSON(http.ResponseWriter, *http.Request)
+	NotificationDeliveryAttemptsV1JSON(http.ResponseWriter, *http.Request)
+	NotificationDeliveryRetryV1JSON(http.ResponseWriter, *http.Request)
+}
+
 type tokenRunner interface {
 	TokenListJSON(http.ResponseWriter, *http.Request)
 	TokenCreateJSON(http.ResponseWriter, *http.Request)
@@ -101,6 +111,15 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/api/notifications/webhook/update", p.protected(p.updateWebhookTarget))
 	mux.HandleFunc("/panel/api/notifications/webhook/delete", p.protected(p.deleteWebhookTarget))
 	mux.HandleFunc("/panel/api/notifications/webhook/test", p.protected(p.testWebhook))
+	if runner, ok := p.Runner.(notificationV1PanelRunner); ok {
+		mux.HandleFunc("/panel/api/notifications/channels/test", p.protected(runner.NotificationChannelTestJSON))
+		mux.HandleFunc("/panel/api/notifications/channels", p.protected(runner.NotificationChannelsV1JSON))
+		mux.HandleFunc("/panel/api/notifications/templates", p.protected(runner.NotificationTemplatesV1JSON))
+		mux.HandleFunc("/panel/api/notifications/tasks", p.protected(runner.NotificationTasksV1JSON))
+		mux.HandleFunc("/panel/api/notifications/deliveries/attempts", p.protected(runner.NotificationDeliveryAttemptsV1JSON))
+		mux.HandleFunc("/panel/api/notifications/deliveries/retry", p.protected(runner.NotificationDeliveryRetryV1JSON))
+		mux.HandleFunc("/panel/api/notifications/deliveries", p.protected(runner.NotificationDeliveriesV1JSON))
+	}
 	mux.HandleFunc("/", p.probe)
 	return mux
 }

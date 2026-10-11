@@ -386,9 +386,8 @@ func (s *Store) SaveNotificationTask(v NotificationTask) error {
 			return errors.New("task event types cannot contain empty values")
 		}
 	}
-	var policy map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(v.PolicyJSON), &policy); err != nil || policy == nil {
-		return errors.New("task policy must be a JSON object")
+	if _, err := ParseNotificationTaskPolicy(v.PolicyJSON); err != nil {
+		return err
 	}
 	channel, err := s.GetNotificationChannel(v.ChannelID)
 	if err != nil {
@@ -403,6 +402,13 @@ func (s *Store) SaveNotificationTask(v NotificationTask) error {
 	template, err := s.GetNotificationTemplate(v.TemplateID)
 	if err != nil {
 		return fmt.Errorf("task template unavailable: %w", err)
+	}
+	policy, err := ParseNotificationTaskPolicy(v.PolicyJSON)
+	if err != nil {
+		return err
+	}
+	if len(policy.RecoveryEventTypes) > 0 && !containsString(policy.RecoveryEventTypes, template.EventType) {
+		return errors.New("recovery_event_types must include the task template event_type")
 	}
 	if !template.Enabled && v.Enabled {
 		return errors.New("task cannot be enabled with a disabled template")

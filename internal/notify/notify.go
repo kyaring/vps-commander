@@ -3,6 +3,8 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -514,6 +516,16 @@ func humanDuration(sec int64) string {
 }
 
 func (m *Manager) emit(e Event) {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("VPS_COMMANDER_NOTIFICATION_V1_BUILTIN_MODE")))
+	if mode == "shadow" || mode == "v1" {
+		if m.recordBuiltInNotification(e, mode == "shadow") {
+			if mode == "v1" {
+				return
+			}
+		} else if mode == "v1" {
+			log.Printf("notification v1 routing failed; falling back to legacy sender: type=%s device=%s", e.Type, e.Device)
+		}
+	}
 	m.mu.Lock()
 	if m.stopping {
 		m.mu.Unlock()
@@ -534,6 +546,134 @@ func (m *Manager) emit(e Event) {
 	// Direct calls before Start remain synchronous for callers that use the
 	// manager without its lifecycle; production starts the queue worker first.
 	m.deliverEvent(context.Background(), e)
+}
+
+var builtinTemplatePlaceholderRE = regexp.MustCompile(`\{\{\s*([a-z][a-z0-9_]*)\s*\}\}`)
+
+var builtinNotificationTemplateIDs = map[string]string{
+	"node_offline":       "builtin-node-offline",
+	"node_recovery":      "builtin-node-recovery",
+	"resource_threshold": "builtin-resource-threshold",
+	"resource_recovery":  "builtin-resource-recovery",
+	"scheduled_report":   "builtin-scheduled-report",
+}
+
+func (m *Manager) recordBuiltInNotification(e Event, shadow bool) bool {
+	if m.Store == nil {
+		return false
+	}
+	templateID, ok := builtinNotificationTemplateIDs[e.Type]
+	if !ok {
+		return false
+	}
+	var random [12]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return false
+	}
+	severity := "P3"
+	switch strings.ToLower(e.Severity) {
+	case "critical", "fatal", "emergency":
+		severity = "P1"
+	case "warning", "warn", "error":
+		severity = "P2"
+	case "info", "notice":
+		severity = "P3"
+	}
+	varsMap := map[string]any{}
+	if original, ok := e.Data.(map[string]any); ok {
+		for key, value := range original {
+			varsMap[key] = value
+		}
+	}
+	vars := map[string]string{"message": e.Message}
+	for key, value := range varsMap {
+		vars[key] = fmt.Sprint(value)
+	}
+	message := e.Message
+	template, err := m.Store.GetNotificationTemplate(templateID)
+	if err != nil {
+		log.Printf("load built-in notification template %s: %v", templateID, err)
+		return false
+	}
+	if rendered, ok := renderBuiltInNotificationTemplate(template, vars); ok {
+		message = rendered
+	} else {
+		log.Printf("built-in notification template %s could not be rendered; preserving legacy message", templateID)
+	}
+	varsMap["__vps_legacy_severity"] = e.Severity
+	varsMap["__vps_legacy_message"] = e.Message
+	data, err := json.Marshal(varsMap)
+	if err != nil {
+		return false
+	}
+	at := e.At
+	if at == 0 {
+		at = m.now().Unix()
+	}
+	_, matched, _, err := m.Store.AcceptNotificationEvent(storage.NotificationEvent{
+		ID: "evt_builtin_" + hex.EncodeToString(random[:]), TemplateID: templateID, TemplateFormat: "text",
+		EventType: e.Type, Severity: severity, Source: "builtin", Device: e.Device,
+		Message: message, DataJSON: string(data), CreatedAt: at, Shadow: shadow,
+	})
+	if err != nil {
+		log.Printf("persist built-in notification event %s: %v", e.Type, err)
+		return false
+	}
+	return matched > 0
+}
+
+func renderBuiltInNotificationTemplate(template storage.NotificationTemplate, variables map[string]string) (string, bool) {
+	values := make(map[string]string, len(variables))
+	for key, value := range variables {
+		if template.Format == "markdown" {
+			values[key] = escapeBuiltInMarkdownV2(value)
+		} else {
+			values[key] = value
+		}
+	}
+	render := func(source string) (string, bool) {
+		clean := builtinTemplatePlaceholderRE.ReplaceAllStringFunc(source, func(token string) string {
+			match := builtinTemplatePlaceholderRE.FindStringSubmatch(token)
+			if len(match) != 2 {
+				return token
+			}
+			value, ok := values[match[1]]
+			if !ok {
+				return token
+			}
+			return value
+		})
+		if strings.Contains(clean, "{{") || strings.Contains(clean, "}}") {
+			return "", false
+		}
+		return clean, true
+	}
+	title, ok := render(template.TitleTemplate)
+	if !ok {
+		return "", false
+	}
+	body, ok := render(template.BodyTemplate)
+	if !ok {
+		return "", false
+	}
+	if title != "" {
+		return title + "\n" + body, true
+	}
+	if body == "" {
+		return "", false
+	}
+	return body, true
+}
+
+func escapeBuiltInMarkdownV2(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if strings.ContainsRune("_ * [ ] ( ) ~ ` > # + - = | { } . ! \\", r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func (m *Manager) deliverEvent(parent context.Context, e Event) {
