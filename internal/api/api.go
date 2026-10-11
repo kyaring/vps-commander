@@ -1112,7 +1112,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res = s.Exec.Run(ctx, req.Command, req.Workdir)
 	}
-	if err := s.audit(r, req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, res.Stderr); err != nil {
+	if err := s.audit(r.WithContext(withCommandExit(r.Context())), req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, execAuditMessage(res)); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}

@@ -73,7 +73,7 @@ func (s *Server) auditContextTarget(ctx context.Context, ip, device, action, tar
 		transport = concrete
 	}
 	if code != 0 {
-		result = "error"
+		result = auditResultForCode(ctx, code)
 	}
 	if action == "device_denied" {
 		targetType = "device"
@@ -129,10 +129,7 @@ func (s *Server) auditMCPContext(ctx context.Context, ip, device, action, comman
 	} else if strings.Contains(action, "file") || action == "edit_block" || action == "create_directory" || action == "move_file" {
 		targetType = "file"
 	}
-	result := "ok"
-	if code != 0 {
-		result = "error"
-	}
+	result := auditResultForCode(ctx, code)
 	if action == "mcp_denied" || action == "security_denied" {
 		result = "denied"
 		code = 0

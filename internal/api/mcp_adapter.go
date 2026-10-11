@@ -104,7 +104,7 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	}
 
 	if b.server.Store != nil {
-		_ = b.server.auditMCPContext(ctx, clientIP, device, "exec", command, res.ExitCode, res.DurationMS, res.Stderr)
+		_ = b.server.auditMCPContext(withCommandExit(ctx), clientIP, device, "exec", command, res.ExitCode, res.DurationMS, execAuditMessage(res))
 	}
 
 	return model.ExecResponse{
