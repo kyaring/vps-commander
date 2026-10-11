@@ -20,7 +20,8 @@ import (
 )
 
 type Store struct {
-	DB *sql.DB
+	DB                    *sql.DB
+	notificationSecretKey []byte
 
 	auditMu              sync.Mutex
 	auditWriteMu         sync.Mutex
@@ -51,13 +52,17 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
+	secretKey, err := loadNotificationSecretKey()
+	if err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	s := &Store{DB: db}
+	s := &Store{DB: db, notificationSecretKey: secretKey}
 	if err := s.init(); err != nil {
 		db.Close()
 		return nil, err

@@ -115,6 +115,7 @@ func (s *Store) migrateNotificationV1() error {
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
 			endpoint TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}',
 			enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+			secrets_ciphertext BLOB NOT NULL DEFAULT X'',
 			last_attempt_at INTEGER NOT NULL DEFAULT 0, last_success_at INTEGER NOT NULL DEFAULT 0,
 			last_status TEXT NOT NULL DEFAULT 'unknown', last_http_status INTEGER NOT NULL DEFAULT 0,
 			consecutive_failures INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
@@ -178,11 +179,23 @@ func (s *Store) migrateNotificationV1() error {
 	if err := ensureNotificationColumn(tx, "notification_channels", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	if err := ensureNotificationColumn(tx, "notification_channels", "secrets_ciphertext", "BLOB NOT NULL DEFAULT X''"); err != nil {
+		return err
+	}
 	now := time.Now().Unix()
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_templates
 		(id,name,event_type,severity,title_template,body_template,format,variables_json,enabled,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?)`, legacyEventTemplateID, "Legacy webhook event JSON", "*", "*", "", "", "raw_json", `[]`, 1, now, now); err != nil {
 		return fmt.Errorf("seed legacy event template: %w", err)
+	}
+	builtins := []NotificationTemplate{
+		{ID: "development-completed", Name: "开发完成", EventType: "development.completed", Severity: "P3", TitleTemplate: "开发完成：{{commit}}", BodyTemplate: "任务：{{task}}\n提交：{{commit}}\n摘要：{{summary}}", Format: "text", VariablesJSON: `["task","commit","summary"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "review-completed", Name: "审核完成", EventType: "review.completed", Severity: "P3", TitleTemplate: "审核完成：{{result}}", BodyTemplate: "结果：{{result}}\n提交：{{commit}}\n摘要：{{summary}}", Format: "text", VariablesJSON: `["result","commit","summary"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, template := range builtins {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_templates(id,name,event_type,severity,title_template,body_template,format,variables_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, template.ID, template.Name, template.EventType, template.Severity, template.TitleTemplate, template.BodyTemplate, template.Format, template.VariablesJSON, 1, template.CreatedAt, template.UpdatedAt); err != nil {
+			return fmt.Errorf("seed built-in notification template %q: %w", template.ID, err)
+		}
 	}
 	rows, err := tx.Query(`SELECT w.id,w.name,w.type,w.url,COALESCE(w.config_json,''),w.enabled,w.created_at,w.updated_at,
 		COALESCE(d.consecutive_failures,0),COALESCE(d.last_error,''),COALESCE(d.last_status,0),COALESCE(d.updated_at,0)
