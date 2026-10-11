@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+var notificationSecretHeaderNameRE = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
 var notificationTemplatePlaceholderRE = regexp.MustCompile(`\{\{\s*([a-z][a-z0-9_]*)\s*\}\}`)
 
 func (s *Store) GetNotificationChannel(id string) (NotificationChannel, error) {
@@ -76,6 +78,27 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 	if containsNotificationSecretKey(publicConfig) {
 		return errors.New("secret values must be placed in secrets_json, not config_json")
 	}
+	configObject, ok := publicConfig.(map[string]any)
+	if !ok {
+		return errors.New("channel config must be a JSON object")
+	}
+	allowedConfigKeys := map[string]bool{}
+	switch v.Type {
+	case "webhook":
+		allowedConfigKeys = map[string]bool{"method": true}
+	case "telegram_bot":
+		allowedConfigKeys = map[string]bool{"chat_id": true, "message_thread_id": true}
+	case "qq_official_bot":
+		allowedConfigKeys = map[string]bool{"app_id": true, "target_type": true, "target_id": true}
+	}
+	for key := range configObject {
+		if !allowedConfigKeys[key] {
+			return fmt.Errorf("unsupported public config field %q; credentials and custom headers belong in secrets_json", key)
+		}
+	}
+	if method, ok := configObject["method"]; ok && v.Type == "webhook" && method != "POST" {
+		return errors.New("webhook method must be POST")
+	}
 	if secretsJSON != "" && !json.Valid([]byte(secretsJSON)) {
 		return errors.New("channel secrets must be valid JSON")
 	}
@@ -136,7 +159,31 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 		if err := json.Unmarshal([]byte(secretsJSON), &secrets); err != nil || secrets == nil {
 			return errors.New("channel secrets must be a JSON object")
 		}
+		if v.Type == "webhook" {
+			for key := range secrets {
+				if key != "headers" {
+					return fmt.Errorf("unsupported webhook secret field %q", key)
+				}
+			}
+			if raw, ok := secrets["headers"]; ok {
+				var headers map[string]string
+				if err := json.Unmarshal(raw, &headers); err != nil || len(headers) > 32 {
+					return errors.New("webhook secrets.headers must be a string map with at most 32 entries")
+				}
+				for name, value := range headers {
+					normalized := strings.ToLower(strings.TrimSpace(name))
+					if !notificationSecretHeaderNameRE.MatchString(name) || strings.ContainsAny(value, "\r\n") || len(value) > 4096 || normalized == "host" || normalized == "content-length" || normalized == "connection" || normalized == "transfer-encoding" || normalized == "upgrade" || normalized == "proxy-authorization" || normalized == "proxy-connection" {
+						return fmt.Errorf("invalid webhook secret header %q", name)
+					}
+				}
+			}
+		}
 		if v.Type == "telegram_bot" {
+			for key := range secrets {
+				if key != "bot_token" {
+					return fmt.Errorf("unsupported Telegram secret field %q", key)
+				}
+			}
 			var token string
 			_ = json.Unmarshal(secrets["bot_token"], &token)
 			if strings.TrimSpace(token) == "" {
@@ -144,6 +191,11 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 			}
 		}
 		if v.Type == "qq_official_bot" {
+			for key := range secrets {
+				if key != "app_secret" {
+					return fmt.Errorf("unsupported QQ secret field %q", key)
+				}
+			}
 			var secret string
 			_ = json.Unmarshal(secrets["app_secret"], &secret)
 			if strings.TrimSpace(secret) == "" {
@@ -386,4 +438,28 @@ func (s *Store) DisableNotificationTask(id string) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// GetNotificationChannelForDelivery includes encrypted credentials for the
+// sender path; ordinary list/read methods never return ciphertext.
+func (s *Store) GetNotificationChannelForDelivery(id string) (NotificationChannel, error) {
+	v, err := s.GetNotificationChannel(id)
+	if err != nil {
+		return v, err
+	}
+	if v.LegacyWebhookID == "" {
+		if err := s.DB.QueryRow(`SELECT secrets_ciphertext FROM notification_channels WHERE id=?`, id).Scan(&v.SecretsCiphertext); err != nil {
+			return v, err
+		}
+	}
+	return v, nil
+}
+
+func (s *Store) RecordNotificationChannelTestResult(id, status string, httpStatus int, failure string) error {
+	now := time.Now().Unix()
+	if len(failure) > 512 {
+		failure = failure[:512]
+	}
+	_, err := s.DB.Exec(`UPDATE notification_channels SET last_attempt_at=?,last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,last_status=?,last_http_status=?,consecutive_failures=CASE WHEN ?='success' THEN 0 WHEN ?='unsupported' THEN consecutive_failures ELSE consecutive_failures+1 END,last_error=?,updated_at=? WHERE id=? AND COALESCE(legacy_webhook_id,'')=''`, now, status, now, status, httpStatus, status, status, failure, now, id)
+	return err
 }

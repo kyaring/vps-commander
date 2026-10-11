@@ -127,6 +127,16 @@ func TestNotificationMigrationAddsSecretsColumnToExistingSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = db.Exec(`CREATE TABLE notification_deliveries (
+		id TEXT PRIMARY KEY, event_id TEXT NOT NULL, task_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+		status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
+		last_http_status INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+		sent_at INTEGER NOT NULL DEFAULT 0, UNIQUE(event_id,task_id)
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -141,6 +151,12 @@ func TestNotificationMigrationAddsSecretsColumnToExistingSchema(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatal("migration did not add secrets_ciphertext to existing channel table")
+	}
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('notification_deliveries') WHERE name='template_id'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("migration did not add template_id to existing notification deliveries")
 	}
 }
 
@@ -165,5 +181,26 @@ func TestWebhookChannelBlankEndpointUpdatePreservesStoredURL(t *testing.T) {
 	}
 	if got.Endpoint != "https://example.invalid/secret-path" || got.Name != channel.Name {
 		t.Fatalf("blank endpoint update did not preserve URL: %+v", got)
+	}
+}
+
+func TestWebhookSecretHeadersAreValidatedBeforeEncryption(t *testing.T) {
+	t.Setenv(notificationSecretKeyEnv, hex.EncodeToString(bytes.Repeat([]byte{0x51}, 32)))
+	store, err := Open(t.TempDir() + "/webhook-headers.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	v := NotificationChannel{ID: "hook-headers", Name: "Headers", Type: "webhook", Endpoint: "https://example.invalid", ConfigJSON: "{}", Enabled: true}
+	if err := store.SaveNotificationChannel(v, `{"headers":{"Authorization":"Bearer hidden","X-Request-ID":"123"}}`); err != nil {
+		t.Fatalf("valid secret headers rejected: %v", err)
+	}
+	v.ID = "hook-host-header"
+	if err := store.SaveNotificationChannel(v, `{"headers":{"Host":"attacker.invalid"}}`); err == nil {
+		t.Fatal("reserved Host header was accepted")
+	}
+	v.ID = "hook-extra-secret"
+	if err := store.SaveNotificationChannel(v, `{"unknown_secret":"hidden"}`); err == nil {
+		t.Fatal("unknown webhook secret field was accepted")
 	}
 }

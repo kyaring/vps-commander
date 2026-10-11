@@ -27,6 +27,7 @@ type Target struct {
 	Enabled bool   `json:"enabled"`
 }
 type Event struct {
+	ID       string `json:"id,omitempty"`
 	Type     string `json:"type"`
 	Device   string `json:"device,omitempty"`
 	Severity string `json:"severity"`
@@ -42,31 +43,32 @@ const (
 )
 
 type Manager struct {
-	Store           *storage.Store
-	Client          *http.Client
-	stop            chan struct{}
-	deliveryStop    chan struct{}
-	wg              sync.WaitGroup
-	deliveryWG      sync.WaitGroup
-	startOnce       sync.Once
-	stopOnce        sync.Once
-	mu              sync.Mutex
-	deliveryQueue   chan Event
-	deliveryCtx     context.Context
-	deliveryCancel  context.CancelFunc
-	deliveryStarted bool
-	stopRequested   bool
-	stopping        bool
-	offline         map[string]*offlineState
-	clock           func() time.Time
-	strikeCount     map[string]int
-	recoveryCount   map[string]int
-	resourceAlerts  map[string]*resourceAlertState
-	lastSchedule    string
+	Store              *storage.Store
+	Client             *http.Client
+	stop               chan struct{}
+	deliveryStop       chan struct{}
+	wg                 sync.WaitGroup
+	deliveryWG         sync.WaitGroup
+	startOnce          sync.Once
+	stopOnce           sync.Once
+	mu                 sync.Mutex
+	deliveryQueue      chan Event
+	deliveryCtx        context.Context
+	deliveryCancel     context.CancelFunc
+	telegramAPIBaseURL string
+	deliveryStarted    bool
+	stopRequested      bool
+	stopping           bool
+	offline            map[string]*offlineState
+	clock              func() time.Time
+	strikeCount        map[string]int
+	recoveryCount      map[string]int
+	resourceAlerts     map[string]*resourceAlertState
+	lastSchedule       string
 }
 
 func New(s *storage.Store) *Manager {
-	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), deliveryStop: make(chan struct{}), offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
+	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), deliveryStop: make(chan struct{}), telegramAPIBaseURL: "https://api.telegram.org", offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
 	m.loadResourceAlertStates()
 	m.importOpenClawWebhook()
 	return m
@@ -154,9 +156,10 @@ func (m *Manager) Start() {
 		m.deliveryCtx, m.deliveryCancel = context.WithCancel(context.Background())
 		m.deliveryStarted = true
 		m.wg.Add(1)
-		m.deliveryWG.Add(1)
+		m.deliveryWG.Add(2)
 		m.mu.Unlock()
 		go m.deliveryLoop()
+		go m.notificationOutboxLoop()
 		go m.loop()
 	})
 }

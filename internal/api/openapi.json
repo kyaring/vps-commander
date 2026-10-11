@@ -746,6 +746,453 @@
           }
         }
       }
+    },
+    "/api/v1/events": {
+      "post": {
+        "summary": "Emit a custom notification event",
+        "description": "Requires the events:emit token scope. The selected template defines the event type and default severity. P1 or severity escalation requires admin. Requests are limited to 30 per token per minute; Idempotency-Key replays return the original event.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "template_id"
+                ],
+                "properties": {
+                  "template_id": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "P1",
+                      "P2",
+                      "P3",
+                      "P4"
+                    ]
+                  },
+                  "variables": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "source": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "device": {
+                    "type": "string",
+                    "maxLength": 128
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Event accepted and delivery rows created"
+          },
+          "200": {
+            "description": "Idempotent replay of an accepted event"
+          },
+          "400": {
+            "description": "Invalid event/template/variables"
+          },
+          "403": {
+            "description": "Missing scope or unprivileged severity escalation"
+          },
+          "409": {
+            "description": "Idempotency-Key reused with a different request"
+          },
+          "429": {
+            "description": "Per-token rate limit exceeded"
+          },
+          "500": {
+            "description": "Persistence failure"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/channels": {
+      "get": {
+        "summary": "List notification channels (secrets and endpoints redacted)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification channels"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update a notification channel",
+        "description": "Requires admin. Provider credentials are supplied in secrets_json and encrypted at rest. The response never returns secrets or raw endpoint URLs. QQ official bot channels are disabled for proactive alerts.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "type"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "webhook",
+                      "telegram_bot",
+                      "qq_official_bot"
+                    ]
+                  },
+                  "endpoint": {
+                    "type": "string"
+                  },
+                  "config_json": {
+                    "type": "object"
+                  },
+                  "secrets_json": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Channel saved"
+          },
+          "400": {
+            "description": "Invalid channel config"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Disable a notification channel and dependent tasks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Channel disabled"
+          },
+          "400": {
+            "description": "Cannot disable this channel"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/templates": {
+      "get": {
+        "summary": "List event templates",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification templates"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update an event template",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "event_type",
+                  "severity",
+                  "format",
+                  "body_template",
+                  "variables_json"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "event_type": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "P1",
+                      "P2",
+                      "P3",
+                      "P4",
+                      "*"
+                    ]
+                  },
+                  "title_template": {
+                    "type": "string"
+                  },
+                  "body_template": {
+                    "type": "string"
+                  },
+                  "format": {
+                    "type": "string",
+                    "enum": [
+                      "text",
+                      "markdown",
+                      "raw_json"
+                    ]
+                  },
+                  "variables_json": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Template saved"
+          },
+          "400": {
+            "description": "Invalid template"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Disable a template and dependent tasks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Template disabled"
+          },
+          "400": {
+            "description": "Cannot disable this template"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/tasks": {
+      "get": {
+        "summary": "List notification tasks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Notification tasks"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update a notification task",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "name",
+                  "channel_id",
+                  "template_id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "channel_id": {
+                    "type": "string"
+                  },
+                  "template_id": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "event_types_json": {
+                    "type": "string"
+                  },
+                  "severities_json": {
+                    "type": "string"
+                  },
+                  "policy_json": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task saved"
+          },
+          "400": {
+            "description": "Invalid task"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Disable a task",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task disabled"
+          },
+          "400": {
+            "description": "Cannot disable this task"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/channels/test": {
+      "post": {
+        "summary": "Send a test notification through a configured channel",
+        "description": "Requires admin. Sends one test message and updates last-attempt/success/failure status; raw endpoints and credentials are not returned.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Test send succeeded"
+          },
+          "400": {
+            "description": "Invalid channel ID"
+          },
+          "502": {
+            "description": "Provider test send failed"
+          },
+          "503": {
+            "description": "Notification sender unavailable"
+          }
+        }
+      }
     }
   }
 }

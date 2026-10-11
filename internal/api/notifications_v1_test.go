@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/notify"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
@@ -117,6 +118,28 @@ func TestNotificationManagementRejectsSecretsInPublicConfigAndQQProactiveTask(t 
 	}
 }
 
+func TestWebhookChannelAPIReportsConfiguredWithoutEchoingEndpoint(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "notify-webhook-redaction.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveNotificationChannel(storage.NotificationChannel{ID: "webhook-redact", Name: "Private URL", Type: "webhook", Endpoint: "https://hooks.example.invalid/path-with-private-token", ConfigJSON: "{}", Enabled: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{Store: store}).Routes()
+	listed := notificationAPIRequest(t, h, http.MethodGet, "/api/v1/notifications/channels", "", "system", nil)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), "hooks.example.invalid") || strings.Contains(listed.Body.String(), "private-token") {
+		t.Fatalf("webhook endpoint leaked: %s", listed.Body.String())
+	}
+	if !strings.Contains(listed.Body.String(), `"endpoint_configured":true`) {
+		t.Fatalf("endpoint configured state missing: %s", listed.Body.String())
+	}
+}
+
 func TestNotificationChannelViewDoesNotSerializeSecrets(t *testing.T) {
 	v := notificationChannelView{ID: "x", Name: "x", Type: "telegram_bot", Enabled: true, CredentialsConfigured: true}
 	b, err := json.Marshal(v)
@@ -125,5 +148,37 @@ func TestNotificationChannelViewDoesNotSerializeSecrets(t *testing.T) {
 	}
 	if bytes.Contains(b, []byte("secrets_json")) || bytes.Contains(b, []byte("bot_token")) {
 		t.Fatalf("unexpected secret field in channel view: %s", b)
+	}
+}
+
+func TestNotificationChannelTestSendUpdatesChannelHealth(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "notification-test-send.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	serverHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer serverHTTP.Close()
+	if err := store.SaveNotificationChannel(storage.NotificationChannel{ID: "test-send-hook", Name: "Test send", Type: "webhook", Endpoint: serverHTTP.URL, ConfigJSON: "{}", Enabled: false}, ""); err != nil {
+		t.Fatal(err)
+	}
+	manager := notify.New(store)
+	manager.Client = serverHTTP.Client()
+	defer manager.Stop()
+	s := &Server{Store: store, Notify: manager}
+	h := s.Routes()
+	response := notificationAPIRequest(t, h, http.MethodPost, "/api/v1/notifications/channels/test", `{"id":"test-send-hook"}`, "system", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("test send status=%d body=%s", response.Code, response.Body.String())
+	}
+	channel, err := store.GetNotificationChannel("test-send-hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if channel.LastStatus != "success" || channel.LastSuccessAt == 0 || channel.LastAttemptAt == 0 {
+		t.Fatalf("channel health was not updated after test send: %+v", channel)
+	}
+	if strings.Contains(response.Body.String(), serverHTTP.URL) {
+		t.Fatalf("test response leaked endpoint: %s", response.Body.String())
 	}
 }

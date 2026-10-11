@@ -401,7 +401,7 @@ func (s *Server) TokenCreateJSON(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	allowed := map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}
+	allowed := map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "events:emit": true, "admin": true}
 	for _, v := range scopes {
 		if !allowed[v] {
 			http.Error(w, "invalid scope: "+v, 400)
@@ -478,7 +478,7 @@ func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
 	scopesJSON := old.ScopesJSON
 	if a, ok := q["scopes"].([]any); ok {
 		sc := []string{}
-		allowed := map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "admin": true}
+		allowed := map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true, "events:emit": true, "admin": true}
 		for _, v := range a {
 			x, ok := v.(string)
 			if !ok || !allowed[x] {

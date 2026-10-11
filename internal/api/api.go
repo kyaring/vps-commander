@@ -41,24 +41,26 @@ const (
 )
 
 type Server struct {
-	Auth           *auth.Manager
-	MCP            *mcp.Server
-	Exec           executor.Local
-	Cluster        *cluster.Manager
-	Store          *storage.Store
-	LocalName      string
-	Notify         *notify.Manager
-	Policy         *security.Snapshot
-	AdminToken     string
-	InstallCommand string
-	ExecLimiter    chan struct{}
-	SearchLimiter  chan struct{}
-	TokenLimiter   *TokenLimiter
-	LocalSessions  *executor.SessionManager
-	inFlightExec   atomic.Int64
-	http429Count   atomic.Uint64
-	legacyAuthMu   sync.Mutex
-	legacyAuthLast map[string]time.Time
+	Auth             *auth.Manager
+	MCP              *mcp.Server
+	Exec             executor.Local
+	Cluster          *cluster.Manager
+	Store            *storage.Store
+	LocalName        string
+	Notify           *notify.Manager
+	Policy           *security.Snapshot
+	AdminToken       string
+	InstallCommand   string
+	ExecLimiter      chan struct{}
+	SearchLimiter    chan struct{}
+	TokenLimiter     *TokenLimiter
+	LocalSessions    *executor.SessionManager
+	inFlightExec     atomic.Int64
+	http429Count     atomic.Uint64
+	legacyAuthMu     sync.Mutex
+	legacyAuthLast   map[string]time.Time
+	eventEmitMu      sync.Mutex
+	eventEmitWindows map[string]eventEmitWindow
 }
 
 const (
@@ -888,6 +890,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/security/settings", s.requireScope("admin", http.HandlerFunc(s.SecuritySettingsJSON)))
 	mux.Handle("/api/v1/security/settings/update", s.requireScope("admin", http.HandlerFunc(s.UpdateSecuritySettingsJSON)))
 	mux.Handle("/api/v1/security/device-credentials/provision", s.requireScope("admin", http.HandlerFunc(s.ProvisionDeviceCredentialJSON)))
+	mux.Handle("/api/v1/events", s.requireScope("events:emit", http.HandlerFunc(s.EmitNotificationEventJSON)))
+	mux.Handle("/api/v1/notifications/channels/test", s.requireScope("admin", http.HandlerFunc(s.NotificationChannelTestJSON)))
 	mux.Handle("/api/v1/notifications/channels", s.requireScope("admin", http.HandlerFunc(s.NotificationChannelsV1JSON)))
 	mux.Handle("/api/v1/notifications/templates", s.requireScope("admin", http.HandlerFunc(s.NotificationTemplatesV1JSON)))
 	mux.Handle("/api/v1/notifications/tasks", s.requireScope("admin", http.HandlerFunc(s.NotificationTasksV1JSON)))

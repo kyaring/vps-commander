@@ -1,0 +1,193 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/storage"
+)
+
+func emitEventRequest(t *testing.T, h http.Handler, body, tokenID string, scopes map[string]bool, idempotency string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/events", strings.NewReader(body))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{Type: "api_token", ID: tokenID, TokenID: tokenID, Name: tokenID, Scopes: scopes}))
+	if idempotency != "" {
+		req.Header.Set("Idempotency-Key", idempotency)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestExternalEventAPIIdempotencyRoutingAndSeverityGate(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "events-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveNotificationChannel(storage.NotificationChannel{ID: "event-hook", Name: "Event webhook", Type: "webhook", Endpoint: "https://example.invalid", ConfigJSON: "{}", Enabled: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTask(storage.NotificationTask{ID: "event-task", Name: "Development event", ChannelID: "event-hook", TemplateID: "development-completed", Enabled: true, EventTypesJSON: `["development.completed"]`, SeveritiesJSON: `["P3"]`, PolicyJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: store}
+	h := s.Routes()
+	scopes := map[string]bool{"events:emit": true}
+	body := `{"template_id":"development-completed","variables":{"task":"AM","commit":"abc123","summary":"tests passed"}}`
+	first := emitEventRequest(t, h, body, "token-events", scopes, "dev-job-42")
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first emit status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstResult map[string]any
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResult); err != nil {
+		t.Fatal(err)
+	}
+	if firstResult["matched_tasks"] != float64(1) || firstResult["deliveries_created"] != float64(1) {
+		t.Fatalf("first result=%v", firstResult)
+	}
+	firstID, _ := firstResult["event_id"].(string)
+	if firstID == "" {
+		t.Fatalf("missing event id: %v", firstResult)
+	}
+	second := emitEventRequest(t, h, body, "token-events", scopes, "dev-job-42")
+	if second.Code != http.StatusOK {
+		t.Fatalf("idempotent replay status=%d body=%s", second.Code, second.Body.String())
+	}
+	var secondResult map[string]any
+	if err := json.Unmarshal(second.Body.Bytes(), &secondResult); err != nil {
+		t.Fatal(err)
+	}
+	if secondResult["event_id"] != firstID || secondResult["replayed"] != true {
+		t.Fatalf("replay result=%v", secondResult)
+	}
+	changed := `{"template_id":"development-completed","variables":{"task":"AM","commit":"abc123","summary":"different payload"}}`
+	conflict := emitEventRequest(t, h, changed, "token-events", scopes, "dev-job-42")
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("idempotency conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	p1 := `{"template_id":"development-completed","severity":"P1","variables":{"task":"AM","commit":"abc123","summary":"urgent"}}`
+	denied := emitEventRequest(t, h, p1, "token-events", scopes, "urgent-job")
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("non-admin P1 status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	unknown := `{"template_id":"development-completed","variables":{"task":"AM","commit":"abc123","summary":"ok","other":"not allowed"}}`
+	badVar := emitEventRequest(t, h, unknown, "token-events", scopes, "")
+	if badVar.Code != http.StatusBadRequest {
+		t.Fatalf("undeclared variable status=%d body=%s", badVar.Code, badVar.Body.String())
+	}
+	var events, deliveries int
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM notification_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM notification_deliveries`).Scan(&deliveries); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 || deliveries != 1 {
+		t.Fatalf("event rows after replay/conflict/denial: events=%d deliveries=%d", events, deliveries)
+	}
+}
+
+func TestExternalEventAPIRequiresScopeAndRateLimitsPerToken(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "events-rate.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	s := &Server{Store: store}
+	h := s.Routes()
+	noScope := emitEventRequest(t, h, `{}`, "token-no-scope", map[string]bool{"devices:read": true}, "")
+	if noScope.Code != http.StatusForbidden {
+		t.Fatalf("no-scope status=%d body=%s", noScope.Code, noScope.Body.String())
+	}
+	for i := 0; i < eventEmitMaxPerWindow; i++ {
+		rec := emitEventRequest(t, h, `{}`, "token-rate", map[string]bool{"events:emit": true}, "")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("request %d before limit status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	limited := emitEventRequest(t, h, `{}`, "token-rate", map[string]bool{"events:emit": true}, "")
+	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
+		t.Fatalf("rate limit status=%d retry-after=%q body=%s", limited.Code, limited.Header().Get("Retry-After"), limited.Body.String())
+	}
+}
+
+func TestExternalEventIdempotencyReplaySurvivesTemplateDisable(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "events-replay-template.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveNotificationChannel(storage.NotificationChannel{ID: "replay-hook", Name: "Replay hook", Type: "webhook", Endpoint: "https://example.invalid", ConfigJSON: "{}", Enabled: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTask(storage.NotificationTask{ID: "replay-task", Name: "Replay task", ChannelID: "replay-hook", TemplateID: "development-completed", Enabled: true, EventTypesJSON: `["development.completed"]`, SeveritiesJSON: `["P3"]`, PolicyJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{Store: store}).Routes()
+	body := `{"template_id":"development-completed","variables":{"task":"task","commit":"abc","summary":"done"}}`
+	first := emitEventRequest(t, h, body, "replay-token", map[string]bool{"events:emit": true}, "replay-key")
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstResult map[string]any
+	if err := json.Unmarshal(first.Body.Bytes(), &firstResult); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DisableNotificationTemplate("development-completed"); err != nil {
+		t.Fatal(err)
+	}
+	replay := emitEventRequest(t, h, body, "replay-token", map[string]bool{"events:emit": true}, "replay-key")
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay after template disable status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var replayResult map[string]any
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayResult); err != nil {
+		t.Fatal(err)
+	}
+	if replayResult["event_id"] != firstResult["event_id"] || replayResult["replayed"] != true {
+		t.Fatalf("replay result=%v first=%v", replayResult, firstResult)
+	}
+	var events int
+	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM notification_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("events after replay=%d, want 1", events)
+	}
+}
+
+func TestEventsEmitIsAcceptedAsAPITokenScope(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "events-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureAPITokens(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIToken(storage.APIToken{ID: "token-events-scope", Name: "events-scope-token", Prefix: "events123", TokenHash: storage.HashAPIToken("vpc_events123_testsecret"), ScopesJSON: `["devices:read"]`, DevicesJSON: "[]", RateRPS: 10, MaxSessions: 10, CreatedAt: 1, CreatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{Store: store}).Routes()
+	updated := notificationAPIRequest(t, h, http.MethodPatch, "/api/v1/tokens/token-events-scope", `{"scopes":["events:emit"]}`, "system", nil)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update events:emit scope status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	token, err := store.GetAPITokenByPrefix("events123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(token.ScopesJSON, "events:emit") {
+		t.Fatalf("events:emit scope not saved: %s", token.ScopesJSON)
+	}
+	bad := notificationAPIRequest(t, h, http.MethodPatch, "/api/v1/tokens/token-events-scope", `{"scopes":["events:admin"]}`, "system", nil)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("unknown scope status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}

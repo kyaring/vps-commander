@@ -46,8 +46,10 @@ func notificationChannelResponse(s *Server, channel storage.NotificationChannel)
 	if channel.Type == "webhook" && channel.Endpoint != "" {
 		out.EndpointConfigured = true
 	}
-	if !out.Legacy && json.Valid([]byte(channel.ConfigJSON)) {
-		out.Config = json.RawMessage(channel.ConfigJSON)
+	if !out.Legacy {
+		if safeConfig := safeNotificationChannelConfig(channel); len(safeConfig) > 0 {
+			out.Config = safeConfig
+		}
 	}
 	if !out.Legacy {
 		if configured, err := s.Store.NotificationChannelHasSecrets(channel.ID); err == nil {
@@ -55,6 +57,36 @@ func notificationChannelResponse(s *Server, channel storage.NotificationChannel)
 		}
 	}
 	return out
+}
+
+func safeNotificationChannelConfig(channel storage.NotificationChannel) json.RawMessage {
+	if channel.Type == "webhook" || !json.Valid([]byte(channel.ConfigJSON)) {
+		return nil
+	}
+	var input map[string]json.RawMessage
+	if json.Unmarshal([]byte(channel.ConfigJSON), &input) != nil {
+		return nil
+	}
+	allowed := []string{}
+	switch channel.Type {
+	case "telegram_bot":
+		allowed = []string{"chat_id", "message_thread_id"}
+	case "qq_official_bot":
+		allowed = []string{"app_id", "target_type", "target_id"}
+	default:
+		return nil
+	}
+	output := map[string]json.RawMessage{}
+	for _, key := range allowed {
+		if value, ok := input[key]; ok {
+			output[key] = value
+		}
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func (s *Server) NotificationChannelsV1JSON(w http.ResponseWriter, r *http.Request) {
@@ -189,4 +221,35 @@ func (s *Server) NotificationTasksV1JSON(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Allow", "GET, POST, DELETE")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) NotificationChannelTestJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var q struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024)).Decode(&q); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	q.ID = strings.TrimSpace(q.ID)
+	if q.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	if s.Notify == nil {
+		http.Error(w, "notification sender unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.Notify.TestNotificationChannel(q.ID); err != nil {
+		_ = s.audit(r, "", "notification_channel_test", q.ID, http.StatusBadGateway, 0, "test send failed")
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	_ = s.audit(r, "", "notification_channel_test", q.ID, http.StatusOK, 0, "test send succeeded")
+	jsonOut(w, map[string]any{"ok": true, "id": q.ID, "status": "success"})
 }

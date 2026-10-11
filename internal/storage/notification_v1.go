@@ -14,6 +14,7 @@ type NotificationChannel struct {
 	Type                string `json:"type"`
 	Endpoint            string `json:"-"`
 	ConfigJSON          string `json:"-"`
+	SecretsCiphertext   []byte `json:"-"`
 	Enabled             bool   `json:"enabled"`
 	CreatedAt           int64  `json:"created_at"`
 	UpdatedAt           int64  `json:"updated_at"`
@@ -59,6 +60,9 @@ type NotificationTask struct {
 // NotificationEvent is the durable, normalized input to the notification router.
 type NotificationEvent struct {
 	ID             string `json:"id"`
+	TemplateID     string `json:"template_id"`
+	TemplateFormat string `json:"template_format,omitempty"`
+	RequestHash    string `json:"-"`
 	EventType      string `json:"event_type"`
 	Severity       string `json:"severity"`
 	Source         string `json:"source"`
@@ -76,6 +80,7 @@ type NotificationDelivery struct {
 	EventID        string `json:"event_id"`
 	TaskID         string `json:"task_id"`
 	ChannelID      string `json:"channel_id"`
+	TemplateID     string `json:"template_id"`
 	Status         string `json:"status"`
 	AttemptCount   int    `json:"attempt_count"`
 	NextAttemptAt  int64  `json:"next_attempt_at"`
@@ -84,6 +89,14 @@ type NotificationDelivery struct {
 	CreatedAt      int64  `json:"created_at"`
 	UpdatedAt      int64  `json:"updated_at"`
 	SentAt         int64  `json:"sent_at"`
+}
+
+type NotificationDeliveryJob struct {
+	Delivery NotificationDelivery
+	Event    NotificationEvent
+	Task     NotificationTask
+	Channel  NotificationChannel
+	Template NotificationTemplate
 }
 
 // NotificationTaskState stores per-task episode counters used for throttling,
@@ -140,7 +153,8 @@ func (s *Store) migrateNotificationV1() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_tasks_enabled ON notification_tasks(enabled,channel_id)`,
 		`CREATE TABLE IF NOT EXISTS notification_events (
-			id TEXT PRIMARY KEY, event_type TEXT NOT NULL, severity TEXT NOT NULL,
+			id TEXT PRIMARY KEY, template_id TEXT NOT NULL DEFAULT '', template_format TEXT NOT NULL DEFAULT '', request_hash TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL, severity TEXT NOT NULL,
 			source TEXT NOT NULL DEFAULT '', device TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '',
 			data_json TEXT NOT NULL DEFAULT '{}', idempotency_key TEXT, actor_token_id TEXT,
 			created_at INTEGER NOT NULL, CHECK(severity IN ('P1','P2','P3','P4')),
@@ -149,7 +163,7 @@ func (s *Store) migrateNotificationV1() error {
 		`CREATE INDEX IF NOT EXISTS idx_notification_events_created ON notification_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_notification_events_type_severity ON notification_events(event_type,severity,created_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS notification_deliveries (
-			id TEXT PRIMARY KEY, event_id TEXT NOT NULL, task_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+			id TEXT PRIMARY KEY, event_id TEXT NOT NULL, task_id TEXT NOT NULL, channel_id TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending', attempt_count INTEGER NOT NULL DEFAULT 0,
 			next_attempt_at INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
 			last_http_status INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
@@ -180,6 +194,21 @@ func (s *Store) migrateNotificationV1() error {
 		return err
 	}
 	if err := ensureNotificationColumn(tx, "notification_channels", "secrets_ciphertext", "BLOB NOT NULL DEFAULT X''"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_events", "template_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_events", "template_format", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_events", "request_hash", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureNotificationColumn(tx, "notification_deliveries", "template_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE notification_deliveries SET template_id=COALESCE((SELECT template_id FROM notification_tasks WHERE notification_tasks.id=notification_deliveries.task_id),'') WHERE template_id=''`); err != nil {
 		return err
 	}
 	now := time.Now().Unix()
@@ -376,13 +405,13 @@ func (s *Store) SaveNotificationEvent(v NotificationEvent) error {
 	if v.ActorTokenID != "" {
 		actor = v.ActorTokenID
 	}
-	_, err := s.DB.Exec(`INSERT INTO notification_events(id,event_type,severity,source,device,message,data_json,idempotency_key,actor_token_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, v.ID, v.EventType, v.Severity, v.Source, v.Device, v.Message, v.DataJSON, idempotency, actor, v.CreatedAt)
+	_, err := s.DB.Exec(`INSERT INTO notification_events(id,template_id,template_format,request_hash,event_type,severity,source,device,message,data_json,idempotency_key,actor_token_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, v.ID, v.TemplateID, v.TemplateFormat, v.RequestHash, v.EventType, v.Severity, v.Source, v.Device, v.Message, v.DataJSON, idempotency, actor, v.CreatedAt)
 	return err
 }
 
 func (s *Store) NotificationEventByIdempotency(actorTokenID, key string) (NotificationEvent, error) {
 	var v NotificationEvent
-	err := s.DB.QueryRow(`SELECT id,event_type,severity,source,device,message,data_json,COALESCE(idempotency_key,''),COALESCE(actor_token_id,''),created_at FROM notification_events WHERE actor_token_id=? AND idempotency_key=?`, actorTokenID, key).Scan(&v.ID, &v.EventType, &v.Severity, &v.Source, &v.Device, &v.Message, &v.DataJSON, &v.IdempotencyKey, &v.ActorTokenID, &v.CreatedAt)
+	err := s.DB.QueryRow(`SELECT id,template_id,template_format,request_hash,event_type,severity,source,device,message,data_json,COALESCE(idempotency_key,''),COALESCE(actor_token_id,''),created_at FROM notification_events WHERE actor_token_id=? AND idempotency_key=?`, actorTokenID, key).Scan(&v.ID, &v.TemplateID, &v.TemplateFormat, &v.RequestHash, &v.EventType, &v.Severity, &v.Source, &v.Device, &v.Message, &v.DataJSON, &v.IdempotencyKey, &v.ActorTokenID, &v.CreatedAt)
 	return v, err
 }
 
