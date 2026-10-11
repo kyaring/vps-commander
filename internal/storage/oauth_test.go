@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -106,6 +107,79 @@ func TestOAuthAuthorizationCodeSingleUseAndBinding(t *testing.T) {
 	}
 	if _, err := s.ConsumeOAuthCode(code.CodeHash, "client-1", redirect, 102); !errors.Is(err, ErrOAuthCodeInvalid) {
 		t.Fatalf("replay error=%v", err)
+	}
+}
+
+func TestOAuthGrantLastUsedWriteThrottledToMinute(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := int64(2000)
+	g := OAuthGrant{ID: "grant-last-used", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
+	access := OAuthToken{ID: "access-last-used", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-last-used-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	refresh := OAuthToken{ID: "refresh-last-used", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-last-used-secret"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
+	if err := createOAuthGrantForTest(t, s, g, access, refresh); err != nil {
+		t.Fatal(err)
+	}
+	validate := func(at int64) {
+		t.Helper()
+		if _, ok := s.ValidateOAuthAccessToken("access-last-used-secret", g.Resource, "192.0.2.30", at); !ok {
+			t.Fatalf("access token rejected at %d", at)
+		}
+	}
+	readLastUsed := func() int64 {
+		t.Helper()
+		var value sql.NullInt64
+		if err := s.DB.QueryRow(`SELECT last_used_at FROM oauth_grants WHERE id=?`, g.ID).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		if !value.Valid {
+			t.Fatal("last_used_at was not recorded")
+		}
+		return value.Int64
+	}
+
+	validate(now + 1)
+	if got := readLastUsed(); got != now+1 {
+		t.Fatalf("initial last_used_at=%d, want %d", got, now+1)
+	}
+	validate(now + 30)
+	if got := readLastUsed(); got != now+1 {
+		t.Fatalf("last_used_at changed inside 60s window: got %d", got)
+	}
+	validate(now + 61)
+	if got := readLastUsed(); got != now+61 {
+		t.Fatalf("last_used_at=%d at 60s boundary, want %d", got, now+61)
+	}
+}
+
+func TestOAuthGrantLastUsedThrottleIsAtomicUnderConcurrency(t *testing.T) {
+	s, _, _ := oauthFixture(t)
+	now := int64(3000)
+	g := OAuthGrant{ID: "grant-last-used-concurrent", ClientID: "client-1", APITokenID: "api-1", APITokenPrefix: "abcd1234", APITokenVersion: 1, ScopesJSON: `["devices:read"]`, Resource: "https://hub.example.com/mcp", CreatedAt: now, RefreshExpiresAt: now + 30*86400}
+	access := OAuthToken{ID: "access-last-used-concurrent", GrantID: g.ID, Kind: "access", TokenHash: HashAPIToken("access-last-used-concurrent-secret"), CreatedAt: now, ExpiresAt: now + 3600}
+	refresh := OAuthToken{ID: "refresh-last-used-concurrent", GrantID: g.ID, Kind: "refresh", TokenHash: HashAPIToken("refresh-last-used-concurrent-secret"), CreatedAt: now, ExpiresAt: g.RefreshExpiresAt}
+	if err := createOAuthGrantForTest(t, s, g, access, refresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`CREATE TABLE last_used_write_counter (n INTEGER NOT NULL); INSERT INTO last_used_write_counter(n) VALUES(0); CREATE TRIGGER count_last_used_updates AFTER UPDATE OF last_used_at ON oauth_grants WHEN OLD.last_used_at IS NOT NEW.last_used_at BEGIN UPDATE last_used_write_counter SET n=n+1; END;`); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := int64(0); i < 30; i++ {
+		wg.Add(1)
+		go func(at int64) {
+			defer wg.Done()
+			if err := s.MarkOAuthGrantUsed(g.ID, now+at); err != nil {
+				t.Errorf("MarkOAuthGrantUsed: %v", err)
+			}
+		}(i + 1)
+	}
+	wg.Wait()
+	var writes int
+	if err := s.DB.QueryRow(`SELECT n FROM last_used_write_counter`).Scan(&writes); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 {
+		t.Fatalf("last_used_at writes within one minute = %d, want 1", writes)
 	}
 }
 

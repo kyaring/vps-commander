@@ -609,7 +609,10 @@ func intersectDeviceLists(grant, current []string) ([]string, error) {
 }
 
 func (s *Store) MarkOAuthGrantUsed(grantID string, now int64) error {
-	_, err := s.DB.Exec(`UPDATE oauth_grants SET last_used_at=? WHERE id=? AND revoked_at IS NULL`, now, grantID)
+	// Keep the write in SQLite so concurrent requests (or Hub processes) share
+	// one atomic per-grant throttle without relying on process-local state.
+	_, err := s.DB.Exec(`UPDATE oauth_grants SET last_used_at=?
+		WHERE id=? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at <= ?)`, now, grantID, now-60)
 	return err
 }
 
