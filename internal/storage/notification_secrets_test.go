@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -109,5 +110,19 @@ func TestQQOfficialChannelIsStoredDisabledAndCannotHaveActiveTask(t *testing.T) 
 	}
 	if err := store.SaveNotificationTask(NotificationTask{ID: "qq-task", Name: "QQ task", ChannelID: channel.ID, TemplateID: legacyEventTemplateID, Enabled: true}); err == nil {
 		t.Fatal("enabled proactive task for QQ official bot was accepted")
+	}
+}
+
+func TestOpenRejectsMalformedNotificationSecretKey(t *testing.T) {
+	t.Setenv("VPS_COMMANDER_NOTIFICATION_KEY", "not-a-valid-key")
+	store, err := Open(t.TempDir() + "/bad-notification-key.db")
+	if err == nil {
+		if store != nil {
+			_ = store.Close()
+		}
+		t.Fatal("Open accepted a malformed notification encryption key")
+	}
+	if !strings.Contains(err.Error(), "VPS_COMMANDER_NOTIFICATION_KEY") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

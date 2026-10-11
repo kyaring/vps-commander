@@ -809,7 +809,7 @@ func syncLegacyNotificationTargetTx(tx *sql.Tx, v WebhookTarget) error {
 		return err
 	}
 	_, err := tx.Exec(`INSERT INTO notification_tasks(id,name,channel_id,template_id,enabled,event_types_json,severities_json,policy_json,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,channel_id=excluded.channel_id,enabled=excluded.enabled,updated_at=excluded.updated_at`, legacyTaskID(v.ID), "Legacy webhook: "+v.Name, legacyChannelID(v.ID), legacyEventTemplateID, boolInt(v.Enabled), `["*"]`, `["P1","P2","P3","P4"]`, `{"legacy_compat":true}`, v.CreatedAt, now)
+		VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,channel_id=excluded.channel_id,enabled=excluded.enabled,event_types_json=excluded.event_types_json,updated_at=excluded.updated_at`, legacyTaskID(v.ID), "Legacy webhook: "+v.Name, legacyChannelID(v.ID), legacyEventTemplateID, boolInt(v.Enabled), `["node_offline","node_recovery","resource_threshold","resource_recovery","scheduled_report"]`, `["P1","P2","P3","P4"]`, `{"legacy_compat":true}`, v.CreatedAt, now)
 	return err
 }
 

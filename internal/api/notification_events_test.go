@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -229,6 +230,25 @@ func TestNotificationDeliveryHistoryAndManualRetryAPI(t *testing.T) {
 	retry := notificationAPIRequest(t, h, http.MethodPost, "/api/v1/notifications/deliveries/retry", string(retryBody), "system", nil)
 	if retry.Code != http.StatusAccepted {
 		t.Fatalf("retry status=%d body=%s", retry.Code, retry.Body.String())
+	}
+	if got := retry.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("retry content type=%q want application/json", got)
+	}
+	var auditExit int
+	var auditResult string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := store.DB.QueryRow(`SELECT exit_code,result FROM audit_logs WHERE action='notification_delivery_retry' ORDER BY id DESC LIMIT 1`).Scan(&auditExit, &auditResult)
+		if err == nil {
+			break
+		}
+		if err != sql.ErrNoRows || time.Now().After(deadline) {
+			t.Fatalf("read retry audit: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if auditExit != 0 || auditResult != "ok" {
+		t.Fatalf("successful retry audit exit_code=%d result=%q", auditExit, auditResult)
 	}
 	retryAgain := notificationAPIRequest(t, h, http.MethodPost, "/api/v1/notifications/deliveries/retry", string(retryBody), "system", nil)
 	if retryAgain.Code != http.StatusBadRequest {

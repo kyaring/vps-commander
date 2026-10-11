@@ -123,6 +123,9 @@ func (s *Store) AcceptNotificationEvent(v NotificationEvent) (NotificationEvent,
 			continue
 		}
 		legacyCompat, _ := legacyPolicy["legacy_compat"].(bool)
+		if legacyCompat && !isLegacyCompatibilityEventType(v.EventType) {
+			continue
+		}
 		if c.templateID != v.TemplateID && !(legacyCompat && c.legacyID != "") {
 			continue
 		}
@@ -170,6 +173,17 @@ func (s *Store) AcceptNotificationEvent(v NotificationEvent) (NotificationEvent,
 			state = NotificationTaskState{TaskID: c.taskID, DeduplicationKey: stateKey, FirstSeenAt: now}
 		}
 		state.LastSeenAt = now
+		// max_reminders is scoped to an alert episode. A matching recovery
+		// closes the episode; the next alert starts a fresh reminder budget.
+		// Elapsed time alone does not reset a still-active episode.
+		if !isRecovery && !state.Active && state.ResolvedAt > 0 {
+			state.NotificationCount = 0
+			state.LastNotifiedAt = 0
+			state.ResolvedAt = 0
+			state.FirstSeenAt = now
+			state.NextDueAt = 0
+			state.MergedUntil = 0
+		}
 		if isRecovery {
 			identityPrefix := notificationTaskIdentityPrefix(v)
 			var activeKeys []struct{ taskID, key string }
@@ -610,6 +624,15 @@ func appendMergedNotificationMessage(existing, incoming string, count int) strin
 
 // notificationTaskStateKey scopes repeat suppression to one task, event type,
 // and originating device (or source when no device is supplied).
+func isLegacyCompatibilityEventType(eventType string) bool {
+	switch eventType {
+	case "node_offline", "node_recovery", "resource_threshold", "resource_recovery", "scheduled_report":
+		return true
+	default:
+		return false
+	}
+}
+
 func notificationTaskIdentityPrefix(v NotificationEvent) string {
 	identity := strings.TrimSpace(v.Device)
 	if identity == "" {

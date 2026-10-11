@@ -78,7 +78,8 @@ func (s *Server) NotificationDeliveryRetryV1JSON(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = s.audit(r, "", "notification_delivery_retry", q.ID, http.StatusAccepted, 0, "manual retry queued")
+	_ = s.audit(r, "", "notification_delivery_retry", q.ID, 0, 0, "manual retry queued")
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	jsonOut(w, map[string]any{"ok": true, "id": q.ID, "status": "pending"})
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "id": q.ID, "status": "pending"})
 }

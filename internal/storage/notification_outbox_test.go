@@ -82,13 +82,24 @@ func TestAcceptNotificationEventRoutesLegacyWebhookTaskAndRejectsMismatch(t *tes
 	if err := store.SaveWebhookTarget(WebhookTarget{ID: "legacy-hook", Name: "Legacy", Type: "generic", URL: "https://example.invalid", Config: "{}", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
+	var legacyFilter string
+	if err := store.DB.QueryRow(`SELECT event_types_json FROM notification_tasks WHERE id='legacy-task:legacy-hook'`).Scan(&legacyFilter); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(legacyFilter, `"*"`) || !strings.Contains(legacyFilter, "node_offline") {
+		t.Fatalf("legacy event filter not restricted: %s", legacyFilter)
+	}
 	event := NotificationEvent{ID: "evt_legacy", TemplateID: "development-completed", RequestHash: "h1", EventType: "development.completed", Severity: "P3", Source: "api", Message: "done", DataJSON: "{}", ActorTokenID: "token", CreatedAt: time.Now().Unix()}
 	_, matched, replayed, err := store.AcceptNotificationEvent(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matched != 1 || replayed {
-		t.Fatalf("legacy wildcard task did not match: matched=%d replay=%v", matched, replayed)
+	if matched != 0 || replayed {
+		t.Fatalf("legacy webhook must not receive custom API events: matched=%d replay=%v", matched, replayed)
+	}
+	builtin := NotificationEvent{ID: "evt_legacy_builtin", TemplateID: "builtin-node-offline", RequestHash: "h2", EventType: "node_offline", Severity: "P3", Source: "builtin", Device: "node-a", Message: "offline", DataJSON: `{"message":"offline"}`, CreatedAt: time.Now().Unix()}
+	if _, matched, _, err := store.AcceptNotificationEvent(builtin); err != nil || matched != 1 {
+		t.Fatalf("legacy webhook should receive built-in offline event: matched=%d err=%v", matched, err)
 	}
 	bad := event
 	bad.ID = "evt_mismatch"
@@ -444,5 +455,109 @@ func TestNotificationRecoveryClosesActiveEpisodeAndHonorsCooldown(t *testing.T) 
 	}
 	if active != 1 {
 		t.Fatalf("unrelated episode after cooldown recovery=%d", active)
+	}
+}
+
+func TestNotificationMaxRemindersResetsForNewEpisodeAfterRecovery(t *testing.T) {
+	store, err := Open(t.TempDir() + "/notification-max-reminders-reset.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveNotificationChannel(NotificationChannel{ID: "episode-hook", Name: "Episode", Type: "webhook", Endpoint: "https://example.invalid", ConfigJSON: "{}", Enabled: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTemplate(NotificationTemplate{ID: "episode-alert-template", Name: "Alert", EventType: "test.alert", Severity: "P2", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTemplate(NotificationTemplate{ID: "episode-recovery-template", Name: "Recovery", EventType: "test.recovered", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTask(NotificationTask{ID: "episode-alert-task", Name: "Alert task", ChannelID: "episode-hook", TemplateID: "episode-alert-template", Enabled: true, EventTypesJSON: `["test.alert"]`, SeveritiesJSON: `["P2"]`, PolicyJSON: `{"max_reminders":1,"repeat_interval_seconds":600}`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveNotificationTask(NotificationTask{ID: "episode-recovery-task", Name: "Recovery task", ChannelID: "episode-hook", TemplateID: "episode-recovery-template", Enabled: true, EventTypesJSON: `["test.recovered"]`, SeveritiesJSON: `["P3"]`, PolicyJSON: `{"recovery_event_types":["test.recovered"],"recovery_for_event_types":["test.alert"]}`}); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC).Unix()
+	accept := func(id, templateID, eventType, severity string, at int64) string {
+		t.Helper()
+		e := NotificationEvent{ID: id, TemplateID: templateID, RequestHash: id, EventType: eventType, Severity: severity, Source: "test", Device: "episode-node", Message: id, DataJSON: `{"message":"` + id + `"}`, CreatedAt: at}
+		if _, matched, _, err := store.AcceptNotificationEvent(e); err != nil || matched != 1 {
+			t.Fatalf("accept %s matched=%d err=%v", id, matched, err)
+		}
+		var status string
+		if err := store.DB.QueryRow(`SELECT status FROM notification_deliveries WHERE event_id=? AND task_id=CASE WHEN ?='test.alert' THEN 'episode-alert-task' ELSE 'episode-recovery-task' END`, id, eventType).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+	if status := accept("episode-a1", "episode-alert-template", "test.alert", "P2", base); status != "pending" {
+		t.Fatalf("a1 status=%s want pending", status)
+	}
+	var count int
+	if err := store.DB.QueryRow(`SELECT notification_count FROM notification_task_state WHERE task_id='episode-alert-task' AND deduplication_key='device:episode-node|event:test.alert'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("a1 count=%d want 1", count)
+	}
+	if status := accept("episode-recovery", "episode-recovery-template", "test.recovered", "P3", base+60); status != "pending" {
+		t.Fatalf("recovery status=%s want pending", status)
+	}
+	if status := accept("episode-a2", "episode-alert-template", "test.alert", "P2", base+86400); status != "pending" {
+		t.Fatalf("a2 status=%s want pending after resolved episode", status)
+	}
+	if err := store.DB.QueryRow(`SELECT notification_count FROM notification_task_state WHERE task_id='episode-alert-task' AND deduplication_key='device:episode-node|event:test.alert'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("a2 count=%d want reset count 1", count)
+	}
+	var resolvedAt int64
+	if err := store.DB.QueryRow(`SELECT resolved_at FROM notification_task_state WHERE task_id='episode-alert-task' AND deduplication_key='device:episode-node|event:test.alert'`).Scan(&resolvedAt); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedAt != 0 {
+		t.Fatalf("new episode retained resolved_at=%d", resolvedAt)
+	}
+	// Time alone does not reset max_reminders while the same episode remains active.
+	if status := accept("episode-a3", "episode-alert-template", "test.alert", "P2", base+172800); status != "suppressed" {
+		t.Fatalf("a3 status=%s want suppressed until another recovery", status)
+	}
+	if err := store.DB.QueryRow(`SELECT notification_count FROM notification_task_state WHERE task_id='episode-alert-task' AND deduplication_key='device:episode-node|event:test.alert'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("same active episode count=%d want 1", count)
+	}
+}
+
+func TestMigrationNormalizesLegacyWildcardTaskFilters(t *testing.T) {
+	path := t.TempDir() + "/notification-legacy-filter-migration.db"
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWebhookTarget(WebhookTarget{ID: "legacy-migration-hook", Name: "Legacy migration", Type: "generic", URL: "https://example.invalid", Config: "{}", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec(`UPDATE notification_tasks SET event_types_json='["*"]' WHERE id='legacy-task:legacy-migration-hook'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var filter string
+	if err := store.DB.QueryRow(`SELECT event_types_json FROM notification_tasks WHERE id='legacy-task:legacy-migration-hook'`).Scan(&filter); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(filter, `"*"`) || !strings.Contains(filter, "node_offline") {
+		t.Fatalf("legacy wildcard filter was not normalized during migration: %s", filter)
 	}
 }

@@ -150,6 +150,10 @@ with tempfile.TemporaryDirectory(prefix="vpc-real-audit-layout-") as temp:
                     assert notify_status.startswith("已加载"), f"notification APIs did not load in panel at {width}px: {notify_status}"
                     notify_card = evaluate("(() => {const e=document.querySelector('#notificationV1Card');return e?{width:e.getBoundingClientRect().width,doc:document.documentElement.scrollWidth,panels:document.querySelectorAll('[data-notify-panel]').length,channels:document.querySelectorAll('#notifyChannelsList .notification-item').length}:null})()")
                     assert notify_card and notify_card["panels"] == 4 and notify_card["doc"] <= width and notify_card["width"] <= width, f"notification manager missing or overflowing at {width}px: {notify_card}"
+                    evaluate("document.querySelector('[data-notify-tab=tasks]').click()")
+                    legacy_task = evaluate("(() => {const items=[...document.querySelectorAll('#notifyTasksList .notification-item')];const e=items.find(x=>x.textContent.includes('legacy-task:'));return e?{readonly:e.textContent.includes('旧版兼容任务为只读'),edit:e.querySelector('[data-notify-action=edit-task]')!==null,disable:e.querySelector('[data-notify-action=disable-task]')!==null}:null})()")
+                    if legacy_task:
+                        assert legacy_task["readonly"] and not legacy_task["edit"] and not legacy_task["disable"], f"legacy compatibility task must be read-only: {legacy_task}"
                     for form_tab, new_button, editor_id, cancel_button in (("channels","notifyChannelNew","notifyChannelEditor","notifyChannelCancel"),("templates","notifyTemplateNew","notifyTemplateEditor","notifyTemplateCancel"),("tasks","notifyTaskNew","notifyTaskEditor","notifyTaskCancel")):
                         evaluate("document.querySelector('[data-notify-tab="+json.dumps(form_tab)+"]').click()")
                         evaluate("document.getElementById("+json.dumps(new_button)+").click()")

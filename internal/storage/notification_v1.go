@@ -300,9 +300,14 @@ func (s *Store) migrateNotificationV1() error {
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_tasks
 			(id,name,channel_id,template_id,enabled,event_types_json,severities_json,policy_json,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?)`, taskID, "Legacy webhook: "+v.name, channelID, legacyEventTemplateID, v.enabled, `["*"]`, `["P1","P2","P3","P4"]`, `{"legacy_compat":true}`, v.createdAt, v.updatedAt); err != nil {
+			VALUES(?,?,?,?,?,?,?,?,?,?)`, taskID, "Legacy webhook: "+v.name, channelID, legacyEventTemplateID, v.enabled, `["node_offline","node_recovery","resource_threshold","resource_recovery","scheduled_report"]`, `["P1","P2","P3","P4"]`, `{"legacy_compat":true}`, v.createdAt, v.updatedAt); err != nil {
 			return fmt.Errorf("migrate legacy webhook %q to task: %w", v.id, err)
 		}
+	}
+	// Normalize rows created by earlier v1.1.35 builds as well; INSERT OR IGNORE
+	// alone would leave their old wildcard filter in place after an upgrade.
+	if _, err := tx.Exec(`UPDATE notification_tasks SET event_types_json=? WHERE id LIKE 'legacy-task:%' AND policy_json LIKE '%"legacy_compat":true%'`, `["node_offline","node_recovery","resource_threshold","resource_recovery","scheduled_report"]`); err != nil {
+		return fmt.Errorf("restrict legacy compatibility event filters: %w", err)
 	}
 	return tx.Commit()
 }
