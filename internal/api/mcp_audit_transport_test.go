@@ -480,6 +480,63 @@ func TestLegacyAuthAuditRateLimitedAndVisibleInUsageSummary(t *testing.T) {
 	}
 }
 
+func TestLegacyRejectedAuditRateLimitedAcrossRestarts(t *testing.T) {
+	store, _, server := newMCPAuditFixture(t)
+	legacy := auth.Principal{Type: "api_token", ID: "legacy-env", TokenID: "legacy-env", Name: "legacy-env"}
+	request := func(s *Server, path, ip, ua string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.RemoteAddr = ip + ":12345"
+		req.Header.Set("User-Agent", ua)
+		s.RecordLegacyRejected(req, legacy)
+	}
+	request(server, "/mcp/sse", "203.0.113.20", "old-client/1")
+	request(server, "/mcp/message", "203.0.113.20", "old-client/2") // same transport window
+	request(server, "/mcp", "203.0.113.20", "old-client/3")         // separate transport
+	request(server, "/mcp/sse", "203.0.113.21", "old-client/4")     // separate source IP
+	rows := auditRows(t, store)
+	count := 0
+	for _, row := range rows {
+		if row.Action == "legacy_rejected" {
+			count++
+			if row.Result != "denied" || row.ExitCode != http.StatusUnauthorized || row.CallerIP == "" || row.Target == "" || row.Command == "" {
+				t.Errorf("incomplete legacy_rejected row: %+v", row)
+			}
+		}
+	}
+	if count != 3 {
+		t.Fatalf("legacy_rejected rows=%d, want 3 for unique IP/transport tuples: %+v", count, rows)
+	}
+
+	// A fresh Server simulates restart. The persistent DB throttle must still suppress the same tuple.
+	restarted := &Server{Store: store}
+	request(restarted, "/mcp/sse", "203.0.113.20", "old-client/retry")
+	rows = auditRows(t, store)
+	count = 0
+	for _, row := range rows {
+		if row.Action == "legacy_rejected" {
+			count++
+		}
+	}
+	if count != 3 {
+		t.Fatalf("restart bypassed legacy_rejected throttle: got %d rows", count)
+	}
+
+	// Successful legacy auth is a distinct action and must not suppress a rejection audit.
+	server.RecordLegacyAuth(httptest.NewRequest(http.MethodGet, "/mcp/sse", nil), legacy)
+	request(restarted, "/mcp/sse", "203.0.113.22", "old-client/new-ip")
+	rows = auditRows(t, store)
+	count = 0
+	for _, row := range rows {
+		if row.Action == "legacy_rejected" {
+			count++
+		}
+	}
+	if count != 4 {
+		t.Fatalf("legacy_auth and legacy_rejected throttle keys interfered: got %d rejected rows", count)
+	}
+}
+
 func TestLegacyKeySoftDisableAcrossRESTMCPAndSSE(t *testing.T) {
 	store, _, server := newMCPAuditFixture(t)
 	legacy := auth.Principal{Type: "api_token", ID: "legacy-env", TokenID: "legacy-env", Name: "legacy-env", Scopes: map[string]bool{"devices:read": true}}

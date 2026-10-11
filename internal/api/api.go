@@ -383,7 +383,33 @@ func (s *Server) RecordLegacyRejected(r *http.Request, p auth.Principal) {
 	case "/mcp":
 		transport = "mcp-http"
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: auth.ClientIP(r), Action: "legacy_rejected", Command: r.UserAgent(), ErrorMsg: "legacy API key disabled; use a named API token", ActorType: "api_token", ActorID: "legacy-env", ActorName: "legacy-env", Transport: transport, TargetType: "path", Target: r.URL.Path, Result: "denied", ExitCode: http.StatusUnauthorized})
+	ip := auth.ClientIP(r)
+	const window = 10 * time.Minute
+	now := time.Now()
+	key := "legacy_rejected\x00" + ip + "\x00" + transport
+	s.legacyAuthMu.Lock()
+	if s.legacyAuthLast == nil {
+		s.legacyAuthLast = make(map[string]time.Time)
+	}
+	if last := s.legacyAuthLast[key]; !last.IsZero() && now.Sub(last) < window {
+		s.legacyAuthMu.Unlock()
+		return
+	}
+	// Persist the throttle by querying the same action/IP/transport tuple used
+	// for successful legacy auth, so rejected retries remain bounded after restart.
+	if recent, err := s.Store.HasRecentAuditAction("legacy_rejected", ip, transport, now.Add(-window).Unix()); err == nil && recent {
+		s.legacyAuthLast[key] = now
+		s.legacyAuthMu.Unlock()
+		return
+	}
+	for k, last := range s.legacyAuthLast {
+		if now.Sub(last) >= window {
+			delete(s.legacyAuthLast, k)
+		}
+	}
+	s.legacyAuthLast[key] = now
+	s.legacyAuthMu.Unlock()
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Action: "legacy_rejected", Command: r.UserAgent(), ErrorMsg: "legacy API key disabled; use a named API token", ActorType: "api_token", ActorID: "legacy-env", ActorName: "legacy-env", Transport: transport, TargetType: "path", Target: r.URL.Path, Result: "denied", ExitCode: http.StatusUnauthorized})
 }
 
 func (s *Server) LegacyUsageJSON(w http.ResponseWriter, r *http.Request) {
