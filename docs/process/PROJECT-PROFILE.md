@@ -7,7 +7,7 @@
 | 开发者 | GPT（经 MCP，主做）；workbuddy-2（只接测试类任务）；DeepSeek flash（DevTask 未恢复，暂停） |
 | 审核 | Hark |
 | 指定模型 | 仅 global:deepseek-v4.1-flash |
-| 当前阶段 | 恢复期：仍只提交本地 main、不打 tag、不发版；每个恢复阶段完成后，经 OPC 批准推送 GitHub（覆盖 DEV-PROCESS 铁律 4 的“不 push”） |
+| 当前阶段 | 恢复期：每次合并后推送 GitHub main；不构建、不打 tag、不发 release，除非 OPC 指定（覆盖 DEV-PROCESS 铁律 4 的“不 push”）。合并与推送由 OPC 批准后执行，开发者不自行推送。 |
 
 ## 验收命令
 ```sh
@@ -29,4 +29,4 @@ deploy/、scripts/、.github/、data/、bin/、go.mod、go.sum、docs/process/�
 新机构建/部署脚本由 T-20261013-03 重建；在此之前不部署。
 
 ## 通知
-企业微信已接入：development.completed → 新开发群，review.completed → 新审核群。开发者交付时自己推送开发完成（用自己带 events:emit 的令牌，设置 VPS_COMMANDER_HUB_URL=https://vcs.king.nyc.mn 与 VPS_COMMANDER_EVENT_TOKEN 后运行 scripts/notify-agent-completion.sh development-completed，或直接 POST /api/v1/events，template_id=development-completed）；审核方审核完推送 review-completed。令牌不得写进仓库、任务书、日志或远程执行的命令行。
+企业微信已接入：development.completed → 新开发群，review.completed → 新审核群。开发者交付时自己推送开发完成（用自己带 events:emit 的令牌，在节点上先 set -a; . /root/.config/vps-commander/notify.env; set +a（不要打印该文件），再运行 scripts/notify-agent-completion.sh development-completed，或直接 POST /api/v1/events，template_id=development-completed）；审核方审核完推送 review-completed。令牌不得写进仓库、任务书、日志或远程执行的命令行。
