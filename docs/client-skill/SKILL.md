@@ -3,7 +3,7 @@ name: vps-commander
 description: 通过 VPS-Commander Hub 管理分布式 Linux 节点（查设备、执行命令、读写文件、诊断）。任何 AI 客户端（MCP、REST、stdio）接入 VPS-Commander 时使用。
 ---
 
-# VPS-Commander 客户端 skill v1.1-recovery
+# VPS-Commander 客户端 skill v1.2-recovery
 
 适用 Hub 版本：891904a（v1.1.35）及以后。Hub：`https://vcs.king.nyc.mn`。
 本文件是 vps-commander 仓库 `docs/client-skill/SKILL.md` 的副本；接口、工具或规则变化时随代码一起更新。
@@ -84,3 +84,12 @@ DevTask 未恢复，恢复后随代码补回。
 
 ## 7. 参与 vps-commander 开发时
 仓库根目录 `AGENTS.md` 和 `docs/process/DEV-PROCESS.md` 是开发规范，开工前必读：没有任务书不改代码，只改任务书允许的路径，不 push / tag / 部署，交付前跑 `sh docs/process/check-task.sh <任务编号>`。完成通知、审核通知的发送方式见 AGENTS.md。
+
+## 8. 任务回报（必须）
+
+每次交回任务都必须推送 `task-reported`，不能只在聊天中报告：完成使用 `--status done`；受阻使用 `--status blocked`，并在摘要中写明阻塞原因和需要谁来处理；失败使用 `--status failed`。第一行会以 `【工号】` 开头。脚本读取 `VPS_COMMANDER_EMPLOYEE` / `VPS_COMMANDER_PROJECT` 作为缺省员工和项目；未提供时由 Hub 按令牌名和默认值填充。
+
+```sh
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status done --summary '实现完成；gofmt、vet、build、全量测试和 check-task 通过。' --employee SWS-E002-gpt --project vps-commander --ref commit-abc123
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status blocked --summary '受阻：等待 Hark 确认 API 的 severity 授权规则；需要 Hark 处理后才能继续。' --employee SWS-E002-gpt --project vps-commander --ref T-20261014-10
+```

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -119,6 +120,12 @@ func (s *Server) EmitNotificationEventJSON(w http.ResponseWriter, r *http.Reques
 	if q.Variables == nil {
 		q.Variables = map[string]string{}
 	}
+	// Keep the client-supplied values intact for idempotency hashing. The
+	// task-reported template applies its defaults only after replay lookup.
+	rawVariables := make(map[string]string, len(q.Variables))
+	for key, value := range q.Variables {
+		rawVariables[key] = value
+	}
 	if len(q.Variables) > 64 {
 		s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "too many event variables")
 		return
@@ -159,13 +166,24 @@ func (s *Server) EmitNotificationEventJSON(w http.ResponseWriter, r *http.Reques
 		s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "invalid Idempotency-Key")
 		return
 	}
+	if q.TemplateID == "task-reported" {
+		status := strings.TrimSpace(rawVariables["status"])
+		if status != "done" && status != "blocked" && status != "failed" {
+			s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "task-reported status must be done, blocked or failed")
+			return
+		}
+	}
+	canonicalVariables := q.Variables
+	if q.TemplateID == "task-reported" {
+		canonicalVariables = rawVariables
+	}
 	canonical, err := json.Marshal(struct {
 		TemplateID        string            `json:"template_id"`
 		RequestedSeverity string            `json:"severity"`
 		Variables         map[string]string `json:"variables"`
 		Source            string            `json:"source"`
 		Device            string            `json:"device"`
-	}{q.TemplateID, q.Severity, q.Variables, q.Source, q.Device})
+	}{q.TemplateID, q.Severity, canonicalVariables, q.Source, q.Device})
 	if err != nil {
 		s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "could not normalize event")
 		return
@@ -201,7 +219,60 @@ func (s *Server) EmitNotificationEventJSON(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	severity := template.Severity
-	if q.Severity != "" {
+	taskReportedDefaultSeverity := false
+	if q.TemplateID == "task-reported" {
+		variables := make(map[string]string, len(rawVariables)+7)
+		for key, value := range rawVariables {
+			variables[key] = value
+		}
+		statusLabels := map[string]string{"done": "完成", "blocked": "受阻", "failed": "失败"}
+		status := strings.TrimSpace(variables["status"])
+		variables["status"] = statusLabels[status]
+		if strings.TrimSpace(variables["employee"]) == "" {
+			variables["employee"] = strings.TrimSpace(p.Name)
+			if variables["employee"] == "" {
+				variables["employee"] = q.Source
+			}
+		}
+		if strings.TrimSpace(variables["project"]) == "" {
+			variables["project"] = "-"
+		}
+		if strings.TrimSpace(variables["ref"]) == "" {
+			variables["ref"] = "-"
+		}
+		if strings.TrimSpace(variables["type"]) == "" {
+			variables["type"] = "任务"
+		}
+		for _, field := range []struct {
+			name  string
+			limit int
+		}{
+			{name: "employee", limit: 32}, {name: "project", limit: 32}, {name: "type", limit: 16}, {name: "ref", limit: 64},
+		} {
+			value := strings.TrimSpace(variables[field.name])
+			if utf8.RuneCountInString(value) > field.limit || !safeTaskReportedField(value) {
+				s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "invalid task-reported "+field.name)
+				return
+			}
+			variables[field.name] = value
+		}
+		for _, field := range []string{"task", "summary"} {
+			if strings.TrimSpace(variables[field]) == "" {
+				s.rejectNotificationEvent(w, r, q.TemplateID, http.StatusBadRequest, "task-reported "+field+" is required")
+				return
+			}
+		}
+		q.Variables = variables
+		if q.Severity == "" {
+			severity = "P3"
+			if status == "blocked" || status == "failed" {
+				severity = "P2"
+			}
+			taskReportedDefaultSeverity = severity == "P2"
+		} else {
+			severity = q.Severity
+		}
+	} else if q.Severity != "" {
 		severity = strings.TrimSpace(q.Severity)
 	}
 	if severity != "P1" && severity != "P2" && severity != "P3" && severity != "P4" {
@@ -213,7 +284,7 @@ func (s *Server) EmitNotificationEventJSON(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "P1 emission requires admin scope", http.StatusForbidden)
 		return
 	}
-	if severityRank(severity) < severityRank(template.Severity) && !p.HasScope("admin") {
+	if severityRank(severity) < severityRank(template.Severity) && !p.HasScope("admin") && !taskReportedDefaultSeverity {
 		_ = s.audit(r, "", "notification_event_escalation_denied", q.TemplateID, http.StatusForbidden, 0, "severity escalation requires admin scope")
 		http.Error(w, "severity escalation requires admin scope", http.StatusForbidden)
 		return
@@ -325,6 +396,15 @@ func severityRank(value string) int {
 	default:
 		return 99
 	}
+}
+
+func safeTaskReportedField(value string) bool {
+	for _, r := range value {
+		if unicode.IsControl(r) || r == '【' || r == '】' {
+			return false
+		}
+	}
+	return true
 }
 
 func safeEventLabel(value string) bool {
