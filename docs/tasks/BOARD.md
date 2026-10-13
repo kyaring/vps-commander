@@ -2,7 +2,7 @@
 
 状态：draft → ready → in_dev → in_review → changes_requested → approved → merged → deployed → verified / rolled_back / cancelled
 编号规则：T-<YYYYMMDD>-<序号>；flash 任务另填 DevTask ID。
-维护：Hark（规划/审核）。每次状态变化当场更新本表。
+维护：RikkaHub-1（规划/审核；2026-10-14 06:45 接手，此前 Hark）。每次状态变化当场更新本表。
 恢复规划：docs/recovery/（规划书 RECOVERY-PLAN 随阶段 0 提交）。
 
 | ID | 标题 | 开发者 | 改动范围 | 状态 | 分支 / commit | 轮次 | 审核结论 | 发布版本 | DevTask ID | 更新时间 |
@@ -24,6 +24,6 @@
 | T-20261014-11 | 部署 48505f6（T-08 wecom_bot、T-09 离线持久化、T-10 task-reported）到生产 Hub | GPT | 仅运维（/root/work/release/、/opt/vps-commander/vps-commander-hub、backup-pre-*） | verified | 基线 48505f6（detached 构建） | 0 | PASS（Hark 04:35：生产 sha256 eb1a6aab6a3e 与独立重建一致；04:25 部署，active，NRestarts=0，内外网 healthz 正常；备份 backup-pre-eb1a6aab6a3e-20261014042516 内为旧版 119d510c，integrity ok；新表和两个模板已就位，legacy 通道照常；task-reported 探针渲染正确、blocked=P2；410 接口需要 admin，hark-2 拿到 403，由单测覆盖） | eb1a6aab6a3e | evt_4XbZMZkdXe1oZ09KoPMO | 2026-10-14 04:35 |
 | T-20261014-12 | T-12 旧版 webhook 退役（转加密 wecom_bot，旧通道停用、webhook_targets 删除，/webhooks 脱敏） | GPT | internal/storage/notification_legacy_retire*.go internal/api/notification_legacy_retire*.go internal/api/api.go docs/api.md docs/process/PROJECT-PROFILE.md | merged | 基线 2fca56e；开发 ffd7d5f；Hark 05:20 审核 PASS（05:15 修卡 53257e4 改范围行措辞，check-task 误判越界已解除），OPC 05:28 批准，合并 80ac46c，未部署 |
 | T-20261014-13 | 部署 80ac46c（T-12 旧版 webhook 退役接口）到生产 Hub | GPT | 仅运维（/root/work/release/、/opt/vps-commander/vps-commander-hub、backup-pre-*） | verified | 基线 80ac46c；05:32 部署 e3e5ff318532，备份 backup-pre-e3e5ff318532-20261014053223；Hark 05:45 复核：独立构建 sha256 一致、healthz 内外网正常、retire 无 admin 返回 403、legacy 通道与 webhook_targets 未变 |
-| T-20261014-14 | 通知通道整理：退役旧 webhook，开发/审核/系统三群 wecom_bot 路由，notify.env 补工号 | GPT | 仅运维（Hub admin API、backup-pre-T14-*、notify.env） | ready | 基线 bdc19a0（06:03 改卡，生产 sha 换成 057028b46079）；OPC 05:40 直接下卡；前置：OPC 面板先建 wecom-system |
+| T-20261014-14 | 通知通道整理：退役旧 webhook，开发/审核/系统三群 wecom_bot 路由，notify.env 补工号 | GPT | 仅运维（Hub admin API、backup-pre-T14-*、notify.env） | in_review | 基线 bdc19a0；06:16–06:18 已执行，GPT 报受阻（首次 retire 返回 already_retired=true，RikkaHub-1 判断为正常幂等返回，非缺陷）；RikkaHub-1 06:30 复核：三通道 wecom_bot 启用、legacy 停用并清空 endpoint、webhook_targets=0、路由逐条符合、notify.env 已补工号、42 条投递全 sent；步骤 7b 系统群探针未通过（误用 legacy-env，无 events:emit），待用 gpt-notify 补做 | 1 | 生产终态达标，待 OPC 定调 | - | - | 2026-10-14 06:45 |
 | T-20261014-15 | 热修：面板保存通道时 config_json 被二次序列化（阻塞 T-14） | GPT | internal/web/static/app.js internal/web/channel_config_payload_test.go | merged | 基线 3610a7b；开发 2aa6bd7；合并 bdc19a0（OPC 05:56）；Hark 05:57 审核 PASS（gofmt/vet/build/全量/web race/check-task 全过，反向验证会失败），等 OPC 批准合并 |
 | T-20261014-16 | 部署 bdc19a0（T-15 面板通道保存热修）到生产 Hub | GPT | 仅运维（/root/work/release/、/opt/vps-commander/vps-commander-hub、backup-pre-*） | verified | 基线 bdc19a0；05:59 部署 057028b46079；Hark 06:03 复核：独立重建一致、healthz 正常、公网 app.js 已修复、备份 ok、通道未变 |
