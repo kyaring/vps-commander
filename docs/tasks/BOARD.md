@@ -14,3 +14,4 @@
 | T-20261014-01 | 首次本机部署演练（8cbd273 可复现构建替换生产 Hub） | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | verified | 生产 sha256 fde576ef07f8（8cbd273） | 3 | PASS（独立重建一致，备份 integrity ok） | - | - | 2026-10-14 00:30 |
 | T-20261014-02 | 审计 HTTP 2xx 记为 ok（恢复 T-20261012-03） | GPT | internal/api/audit_exec_result.go internal/api/audit_exec_result_test.go internal/api/notification_events_test.go docs/client-skill/SKILL.md | deployed | main @ 84fbd47（已推送，已部署 T-20261014-03） | 1 | PASS | - | - | 2026-10-14 00:48 |
 | T-20261014-03 | 部署 84fbd47（审计 2xx 修复）到生产 Hub | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | verified | 生产 sha256 00461fe5d20d（84fbd47） | 1 | PASS（独立重建一致，审计 202|ok 已实测） | - | - | 2026-10-14 00:58 |
+| T-20261014-04 | auditutil 单独 Bearer 脱敏 + UTF-8 安全截断（恢复 44cd806+35d7f04） | GPT | internal/auditutil/auditutil.go internal/auditutil/redact_fix_test.go | ready | fix/auditutil-bearer-utf8（基线 abb5dd3） | 0 | - | - | - | 2026-10-14 01:05 |
