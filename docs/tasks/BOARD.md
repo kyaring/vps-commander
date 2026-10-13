@@ -8,4 +8,4 @@
 | ID | 标题 | 开发者 | 改动范围 | 状态 | 分支 / commit | 轮次 | 审核结论 | 发布版本 | DevTask ID | 更新时间 |
 |----|------|--------|----------|------|---------------|------|----------|----------|------------|----------|
 | T-20261013-01 | 恢复开发环境（工具、代理、仓库） | GPT | 主机环境（非仓库） | in_review | - | 1 | 待复核：缺交付报告 | - | - | 2026-10-13 21:50 |
-| T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | ready | docs/restore-process | 0 | - | - | - | 2026-10-13 21:50 |
+| T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | changes_requested | docs/restore-process @ 18cb972 | 1 | 内容通过；缺开发完成推送与完整交付报告 | - | - | 2026-10-13 22:30 |
