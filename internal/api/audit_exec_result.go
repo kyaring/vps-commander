@@ -30,11 +30,14 @@ func isCommandExit(ctx context.Context) bool {
 
 // auditResultForCode maps an exit code to the audit result for this context.
 func auditResultForCode(ctx context.Context, code int) string {
-	if code == 0 {
-		return "ok"
-	}
 	if isCommandExit(ctx) {
+		if code == 0 {
+			return "ok"
+		}
 		return AuditResultExitNonzero
+	}
+	if code == 0 || (code >= 200 && code <= 299) {
+		return "ok"
 	}
 	return "error"
 }

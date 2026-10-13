@@ -74,7 +74,7 @@ Streamable HTTP 要点：地址必须是 `/mcp`（不带结尾斜杠）；initia
 7. 后台长期进程必须重定向：`nohup cmd > /var/log/x.log 2>&1 < /dev/null &`，否则调用会挂到超时并被杀。
 8. 长诊断（ping、traceroute、curl）显式设 timeout。
 
-审计 result 含义：`ok` 退出码 0；`exit_nonzero` 命令执行完但非零退出；`error` Hub / agent / 工具本身失败；`denied` 被 scope、白名单或安全等级拒绝。
+审计 result 含义：`ok` 命令退出码 0，或非命令操作的 HTTP 状态 2xx；`exit_nonzero` 命令执行完但非零退出；`error` Hub / agent / 工具本身失败；`denied` 被 scope、白名单或安全等级拒绝。
 
 ## 5. 状态码
 `401` 令牌无效 / 吊销；`403` scope 不足、设备不在白名单或安全等级拒绝；`404` 路径错或 MCP 会话失效；`409` 节点离线；`429` 限速 / 会话数 / exec 并发超限，按 `Retry-After` 退避；`503` 内部组件不可用。

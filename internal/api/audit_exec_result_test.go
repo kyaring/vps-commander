@@ -104,3 +104,35 @@ func TestExecAuditMessageBoundsAndFallback(t *testing.T) {
 		t.Fatalf("utf-8 tail broken: %d", len([]rune(got)))
 	}
 }
+
+func TestAuditResultForCodeHTTPStatusAndCommandExit(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		code int
+		want string
+	}{
+		{name: "non-command zero", ctx: context.Background(), code: 0, want: "ok"},
+		{name: "non-command 200", ctx: context.Background(), code: 200, want: "ok"},
+		{name: "non-command 202", ctx: context.Background(), code: 202, want: "ok"},
+		{name: "non-command 299", ctx: context.Background(), code: 299, want: "ok"},
+		{name: "non-command 1", ctx: context.Background(), code: 1, want: "error"},
+		{name: "non-command 199", ctx: context.Background(), code: 199, want: "error"},
+		{name: "non-command 300", ctx: context.Background(), code: 300, want: "error"},
+		{name: "non-command 404", ctx: context.Background(), code: 404, want: "error"},
+		{name: "non-command 500", ctx: context.Background(), code: 500, want: "error"},
+		{name: "non-command negative", ctx: context.Background(), code: -1, want: "error"},
+		{name: "command zero", ctx: withCommandExit(context.Background()), code: 0, want: "ok"},
+		{name: "command one", ctx: withCommandExit(context.Background()), code: 1, want: AuditResultExitNonzero},
+		{name: "command 124", ctx: withCommandExit(context.Background()), code: 124, want: AuditResultExitNonzero},
+		{name: "command 200", ctx: withCommandExit(context.Background()), code: 200, want: AuditResultExitNonzero},
+		{name: "command 202", ctx: withCommandExit(context.Background()), code: 202, want: AuditResultExitNonzero},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := auditResultForCode(tt.ctx, tt.code); got != tt.want {
+				t.Fatalf("auditResultForCode(code=%d) = %q, want %q", tt.code, got, tt.want)
+			}
+		})
+	}
+}

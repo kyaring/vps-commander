@@ -41,6 +41,19 @@ func TestExternalEventAPIIdempotencyRoutingAndSeverityGate(t *testing.T) {
 	s := &Server{Store: store}
 	h := s.Routes()
 	scopes := map[string]bool{"events:emit": true}
+	assertAudit := func(action string, code int, wantResult string) {
+		t.Helper()
+		rows := auditRows(t, store)
+		for _, row := range rows {
+			if row.Action == action && row.ExitCode == code {
+				if row.Result != wantResult {
+					t.Fatalf("audit action=%q exit_code=%d result=%q, want %q", action, code, row.Result, wantResult)
+				}
+				return
+			}
+		}
+		t.Fatalf("missing audit row action=%q exit_code=%d in %#v", action, code, rows)
+	}
 	body := `{"template_id":"development-completed","variables":{"task":"AM","commit":"abc123","summary":"tests passed"}}`
 	first := emitEventRequest(t, h, body, "token-events", scopes, "dev-job-42")
 	if first.Code != http.StatusAccepted {
@@ -53,6 +66,7 @@ func TestExternalEventAPIIdempotencyRoutingAndSeverityGate(t *testing.T) {
 	if firstResult["matched_tasks"] != float64(1) || firstResult["deliveries_created"] != float64(1) {
 		t.Fatalf("first result=%v", firstResult)
 	}
+	assertAudit("notification_event_emit", http.StatusAccepted, "ok")
 	firstID, _ := firstResult["event_id"].(string)
 	if firstID == "" {
 		t.Fatalf("missing event id: %v", firstResult)
@@ -68,6 +82,7 @@ func TestExternalEventAPIIdempotencyRoutingAndSeverityGate(t *testing.T) {
 	if secondResult["event_id"] != firstID || secondResult["replayed"] != true {
 		t.Fatalf("replay result=%v", secondResult)
 	}
+	assertAudit("notification_event_emit", http.StatusOK, "ok")
 	changed := `{"template_id":"development-completed","variables":{"task":"AM","commit":"abc123","summary":"different payload"}}`
 	conflict := emitEventRequest(t, h, changed, "token-events", scopes, "dev-job-42")
 	if conflict.Code != http.StatusConflict {
@@ -83,6 +98,7 @@ func TestExternalEventAPIIdempotencyRoutingAndSeverityGate(t *testing.T) {
 	if badVar.Code != http.StatusBadRequest {
 		t.Fatalf("undeclared variable status=%d body=%s", badVar.Code, badVar.Body.String())
 	}
+	assertAudit("notification_event_emit_rejected", http.StatusBadRequest, "error")
 	var events, deliveries int
 	if err := store.DB.QueryRow(`SELECT COUNT(*) FROM notification_events`).Scan(&events); err != nil {
 		t.Fatal(err)
