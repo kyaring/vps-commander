@@ -731,7 +731,7 @@ async function saveNotificationChannel(){
       }
       endpoint="";
     }
-    const payload={id:$("#notifyChannelID").value.trim(),name:$("#notifyChannelName").value.trim(),type,endpoint,config_json:JSON.stringify(config),secrets_json:secretsText,enabled:$("#notifyChannelEnabled").value==="1"};
+    const payload={id:$("#notifyChannelID").value.trim(),name:$("#notifyChannelName").value.trim(),type,endpoint,config_json:config,secrets_json:secretsText,enabled:$("#notifyChannelEnabled").value==="1"};
     await api("/notifications/channels",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     resetNotificationChannelForm();await loadNotificationV1();notificationStatus("通道已保存。测试发送后可查看最近成功/失败状态。");
   }catch(e){notificationStatus("保存通道失败："+e.message,true);}
