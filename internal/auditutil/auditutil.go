@@ -10,9 +10,12 @@ import (
 var bearerTokenRE = regexp.MustCompile(`(?i)\b(bearer)(\s+)([^\s,;'"\"]+)`)
 var secretRE = regexp.MustCompile(`(?i)(authorization|bearer|token|api[_-]?key|password|secret|cookie)(\s*[:=]\s*)([^\s,;]+)`)
 var redactedBearerValueRE = regexp.MustCompile(`^\s+\[REDACTED\]`)
+var authSchemeCredentialRE = regexp.MustCompile(`(?i)((?:proxy-)?authorization\s*[:=]\s*)(basic|negotiate|ntlm|token)(\s+)([^\s,;'"\\"]+)`)
+var authSchemeNameRE = regexp.MustCompile(`(?i)^(bearer|basic|negotiate|ntlm|token)$`)
 
 // Redact removes common secret assignments before any length limit is applied.
 func Redact(value string) string {
+	value = authSchemeCredentialRE.ReplaceAllString(value, `${1}${2}${3}[REDACTED]`)
 	value = bearerTokenRE.ReplaceAllStringFunc(value, func(match string) string {
 		parts := bearerTokenRE.FindStringSubmatch(match)
 		if parts[3] == "[REDACTED]" {
@@ -33,8 +36,8 @@ func Redact(value string) string {
 	return value
 }
 
-// redactSecretAssignments keeps Authorization: Bearer [REDACTED] intact after
-// bearerTokenRE has removed the token, while preserving the other legacy rules.
+// redactSecretAssignments keeps already-redacted authorization schemes intact
+// after their credentials have been removed, while preserving legacy rules.
 func redactSecretAssignments(value string) string {
 	matches := secretRE.FindAllStringSubmatchIndex(value, -1)
 	if len(matches) == 0 {
@@ -49,7 +52,7 @@ func redactSecretAssignments(value string) string {
 		valueStart, valueEnd := match[6], match[7]
 		out.WriteString(value[last:start])
 		if strings.EqualFold(value[keyStart:keyEnd], "authorization") &&
-			strings.EqualFold(value[valueStart:valueEnd], "bearer") &&
+			authSchemeNameRE.MatchString(value[valueStart:valueEnd]) &&
 			redactedBearerValueRE.MatchString(value[end:]) {
 			out.WriteString(value[start:end])
 		} else {
