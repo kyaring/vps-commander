@@ -38,9 +38,21 @@ else
   variables=$(RESULT="$result" COMMIT="$commit" SUMMARY="$summary" python3 -c 'import json,os; print(json.dumps({"result":os.environ["RESULT"],"commit":os.environ["COMMIT"],"summary":os.environ["SUMMARY"]},ensure_ascii=False))')
   key="review:$task_id:$commit:$result"
 fi
-if python3 "$(dirname "$0")/emit-notification-event.py" "$event" --variables "$variables" --idempotency-key "$key"; then
+if output=$(python3 "$(dirname "$0")/emit-notification-event.py" "$event" --variables "$variables" --idempotency-key "$key" 2>&1); then
+  [ -z "$output" ] || printf '%s\n' "$output"
   exit 0
 else
-  echo "WARN: completion notification could not be delivered; task completion is not blocked." >&2
+  status=$(printf '%s\n' "$output" | python3 -c 'import json,sys;
+for line in reversed(sys.stdin.read().splitlines()):
+ try:
+  value=json.loads(line)
+  if isinstance(value,dict) and value.get("ok") is False and isinstance(value.get("status"),int):
+   print(value["status"]); break
+ except (ValueError,TypeError):
+  pass
+else:
+ print("network")')
+  [ -z "$output" ] || printf '%s\n' "$output" >&2
+  echo "WARN: completion notification not delivered (status=$status); task completion is not blocked." >&2
   exit 0
 fi
