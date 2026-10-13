@@ -131,3 +131,27 @@ All three fields are required. `channel_id` follows the notification channel ID 
 Successful responses include `ok`, `channel_id`, `moved_tasks`, `retired_task`, and `already_retired`. Repeating the same retirement after the source row has been removed returns HTTP 200 with `already_retired: true`, provided the destination and disabled legacy records match the completed retirement. Error statuses: `400` for missing/invalid input or an invalid WeCom URL, `404` when the source webhook does not exist and no completed retirement can be identified, and `409` when the destination channel ID is already occupied. Unexpected internal failures return a generic `500` without exposing endpoint data.
 
 `GET /api/v1/notifications/webhooks` masks each URL to its scheme and host followed by `/…`; the path and query are not returned.
+
+### `GET /api/v1/health/assertions`
+
+Read-only aggregated Hub status assertions. Requires either `devices:read` or `admin`; no new scope is introduced. The response contains `generated_at`, `summary` (`pass` / `fail` counts), and up to 32 `{id, ok, detail}` assertions. The v0.1 set includes service active/restart state, internal/public `/healthz`, retired legacy notification configuration, absence of configured endpoint values and legacy targets, enabled notification routes, pending/failed delivery counts, and SQLite integrity. SQLite integrity results are cached for at least 60 seconds. Individual check failures are reported as `ok: false` with a short sanitized detail; they do not prevent other checks from running. The response is limited to 1.5 KB and never returns endpoint URLs, webhook URLs, secrets, or tokens.
+
+Example:
+
+```json
+{
+  "generated_at": "2026-10-14T12:00:00Z",
+  "summary": {"pass": 9, "fail": 0},
+  "assertions": [
+    {"id": "service.active", "ok": true, "detail": "active"},
+    {"id": "service.restarts", "ok": true, "detail": "NRestarts=0 restarts"},
+    {"id": "hub.healthz_internal", "ok": true, "detail": "HTTP 200"},
+    {"id": "hub.healthz_public", "ok": true, "detail": "HTTP 200"},
+    {"id": "notification.legacy_retired", "ok": true, "detail": "0 active legacy channels or targets"},
+    {"id": "notification.no_plaintext", "ok": true, "detail": "0 configured URLs; 0 legacy targets"},
+    {"id": "notification.routes", "ok": true, "detail": "9 enabled routes"},
+    {"id": "notification.deliveries", "ok": true, "detail": "0 pending; 0 failed deliveries"},
+    {"id": "db.integrity", "ok": true, "detail": "ok"}
+  ]
+}
+```
