@@ -73,6 +73,8 @@ func safeNotificationChannelConfig(channel storage.NotificationChannel) json.Raw
 		allowed = []string{"chat_id", "message_thread_id"}
 	case "qq_official_bot":
 		allowed = []string{"app_id", "target_type", "target_id"}
+	case "wecom_bot":
+		allowed = []string{"mentioned_list"}
 	default:
 		return nil
 	}

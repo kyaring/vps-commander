@@ -527,7 +527,7 @@ async function loadWebhooks() {
       </div>
       <div class="mcp-actions">
         <button type="button" onclick="editWebhook('${esc(x.id)}')">编辑</button>
-        <button type="button" onclick="deleteWebhook('${esc(x.id)}')">删除</button>
+        <button type="button" disabled title="旧 Webhook 删除接口已停用">删除（已停用）</button>
       </div>
     </div>
   `).join("");
@@ -564,13 +564,7 @@ async function editWebhook(id) {
 }
 
 async function deleteWebhook(id) {
-  if (!confirm(`确认删除 Webhook [${id}]？`)) return;
-  try {
-    await api("/notifications/webhook/delete?id=" + encodeURIComponent(id), { method: "DELETE" });
-    await loadWebhooks();
-  } catch (e) {
-    alert("删除失败: " + e.message);
-  }
+  alert("旧 Webhook 写入接口已停用，请在通知系统的通道管理中操作。旧配置不会被删除。");
 }
 
 if ($("#webhookNew")) $("#webhookNew").onclick = resetWebhookForm;
@@ -579,44 +573,8 @@ if ($("#webhookCancel")) $("#webhookCancel").onclick = () => {
   if (editor) editor.hidden = true;
 };
 
-if ($("#webhookSave")) $("#webhookSave").onclick = async () => {
-  try {
-    const id = $("#webhookId").value.trim();
-    const name = $("#webhookName").value.trim();
-    const url = $("#webhookUrl").value.trim();
-    if (!id) throw Error("标识 (ID) 不能为空");
-    if (!name) throw Error("名称不能为空");
-    if (!url) throw Error("Webhook URL 不能为空");
-
-    let cfg = {};
-    try {
-      cfg = JSON.parse($("#webhookConfig").value || "{}");
-    } catch (e) {
-      throw Error("配置 JSON 格式不正确");
-    }
-
-    const body = {
-      id: id,
-      name: name,
-      type: $("#webhookType").value,
-      url: url,
-      config_json: JSON.stringify(cfg),
-      enabled: $("#webhookEnabled").value === "1"
-    };
-
-    await api("/notifications/webhook/update", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-
-    $("#webhookStatus").textContent = "Webhook [" + id + "] 已保存。";
-    const editor = $("#webhookEditor");
-    if (editor) editor.hidden = true;
-    await loadWebhooks();
-  } catch (e) {
-    $("#webhookStatus").textContent = "保存失败: " + e.message;
-  }
+if ($("#webhookSave")) $("#webhookSave").onclick = () => {
+  $("#webhookStatus").textContent = "旧 Webhook 写入接口已停用，请使用下方通知系统的通道管理。";
 };
 
 if ($("#webhookTest")) $("#webhookTest").onclick = async () => {
@@ -734,7 +692,7 @@ function renderNotificationChannels(){
   if(!notificationV1State.channels.length){host.innerHTML='<p class="muted">尚无通道。可先新增 Webhook 或 Telegram Bot。</p>';return;}
   host.innerHTML=notificationV1State.channels.map(c=>{
     const legacy=!!c.legacy;
-    const typeName=({webhook:"Webhook",telegram_bot:"Telegram Bot",qq_official_bot:"QQ 官方机器人"})[c.type]||c.type;
+    const typeName=({webhook:"Webhook",telegram_bot:"Telegram Bot",qq_official_bot:"QQ 官方机器人",wecom_bot:"企业微信机器人"})[c.type]||c.type;
     const state=`最近尝试：${notificationTime(c.last_attempt_at)}；最近成功：${notificationTime(c.last_success_at)}；HTTP ${c.last_http_status||0}`;
     return `<article class="notification-item"><h4>${esc(c.name)} ${notificationStatusBadge(c.last_status)}</h4><p>ID：${esc(c.id)} · 类型：${esc(typeName)}</p><p>状态：${esc(notificationEnabled(c.enabled))} · URL 已配置：${c.endpoint_configured?"是":"否"} · 凭据已配置：${c.has_secrets?"是":"否"}</p><p>${esc(state)}</p>${c.last_error?`<p class="test-fail">最近错误：${esc(c.last_error)}</p>`:""}${legacy?'<p>旧版兼容通道：请在上方旧 Webhook 管理区编辑。</p>':`<div class="notification-item-actions"><button type="button" data-notify-action="edit-channel" data-id="${esc(c.id)}">编辑</button><button type="button" data-notify-action="test-channel" data-id="${esc(c.id)}">测试发送</button><button type="button" data-notify-action="disable-channel" data-id="${esc(c.id)}" class="danger-button">停用</button></div>`}</article>`;
   }).join("");
@@ -757,13 +715,23 @@ function fillNotificationTaskSelects(){
   templateSelect.innerHTML=notificationV1State.templates.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}${t.enabled?"":"（停用）"}</option>`).join("");
   if(channelValue)channelSelect.value=channelValue;if(templateValue)templateSelect.value=templateValue;
 }
-function resetNotificationChannelForm(){notificationV1State.editingChannel="";$("#notifyChannelEditorTitle").textContent="新增通道";$("#notifyChannelID").disabled=false;$("#notifyChannelID").value="";$("#notifyChannelName").value="";$("#notifyChannelType").value="webhook";$("#notifyChannelEnabled").value="1";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value="{}";$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=true;}
+function resetNotificationChannelForm(){notificationV1State.editingChannel="";$("#notifyChannelEditorTitle").textContent="新增通道";$("#notifyChannelID").disabled=false;$("#notifyChannelID").value="";$("#notifyChannelName").value="";$("#notifyChannelType").value="webhook";$("#notifyChannelType").dispatchEvent(new Event("change"));$("#notifyChannelEnabled").value="1";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value="{}";$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=true;}
 function newNotificationChannel(){resetNotificationChannelForm();$("#notifyChannelEditor").hidden=false;$("#notifyChannelID").focus();}
-function editNotificationChannel(id){const c=notificationV1State.channels.find(x=>x.id===id);if(!c)return;notificationV1State.editingChannel=id;$("#notifyChannelEditorTitle").textContent="编辑通道";$("#notifyChannelID").value=c.id;$("#notifyChannelID").disabled=true;$("#notifyChannelName").value=c.name||"";$("#notifyChannelType").value=c.type;$("#notifyChannelEnabled").value=c.enabled?"1":"0";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value=notificationJSONText(c.config,{});$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=false;$("#notifyChannelName").focus();}
+function editNotificationChannel(id){const c=notificationV1State.channels.find(x=>x.id===id);if(!c)return;notificationV1State.editingChannel=id;$("#notifyChannelEditorTitle").textContent="编辑通道";$("#notifyChannelID").value=c.id;$("#notifyChannelID").disabled=true;$("#notifyChannelName").value=c.name||"";$("#notifyChannelType").value=c.type;$("#notifyChannelType").dispatchEvent(new Event("change"));$("#notifyChannelEnabled").value=c.enabled?"1":"0";$("#notifyChannelEndpoint").value="";$("#notifyChannelConfig").value=notificationJSONText(c.config,{});$("#notifyChannelSecrets").value="";$("#notifyChannelEditor").hidden=false;$("#notifyChannelName").focus();}
 async function saveNotificationChannel(){
   try{
     const config=JSON.parse($("#notifyChannelConfig").value||"{}");if(!config||typeof config!=="object"||Array.isArray(config))throw Error("公开配置必须是 JSON 对象");
-    const payload={id:$("#notifyChannelID").value.trim(),name:$("#notifyChannelName").value.trim(),type:$("#notifyChannelType").value,endpoint:$("#notifyChannelEndpoint").value.trim(),config_json:JSON.stringify(config),secrets_json:$("#notifyChannelSecrets").value.trim(),enabled:$("#notifyChannelEnabled").value==="1"};
+    const type=$("#notifyChannelType").value;
+    let secretsText=$("#notifyChannelSecrets").value.trim();
+    let endpoint=$("#notifyChannelEndpoint").value.trim();
+    if(type==="wecom_bot"){
+      if(endpoint){let secrets={};try{secrets=secretsText?JSON.parse(secretsText):{};}catch{throw Error("凭据 JSON 格式不正确");}
+        if(!secrets||typeof secrets!=="object"||Array.isArray(secrets))throw Error("凭据必须是 JSON 对象");
+        secrets.webhook_url=endpoint;secretsText=JSON.stringify(secrets);
+      }
+      endpoint="";
+    }
+    const payload={id:$("#notifyChannelID").value.trim(),name:$("#notifyChannelName").value.trim(),type,endpoint,config_json:JSON.stringify(config),secrets_json:secretsText,enabled:$("#notifyChannelEnabled").value==="1"};
     await api("/notifications/channels",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     resetNotificationChannelForm();await loadNotificationV1();notificationStatus("通道已保存。测试发送后可查看最近成功/失败状态。");
   }catch(e){notificationStatus("保存通道失败："+e.message,true);}
@@ -812,4 +780,7 @@ document.addEventListener("click",async event=>{
   const attempts=event.target.closest("[data-notify-attempts]");if(attempts){await loadNotificationAttempts(attempts.dataset.notifyAttempts);return;}
   const retry=event.target.closest("[data-notify-retry]");if(retry){await retryNotificationDelivery(retry.dataset.notifyRetry);}
 });
-$("#notifyChannelType")?.addEventListener("change",()=>{const type=$("#notifyChannelType").value;$("#notifyChannelEndpoint").placeholder=type==="webhook"?"https://…（编辑时留空保留原地址）":"该类型不使用 Webhook URL";$("#notifyChannelSecrets").placeholder=type==="telegram_bot"?'{"bot_token":"…"}':type==="webhook"?'{"headers":{"Authorization":"Bearer …"}}':'{"app_secret":"…"}';});
+$("#notifyChannelType")?.addEventListener("change",()=>{const type=$("#notifyChannelType").value;const endpoint=$("#notifyChannelEndpoint"),label=$("#notifyChannelEndpointLabel"),secrets=$("#notifyChannelSecrets");
+  if(type==="wecom_bot"){label.firstChild.textContent="企业微信 webhook_url（密码字段）";endpoint.type="password";endpoint.placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…（编辑时留空保留）";secrets.placeholder='{}（可留空；URL 会单独加密保存）';$("#notifyChannelConfig").placeholder='{"mentioned_list":["@all"]}';}
+  else {label.firstChild.textContent="Webhook URL";endpoint.type=type==="webhook"?"url":"text";endpoint.placeholder=type==="webhook"?"https://…（编辑时留空保留原地址）":"该类型不使用 Webhook URL";secrets.placeholder=type==="telegram_bot"?'{"bot_token":"…"}':type==="webhook"?'{"headers":{"Authorization":"Bearer …"}}':'{"app_secret":"…"}';$("#notifyChannelConfig").placeholder="{}";}
+});
