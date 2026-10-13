@@ -13,3 +13,4 @@
 | T-20261013-04 | 通知脚本修复（User-Agent、可诊断错误） | GPT | scripts/emit-notification-event.py scripts/notify-agent-completion.sh scripts/test_emit_notification_event.py scripts/test_notify_agent_completion.sh | merged | main @ 3aa87f7（已推送） | 1 | PASS（公网 400 已验证） | - | - | 2026-10-13 23:12 |
 | T-20261014-01 | 首次本机部署演练（8cbd273 可复现构建替换生产 Hub） | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | verified | 生产 sha256 fde576ef07f8（8cbd273） | 3 | PASS（独立重建一致，备份 integrity ok） | - | - | 2026-10-14 00:30 |
 | T-20261014-02 | 审计 HTTP 2xx 记为 ok（恢复 T-20261012-03） | GPT | internal/api/audit_exec_result.go internal/api/audit_exec_result_test.go internal/api/notification_events_test.go docs/client-skill/SKILL.md | merged | main @ 84fbd47（已推送） | 1 | PASS | - | - | 2026-10-14 00:48 |
+| T-20261014-03 | 部署 84fbd47（审计 2xx 修复）到生产 Hub | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | ready | 基线 84fbd47（worktree 构建） | 0 | - | - | - | 2026-10-14 00:52 |
