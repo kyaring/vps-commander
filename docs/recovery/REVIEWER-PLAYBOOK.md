@@ -61,7 +61,7 @@
 分支：基线 <sha>，从含本卡的 main 新建 <branch>，worktree 放在 /root/work/vc-<编号>
 要点：<两三行>
 验收：<命令>
-交付：<提交/通知/回复格式>
+交付：分支提交一次；推送通知前先 `set -a; . /root/.config/vps-commander/notify.env; set +a`（不打印该文件），再跑 `scripts/notify-agent-completion.sh ...`；向 OPC 回复【提交审核】
 红线：不 push/tag/构建/部署，不动生产；任何输出不得含令牌或 webhook；结果不符合预期就停下报告，不要重试。
 ```
 审核意见同样附一段：【审核结论】PASS 或 CHANGES REQUESTED，加上编号清单和需要重新验收的项。
@@ -86,4 +86,5 @@
 - 面板实际用的静态文件在 internal/web/static/，根目录下的 web/static/ 是旧副本。
 - 节点上没有 node，前端 JS 只能靠 Go 测试做字符串断言。
 - check-task 只能在任务分支上跑，在 main 上会把其他任务的提交算作越界。
+- 推送交付通知前**必须先** `set -a; . /root/.config/vps-commander/notify.env; set +a`（不要打印该文件），否则 `scripts/notify-agent-completion.sh` 会输出 SKIP、**静默跳过且退出码仍为 0**。T-20261014-21 因此漏发通知（卡修时才发现）。
 - 开发卡的 check-task 必须在分支提交之后运行（它要求工作区干净）；运行前先执行 `export PATH=/usr/local/go/bin:$PATH`，否则内部的 `docs/process/acceptance.sh` 会报 `gofmt: not found`；若 check-task 失败，用 `git commit --amend` 修正，保持分支上只有一个提交。
