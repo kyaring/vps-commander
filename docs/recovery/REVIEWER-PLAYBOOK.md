@@ -44,7 +44,7 @@
 1. 背景：写 Hark 核对时的 sha，并给出 文件:行号 级别的证据，说明根因。
 2. 要求：编号列出，写到可以直接验证的程度；最后单列「不做」。
 3. 测试：新测试只放在新文件里，现有测试不改；要求做反向验证（把修复改回去，测试必须失败）。
-4. 验收：gofmt -l . 无输出；go vet、go build、go test -count=1 ./... 通过；涉及的包跑 -race；在任务分支上跑 bash scripts/check-task.sh <编号>。
+4. 验收：gofmt -l . 无输出；go vet、go build、go test -count=1 ./... 通过；涉及的包跑 -race；在任务分支上跑 bash docs/process/check-task.sh <编号>（要先把 go 加进 PATH）。
 5. 交付：在分支上提交一次，不 push；推送完成通知（无论完成还是受阻都要推）；向 OPC 回复【提交审核】，写明分支、sha、改动文件、验收摘要。
 6. 回退。
 
