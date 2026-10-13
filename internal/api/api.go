@@ -41,28 +41,33 @@ const (
 )
 
 type Server struct {
-	Auth             *auth.Manager
-	MCP              *mcp.Server
-	Exec             executor.Local
-	Cluster          *cluster.Manager
-	Store            *storage.Store
-	LocalName        string
-	Notify           *notify.Manager
-	Policy           *security.Snapshot
-	AdminToken       string
-	InstallCommand   string
-	ExecLimiter      chan struct{}
-	SearchLimiter    chan struct{}
-	TokenLimiter     *TokenLimiter
-	LocalSessions    *executor.SessionManager
-	inFlightExec     atomic.Int64
-	http429Count     atomic.Uint64
-	legacyAuthMu     sync.Mutex
-	legacyAuthLast   map[string]time.Time
-	eventEmitMu      sync.Mutex
-	eventEmitWindows map[string]eventEmitWindow
-	execOutputMu     sync.Mutex
-	execOutputCache  map[string]executor.OutputDedupRecord
+	Auth                  *auth.Manager
+	MCP                   *mcp.Server
+	Exec                  executor.Local
+	Cluster               *cluster.Manager
+	Store                 *storage.Store
+	LocalName             string
+	Notify                *notify.Manager
+	Policy                *security.Snapshot
+	AdminToken            string
+	InstallCommand        string
+	ExecLimiter           chan struct{}
+	SearchLimiter         chan struct{}
+	TokenLimiter          *TokenLimiter
+	LocalSessions         *executor.SessionManager
+	inFlightExec          atomic.Int64
+	http429Count          atomic.Uint64
+	legacyAuthMu          sync.Mutex
+	legacyAuthLast        map[string]time.Time
+	eventEmitMu           sync.Mutex
+	eventEmitWindows      map[string]eventEmitWindow
+	execOutputMu          sync.Mutex
+	execOutputCache       map[string]executor.OutputDedupRecord
+	healthIntegrityMu     sync.Mutex
+	healthIntegrityAt     time.Time
+	healthIntegrityOK     bool
+	healthIntegrityDetail string
+	healthIntegrityCached bool
 }
 
 const (
@@ -857,6 +862,7 @@ func (s *Server) CallAgentMCPJSON(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+	mux.Handle("/api/v1/health/assertions", s.requireAnyScope([]string{"devices:read", "admin"}, http.HandlerFunc(s.healthAssertions)))
 	mux.Handle("/metrics", s.requireScope("admin", http.HandlerFunc(s.Metrics)))
 	mux.Handle("/api/v1/devices", s.requireScope("devices:read", http.HandlerFunc(s.devices)))
 	mux.Handle("/api/v1/exec", s.requireScope("exec", http.HandlerFunc(s.exec)))
