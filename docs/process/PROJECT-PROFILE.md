@@ -10,6 +10,8 @@
 | 当前阶段 | 恢复期：每次合并后推送 GitHub main；不构建、不打 tag、不发 release，除非 OPC 指定（覆盖 DEV-PROCESS 铁律 4 的“不 push”）。合并与推送由 OPC 批准后执行，开发者不自行推送。 |
 
 ## 验收命令
+`docs/process/acceptance.sh` 会自兜底 go PATH。
+
 ```sh
 gofmt -l .            # 无输出
 go vet ./...

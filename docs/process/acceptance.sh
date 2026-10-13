@@ -2,6 +2,7 @@
 # vps-commander 验收命令（项目自有，与 PROJECT-PROFILE.md 一致）。check-task.sh 会调用。
 set -eu
 cd "$(git rev-parse --show-toplevel)"
+. "$(dirname "$0")/go-env.sh"
 fmt=$(gofmt -l .); [ -z "$fmt" ] || { echo "gofmt 未格式化：$fmt"; exit 1; }
 go vet ./...
 go build ./...
