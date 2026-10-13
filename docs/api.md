@@ -8,10 +8,21 @@
 
 ## 1. 运维接口
 
+### Exec 输出参数
+
+`POST /api/v1/exec` 与 MCP `exec_command` 使用相同的可选参数：
+
+- `output_mode`: `raw`（默认）、`tail`、`head`、`count` 或 `none`。
+- `max_bytes`: 输出内容字节预算，默认 `4096`，范围 `1..1048576`。超限时 `head` 保留头部，其它正文模式保留尾部，并在正文首行插入 `[truncated: kept <X> of <Y> bytes / <L> lines; sha256=<hex12>]`。
+- `dedup_window_seconds`: 默认 `0`（关闭）；大于 0 时，同设备、工作目录、命令、输出模式和字节预算在窗口内重复调用返回 `unchanged/hash/first_seen/cached_bytes/exit_code`，不重发正文。
+
+正文模式返回 `truncated`、`total_bytes`、`total_lines` 和 `sha256` 元数据。`count` 只返回 `total_bytes`、`total_lines`、`exit_code`；`none` 返回退出码与元数据，不返回正文。需要大输出时显式提高 `max_bytes`（最大 1 MiB）。
+
+
 | 接口 | 方法 | scope | 请求体 / 说明 |
 | :--- | :--- | :--- | :--- |
 | `/api/v1/devices` | GET | `devices:read` | 设备列表、状态、架构、国家、资源画像 |
-| `/api/v1/exec` | POST | `exec` | `{device, command, workdir?, timeout?}`，`timeout` 秒，默认 30，最大 300；返回 `{device, exit_code, stdout, stderr, duration_ms}` |
+| `/api/v1/exec` | POST | `exec` | `{device, command, workdir?, timeout?, output_mode?, max_bytes?, dedup_window_seconds?}`；`timeout` 秒默认 30、最大 300；输出参数见下文 |
 | `/api/v1/file/read` | POST | `files:read` | `{device, path, offset?, limit?}`，`limit` 默认 256 KiB、最大 1 MiB；返回 `content, bytes, total_size, has_more, eof` |
 | `/api/v1/file/list` | POST | `files:read` | `{device, path, recursive?, max_entries?}` |
 | `/api/v1/file/info` | POST | `files:read` | `{device, path}` |

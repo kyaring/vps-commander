@@ -53,6 +53,10 @@ func (b *MCPBackend) ListDevices(ctx context.Context) (any, error) {
 }
 
 func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command, workdir string, timeout int) (any, error) {
+	return b.ExecCommandWithOptions(ctx, clientIP, device, command, workdir, timeout, "raw", 0, 0)
+}
+
+func (b *MCPBackend) ExecCommandWithOptions(ctx context.Context, clientIP, device, command, workdir string, timeout int, outputMode string, maxBytes, dedupWindowSeconds int) (any, error) {
 	if command == "" {
 		return nil, errors.New("command required")
 	}
@@ -62,6 +66,17 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 	}
 	if err := b.authorize(ctx, device, "exec", clientIP); err != nil {
 		return nil, err
+	}
+	opts, err := validateExecOutputOptions(outputMode, maxBytes, dedupWindowSeconds)
+	if err != nil {
+		return nil, err
+	}
+	if cached, ok := b.server.outputDedupLookup(device, workdir, command, opts); ok {
+		code, _ := cached["exit_code"].(int)
+		if b.server.Store != nil {
+			_ = b.server.auditMCPContext(ctx, clientIP, device, "exec", command, code, 0, "unchanged=true")
+		}
+		return cached, nil
 	}
 	p, _ := auth.PrincipalFromContext(ctx)
 	releaseTokenExec, allowed := b.server.acquireTokenExec(p)
@@ -107,13 +122,12 @@ func (b *MCPBackend) ExecCommand(ctx context.Context, clientIP, device, command,
 		_ = b.server.auditMCPContext(withCommandExit(ctx), clientIP, device, "exec", command, res.ExitCode, res.DurationMS, execAuditMessage(res))
 	}
 
-	return model.ExecResponse{
-		Device:     device,
-		ExitCode:   res.ExitCode,
-		Stdout:     res.Stdout,
-		Stderr:     res.Stderr,
-		DurationMS: res.DurationMS,
-	}, nil
+	shaped, err := execOutputResponse(device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	if err != nil {
+		return nil, err
+	}
+	b.server.outputDedupRemember(device, workdir, command, opts, execOutputHash(res.Stdout, res.Stderr), execOutputCachedBytes(res.Stdout, res.Stderr), res.ExitCode)
+	return shaped, nil
 }
 
 func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device string, req executor.DiagnosticRequest) (any, error) {

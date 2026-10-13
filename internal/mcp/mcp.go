@@ -809,10 +809,13 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]PropertyDef{
-						"device":  {Type: "string", Description: "目标设备节点名称/别名（缺省则在当前 Hub 所在节点执行）"},
-						"command": {Type: "string", Description: "需要执行的 Shell 命令"},
-						"workdir": {Type: "string", Description: "可选的工作目录绝对路径"},
-						"timeout": {Type: "integer", Description: "超时时间（秒，默认 30，最大 300）"},
+						"device":               {Type: "string", Description: "目标设备节点名称/别名（缺省则在当前 Hub 所在节点执行）"},
+						"command":              {Type: "string", Description: "需要执行的 Shell 命令"},
+						"workdir":              {Type: "string", Description: "可选的工作目录绝对路径"},
+						"timeout":              {Type: "integer", Description: "超时时间（秒，默认 30，最大 300）"},
+						"output_mode":          {Type: "string", Description: "输出模式（raw|tail|head|count|none，默认 raw）"},
+						"max_bytes":            {Type: "integer", Description: "输出最大字节数（默认 4096，最大 1048576）"},
+						"dedup_window_seconds": {Type: "integer", Description: "相同只读命令的去重窗口秒数（默认 0，关闭）"},
 					},
 					Required: []string{"command"},
 				},
@@ -996,16 +999,27 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 
 	case "exec_command":
 		var args struct {
-			Device  string `json:"device"`
-			Command string `json:"command"`
-			Workdir string `json:"workdir"`
-			Timeout int    `json:"timeout"`
+			Device             string `json:"device"`
+			Command            string `json:"command"`
+			Workdir            string `json:"workdir"`
+			Timeout            int    `json:"timeout"`
+			OutputMode         string `json:"output_mode,omitempty"`
+			MaxBytes           int    `json:"max_bytes,omitempty"`
+			DedupWindowSeconds int    `json:"dedup_window_seconds,omitempty"`
 		}
 		_ = json.Unmarshal(params.Arguments, &args)
 		if args.Command == "" {
 			return map[string]string{"error": "command is required"}, true
 		}
-		res, err := s.Backend.ExecCommand(ctx, clientIP, args.Device, args.Command, args.Workdir, args.Timeout)
+		var res any
+		var err error
+		if backend, ok := s.Backend.(interface {
+			ExecCommandWithOptions(context.Context, string, string, string, string, int, string, int, int) (any, error)
+		}); ok {
+			res, err = backend.ExecCommandWithOptions(ctx, clientIP, args.Device, args.Command, args.Workdir, args.Timeout, args.OutputMode, args.MaxBytes, args.DedupWindowSeconds)
+		} else {
+			res, err = s.Backend.ExecCommand(ctx, clientIP, args.Device, args.Command, args.Workdir, args.Timeout)
+		}
 		if err != nil {
 			return toolErrorFrom(err), true
 		}
