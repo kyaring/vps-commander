@@ -274,7 +274,10 @@ func (s *Server) WebhookTargetsJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "notification query failed", 500)
 		return
 	}
-	// 面板管理端需要查看与编辑配置，直接返回完整结构
+	// Legacy webhook URLs are credentials; expose only scheme and host.
+	for i := range items {
+		items[i].URL = maskLegacyWebhookURL(items[i].URL)
+	}
 	jsonOut(w, items)
 }
 func maskWebhookURL(v string) string {
@@ -875,6 +878,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/notifications/deliveries/retry", s.requireScope("admin", http.HandlerFunc(s.NotificationDeliveryRetryV1JSON)))
 	mux.Handle("/api/v1/notifications/deliveries", s.requireScope("admin", http.HandlerFunc(s.NotificationDeliveriesV1JSON)))
 	mux.Handle("/api/v1/notifications/channels/test", s.requireScope("admin", http.HandlerFunc(s.NotificationChannelTestJSON)))
+	mux.Handle("/api/v1/notifications/legacy/retire", s.requireScope("admin", http.HandlerFunc(s.RetireLegacyWebhookJSON)))
 	mux.Handle("/api/v1/notifications/channels", s.requireScope("admin", http.HandlerFunc(s.NotificationChannelsV1JSON)))
 	mux.Handle("/api/v1/notifications/templates", s.requireScope("admin", http.HandlerFunc(s.NotificationTemplatesV1JSON)))
 	mux.Handle("/api/v1/notifications/tasks", s.requireScope("admin", http.HandlerFunc(s.NotificationTasksV1JSON)))

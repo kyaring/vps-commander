@@ -106,3 +106,17 @@ scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 
 ```sh
 scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status blocked --summary '受阻：等待 Hark 处理权限规则冲突，处理后继续。' --employee SWS-E002-gpt --project vps-commander --ref T-20261014-10
 ```
+
+### Retire legacy webhook
+
+`POST /api/v1/notifications/legacy/retire` requires the `admin` scope. Request JSON:
+
+```json
+{"legacy_webhook_id":"wecom-dev","channel_id":"wecom-dev-bot","name":"企业微信-开发群"}
+```
+
+All three fields are required. `channel_id` follows the notification channel ID rules and must not start with `legacy-`. The source URL must be a valid WeCom bot URL. The operation is atomic: it encrypts the URL into the new `wecom_bot` channel's `secrets.webhook_url`, moves non-legacy tasks, disables the legacy task and channel, clears the legacy endpoint/config, makes pending/in-flight deliveries terminal failures, and deletes the compatibility webhook rows. Historical delivery references require the old channel and task to remain as disabled rows; they are not physically deleted. The response never includes the URL or secrets.
+
+Successful responses include `ok`, `channel_id`, `moved_tasks`, `retired_task`, and `already_retired`. Repeating the same retirement after the source row has been removed returns HTTP 200 with `already_retired: true`, provided the destination and disabled legacy records match the completed retirement. Error statuses: `400` for missing/invalid input or an invalid WeCom URL, `404` when the source webhook does not exist and no completed retirement can be identified, and `409` when the destination channel ID is already occupied. Unexpected internal failures return a generic `500` without exposing endpoint data.
+
+`GET /api/v1/notifications/webhooks` masks each URL to its scheme and host followed by `/…`; the path and query are not returned.
