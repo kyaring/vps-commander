@@ -72,6 +72,7 @@ type Manager struct {
 func New(s *storage.Store) *Manager {
 	m := &Manager{Store: s, Client: &http.Client{Timeout: 8 * time.Second}, stop: make(chan struct{}), deliveryStop: make(chan struct{}), telegramAPIBaseURL: "https://api.telegram.org", offline: map[string]*offlineState{}, clock: time.Now, strikeCount: map[string]int{}, recoveryCount: map[string]int{}, resourceAlerts: map[string]*resourceAlertState{}}
 	m.loadResourceAlertStates()
+	m.loadOfflineStates()
 	m.importOpenClawWebhook()
 	return m
 }
@@ -96,6 +97,67 @@ func (m *Manager) loadResourceAlertStates() {
 		if v.Active {
 			m.resourceAlerts[key] = &resourceAlertState{StartedAt: v.StartedAt, Sent: v.Sent, Value: v.Value, Threshold: v.Threshold, Label: v.Label, Metric: v.Metric, Device: v.Device}
 		}
+	}
+}
+
+func (m *Manager) loadOfflineStates() {
+	if m.Store == nil {
+		return
+	}
+	states, err := m.Store.ListOfflineStates()
+	if err != nil {
+		log.Printf("load offline notification states: %v", err)
+		return
+	}
+	for _, v := range states {
+		m.offline[v.Device] = &offlineState{since: v.Since, sent: v.Sent, notified: v.Notified}
+	}
+}
+
+func (m *Manager) persistOfflineState(device string, st offlineState) {
+	if m.Store == nil {
+		return
+	}
+	if err := m.Store.SaveOfflineState(storage.OfflineState{Device: device, Since: st.since, Sent: st.sent, Notified: st.notified}); err != nil {
+		log.Printf("persist offline notification state for %s: %v", device, err)
+	}
+}
+
+func (m *Manager) deleteOfflineState(device string) {
+	if m.Store == nil {
+		return
+	}
+	if err := m.Store.DeleteOfflineState(device); err != nil {
+		log.Printf("delete offline notification state for %s: %v", device, err)
+	}
+}
+
+func (m *Manager) cleanupOfflineStates(devices []storage.DeviceRecord) {
+	present := make(map[string]struct{}, len(devices))
+	for _, d := range devices {
+		present[d.Name] = struct{}{}
+	}
+	missing := map[string]struct{}{}
+	states, err := m.Store.ListOfflineStates()
+	if err != nil {
+		log.Printf("list offline notification states during cleanup: %v", err)
+	} else {
+		for _, state := range states {
+			if _, ok := present[state.Device]; !ok {
+				missing[state.Device] = struct{}{}
+			}
+		}
+	}
+	m.mu.Lock()
+	for name := range m.offline {
+		if _, ok := present[name]; !ok {
+			delete(m.offline, name)
+			missing[name] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	for name := range missing {
+		m.deleteOfflineState(name)
 	}
 }
 
@@ -256,7 +318,12 @@ func (m *Manager) notificationSettings() storage.NotificationSettings {
 }
 
 func (m *Manager) check() {
-	devices, _ := m.Store.ListDevices()
+	devices, devicesErr := m.Store.ListDevices()
+	if devicesErr != nil {
+		log.Printf("list devices for notification check: %v", devicesErr)
+	} else {
+		m.cleanupOfflineStates(devices)
+	}
 	settings := m.notificationSettings()
 	now := m.now().Unix()
 	offlineSteps := make([]int64, 0, len(settings.OfflineReminderMinutes))
@@ -274,6 +341,7 @@ func (m *Manager) check() {
 			st := m.offline[d.Name]
 			delete(m.offline, d.Name)
 			m.mu.Unlock()
+			m.deleteOfflineState(d.Name)
 			if st != nil && st.notified {
 				m.emit(Event{Type: "node_recovery", Device: d.Name, Severity: "info", Message: fmt.Sprintf("节点 %s 已恢复在线（本次离线约 %s）", d.Name, humanDuration(now-st.since)), At: now, Data: map[string]any{"offline_since": st.since, "offline_seconds": now - st.since}})
 			}
@@ -466,21 +534,36 @@ func (m *Manager) handleOffline(name string, since, now int64, alertSteps []int6
 	}
 	m.mu.Lock()
 	st := m.offline[name]
-	if st == nil || st.since != since {
+	newEpisode := st == nil || st.since != since
+	if newEpisode {
 		st = &offlineState{since: since}
 		m.offline[name] = st
 		if elapsed >= offlineAlertLateStart(alertSteps) {
 			st.sent = len(alertSteps)
 		}
 	}
+	var initialState offlineState
+	if newEpisode {
+		initialState = *st
+	}
 	if stage <= st.sent {
 		m.mu.Unlock()
+		if newEpisode {
+			m.persistOfflineState(name, initialState)
+		}
 		return
 	}
 	st.sent = stage
 	st.notified = true
 	final := stage == len(alertSteps)
+	updatedState := *st
 	m.mu.Unlock()
+	if newEpisode {
+		m.persistOfflineState(name, initialState)
+	}
+	// Persist the changed alert progress before emitting, so a Hub restart
+	// cannot resend this stage or forget that recovery should be announced.
+	m.persistOfflineState(name, updatedState)
 	msg := fmt.Sprintf("节点 %s 已离线 %s（自 %s）", name, humanDuration(elapsed), time.Unix(since, 0).Format("01-02 15:04"))
 	if final {
 		msg += "，后续不再重复提醒，离线状态会列在每日报告中"

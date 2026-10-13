@@ -109,6 +109,9 @@ func (s *Store) init() error {
 	if err := s.migrateResourceAlertStates(); err != nil {
 		return err
 	}
+	if err := s.migrateOfflineStates(); err != nil {
+		return err
+	}
 	return s.migrateNotificationV1()
 }
 
