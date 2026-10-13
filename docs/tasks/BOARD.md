@@ -11,4 +11,4 @@
 | T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | merged | main @ c1f18cf（已推送） | 2 | PASS | - | - | 2026-10-13 23:32 |
 | T-20261013-03 | 新机构建与本机部署脚本 | GPT | scripts/release-build.sh scripts/test_release_build.sh deploy/deploy-hub-local.sh deploy/test_deploy_hub_local.sh deploy/README.md | done | main @ 5ae5126 | 1 | PASS（可复现构建、生产 dry-run 已核） | - | - | 2026-10-14 00:00 |
 | T-20261013-04 | 通知脚本修复（User-Agent、可诊断错误） | GPT | scripts/emit-notification-event.py scripts/notify-agent-completion.sh scripts/test_emit_notification_event.py scripts/test_notify_agent_completion.sh | merged | main @ 3aa87f7（已推送） | 1 | PASS（公网 400 已验证） | - | - | 2026-10-13 23:12 |
-| T-20261014-01 | 首次本机部署演练（8cbd273 可复现构建替换生产 Hub） | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | ready | 基线 8cbd273（worktree 构建） | 1 | 第 1 轮前置检查中止：卡提交使 HEAD 前移，已修卡 | - | - | 2026-10-14 00:12 |
+| T-20261014-01 | 首次本机部署演练（8cbd273 可复现构建替换生产 Hub） | GPT | 运维：/opt/vps-commander 二进制（仓库无改动） | ready | 基线 8cbd273（worktree 构建） | 2 | 第 2 轮构建中止：PATH 无 go，已补卡 | - | - | 2026-10-14 00:20 |
