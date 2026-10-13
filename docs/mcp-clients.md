@@ -144,3 +144,12 @@ curl -s https://hub.example.com/api/v1/exec \
 ## 7. Agent MCP
 
 Hub 可以把 MCP 服务挂载到指定 Agent 上（面板“接入与令牌”→ MCP 卡片，需 `admin`），客户端通过 `list_agent_mcp` / `call_agent_mcp` 经 Hub 调用，不直接连接 Agent。`call_agent_mcp` 同样经过 scope、白名单和安全等级检查。
+
+## 6. 任务回报（必须）
+
+交回任何开发、测试、运维、巡检或审核任务时，都必须推送 `task-reported`：完成用 `done`，受阻用 `blocked` 并在摘要写明原因及需要谁处理，失败用 `failed`。通知首行以 `【工号】` 开头。
+
+```sh
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status done --summary '完成实现和全部验收测试。' --employee SWS-E002-gpt --project vps-commander --ref commit-abc123
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status blocked --summary '受阻：check-task 发现允许范围外文件；需要 Hark 修正任务书后继续。' --employee SWS-E002-gpt --project vps-commander --ref T-20261014-10
+```

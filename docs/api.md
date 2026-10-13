@@ -84,3 +84,25 @@ OAuth 端点只有在配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后启用；未�
 ## 5. 指标
 
 `/metrics` 包含：`vps_commander_online_agents`、`vps_commander_mcp_sessions`（按传输方式）、`vps_commander_in_flight_exec`、`vps_commander_audit_queue_depth`、`vps_commander_sqlite_write_latency_seconds`（最近一次审计写入）、HTTP 429 计数、`vps_commander_goroutines`、`vps_commander_process_resident_memory_bytes`、`vps_commander_process_cpu_seconds_total`。
+
+## 6. 通用任务回报：`task-reported`
+
+交回任务时使用 `POST /api/v1/events`，`template_id` 为 `task-reported`。`variables` 接受 `employee`、`project`、`task`、`type`、`status`、`ref`、`summary`。标题为 `【{{employee}}】{{type}}{{status}}：{{project}}`，正文包含任务、关联和摘要三行。
+
+- `status` 必填，只接受 `done`、`blocked`、`failed`，存储及渲染前分别转换为「完成」「受阻」「失败」。`task` 和 `summary` 必填。
+- 缺省值：`employee` 使用调用令牌名称；名称为空时使用 `source`。`project` 和 `ref` 默认为 `-`，`type` 默认为「任务」。
+- `employee` / `project` 最多 32 个 Unicode rune，`type` 最多 16 个，`ref` 最多 64 个。上述字段会去除首尾空白，不允许控制字符或 `【`、`】`，否则返回 `400`。
+- 未显式传 `severity` 时，`done` 为 `P3`，`blocked` / `failed` 为 `P2`；显式传入时按传入值处理，但仍受既有 P1 管理员权限及严重级别升级授权规则约束。
+- 幂等哈希按缺省值填充前的原始变量计算；`data_json` 保存填充和状态转换后的变量。重复提交同一 `Idempotency-Key` 和原始请求会返回既有事件。
+
+完成示例：
+
+```sh
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status done --summary '实现完成；全量测试和 check-task 通过。' --employee SWS-E002-gpt --project vps-commander --ref commit-abc123
+```
+
+受阻示例（摘要须说明原因及需要谁处理）：
+
+```sh
+scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status blocked --summary '受阻：等待 Hark 处理权限规则冲突，处理后继续。' --employee SWS-E002-gpt --project vps-commander --ref T-20261014-10
+```
