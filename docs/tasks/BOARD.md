@@ -8,5 +8,5 @@
 | ID | 标题 | 开发者 | 改动范围 | 状态 | 分支 / commit | 轮次 | 审核结论 | 发布版本 | DevTask ID | 更新时间 |
 |----|------|--------|----------|------|---------------|------|----------|----------|------------|----------|
 | T-20261013-01 | 恢复开发环境（工具、代理、仓库） | GPT | 主机环境（非仓库） | in_review | - | 1 | 待复核：缺交付报告 | - | - | 2026-10-13 21:50 |
-| T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | in_review | docs/restore-process @ 18cb972 | 1 | 内容通过、交付报告已补；阻塞：GPT 执行环境无 events:emit 令牌，开发完成未推送 | - | - | 2026-10-13 22:36 |
+| T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | changes_requested | docs/restore-process @ 18cb972 | 2 | 内容通过；需按 23:08 新推送规则改 PROFILE、rebase、补推开发完成 | - | - | 2026-10-13 23:25 |
 | T-20261013-04 | 通知脚本修复（User-Agent、可诊断错误） | GPT | scripts/emit-notification-event.py scripts/notify-agent-completion.sh scripts/test_emit_notification_event.py scripts/test_notify_agent_completion.sh | merged | main @ 3aa87f7（已推送） | 1 | PASS（公网 400 已验证） | - | - | 2026-10-13 23:12 |
