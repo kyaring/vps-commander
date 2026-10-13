@@ -43,7 +43,7 @@ Streamable HTTP 要点：地址必须是 `/mcp`（不带结尾斜杠）；initia
 | 工具（MCP） | REST 路由（代码已注册） | scope / 风险 | 参数要点 |
 |---|---|---|---|
 | `list_devices` | `GET /api/v1/devices` | devices:read / 低 | 无 |
-| `exec_command` | `POST /api/v1/exec` | exec / 高 | device、command、workdir、timeout（秒，默认 30，最大 300） |
+| `exec_command` | `POST /api/v1/exec` | exec / 高 | device、command、workdir、timeout；output_mode、max_bytes、dedup_window_seconds（两种接口字段一致） |
 | `read_file` | `POST /api/v1/file/read` | files:read / 低 | device、path、offset、limit（默认 256 KiB，最大 1 MiB） |
 | `read_multiple_files` | 无独立 REST 路由 | files:read / 低 | device、paths、limit |
 | `create_directory` | 无独立 REST 路由 | files:write / 中 | device、path |
@@ -55,7 +55,7 @@ Streamable HTTP 要点：地址必须是 `/mcp`（不带结尾斜杠）；initia
 | `list_agent_mcp` | `GET /api/v1/mcp/list` | mcp:call / 低 | device |
 | `call_agent_mcp` | `POST /api/v1/mcp/call` | mcp:call / 中 | device、server、tool、arguments |
 
-`exec_command` 返回 `{device, exit_code, stdout, stderr, duration_ms}`。MCP 对非零退出不标 isError，必须自己看 `exit_code`。
+`exec_command` 默认 `output_mode=raw`、`max_bytes=4096`，超限会保留尾部并返回 `truncated/total_bytes/total_lines/sha256`；`head` 保留头部，`count` 只返回字节数、行数和退出码，`none` 不返回正文。需要大输出时显式传 `max_bytes`（最大 1048576）；只读状态查询建议传 `dedup_window_seconds` 以减少重复正文。MCP 对非零退出不标 isError，必须自己看 `exit_code`。
 
 ## 3. 安全规则
 1. 重启服务、重启机器、改防火墙、删除文件、覆写已有文件等高风险操作：先把确切命令给人看，得到明确同意再执行。

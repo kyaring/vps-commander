@@ -61,6 +61,8 @@ type Server struct {
 	legacyAuthLast   map[string]time.Time
 	eventEmitMu      sync.Mutex
 	eventEmitWindows map[string]eventEmitWindow
+	execOutputMu     sync.Mutex
+	execOutputCache  map[string]executor.OutputDedupRecord
 }
 
 const (
@@ -1047,7 +1049,12 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	var req model.ExecRequest
+	var req struct {
+		model.ExecRequest
+		OutputMode         string `json:"output_mode,omitempty"`
+		MaxBytes           int    `json:"max_bytes,omitempty"`
+		DedupWindowSeconds int    `json:"dedup_window_seconds,omitempty"`
+	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
 		http.Error(w, "bad json", 400)
 		return
@@ -1056,11 +1063,25 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "command required", 400)
 		return
 	}
+	opts, err := validateExecOutputOptions(req.OutputMode, req.MaxBytes, req.DedupWindowSeconds)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if req.Device == "" {
 		req.Device = s.LocalName
 	}
 	req.Device = s.normalizeDevice(req.Device)
 	if !s.requireSecurity(w, r, req.Device, "exec", req.Command) {
+		return
+	}
+	if cached, ok := s.outputDedupLookup(req.Device, req.Workdir, req.Command, opts); ok {
+		code, _ := cached["exit_code"].(int)
+		if err := s.audit(r.WithContext(withCommandExit(r.Context())), req.Device, "exec", req.Command, code, 0, "unchanged=true"); err != nil {
+			http.Error(w, "audit write failed", http.StatusInternalServerError)
+			return
+		}
+		jsonOut(w, cached)
 		return
 	}
 	if releaseTokenExec, allowed := s.acquireTokenExec(principal(r)); !allowed {
@@ -1100,7 +1121,13 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
-	jsonOut(w, model.ExecResponse{Device: req.Device, ExitCode: res.ExitCode, Stdout: res.Stdout, Stderr: res.Stderr, DurationMS: res.DurationMS})
+	shaped, err := execOutputResponse(req.Device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.outputDedupRemember(req.Device, req.Workdir, req.Command, opts, execOutputHash(res.Stdout, res.Stderr), execOutputCachedBytes(res.Stdout, res.Stderr), res.ExitCode)
+	jsonOut(w, shaped)
 }
 func sessionOwner(r *http.Request) string {
 	v := r.Header.Get("Authorization") + "|" + r.Header.Get("X-Operator-ID") + "|" + auth.ClientIP(r)
@@ -1577,3 +1604,102 @@ func (s *Server) openapi(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(data)
 }
+
+// Exec output shaping and deduplication helpers.
+type execOutputKey struct {
+	Device   string `json:"device"`
+	Workdir  string `json:"workdir"`
+	Command  string `json:"command"`
+	Mode     string `json:"output_mode"`
+	MaxBytes int    `json:"max_bytes"`
+}
+
+func (s *Server) outputDedupKey(device, workdir, command string, opts executor.OutputOptions) string {
+	data, _ := json.Marshal(execOutputKey{device, workdir, command, opts.Mode, opts.MaxBytes})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) outputDedupLookup(device, workdir, command string, opts executor.OutputOptions) (map[string]any, bool) {
+	if opts.DedupWindowSeconds <= 0 {
+		return nil, false
+	}
+	key := s.outputDedupKey(device, workdir, command, opts)
+	now := time.Now()
+	s.execOutputMu.Lock()
+	defer s.execOutputMu.Unlock()
+	if s.execOutputCache == nil {
+		return nil, false
+	}
+	record, ok := s.execOutputCache[key]
+	if !ok {
+		return nil, false
+	}
+	if now.Sub(record.FirstSeen).Seconds() > float64(opts.DedupWindowSeconds) {
+		delete(s.execOutputCache, key)
+		return nil, false
+	}
+	return map[string]any{
+		"unchanged":    true,
+		"hash":         record.Hash,
+		"first_seen":   record.FirstSeen.Format(time.RFC3339Nano),
+		"cached_bytes": record.CachedBytes,
+		"exit_code":    record.ExitCode,
+	}, true
+}
+
+func (s *Server) outputDedupRemember(device, workdir, command string, opts executor.OutputOptions, hash string, cachedBytes, exitCode int) {
+	if opts.DedupWindowSeconds <= 0 {
+		return
+	}
+	key := s.outputDedupKey(device, workdir, command, opts)
+	s.execOutputMu.Lock()
+	defer s.execOutputMu.Unlock()
+	if s.execOutputCache == nil {
+		s.execOutputCache = make(map[string]executor.OutputDedupRecord)
+	}
+	now := time.Now()
+	for k, v := range s.execOutputCache {
+		if now.Sub(v.FirstSeen).Seconds() > float64(v.WindowSeconds) {
+			delete(s.execOutputCache, k)
+		}
+	}
+	s.execOutputCache[key] = executor.OutputDedupRecord{Hash: hash, FirstSeen: now, CachedBytes: cachedBytes, ExitCode: exitCode, WindowSeconds: opts.DedupWindowSeconds}
+}
+
+func execOutputResponse(device string, exitCode int, stdout, stderr string, durationMS int64, opts executor.OutputOptions) (map[string]any, error) {
+	shaped, err := executor.ShapeOutput(stdout, stderr, opts.Mode, opts.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if opts.Mode == "count" {
+		return map[string]any{"total_bytes": shaped.TotalBytes, "total_lines": shaped.TotalLines, "exit_code": exitCode}, nil
+	}
+	if opts.Mode == "none" {
+		return map[string]any{"exit_code": exitCode, "truncated": shaped.Truncated, "total_bytes": shaped.TotalBytes, "total_lines": shaped.TotalLines, "sha256": shaped.SHA256}, nil
+	}
+	return map[string]any{
+		"device": device, "exit_code": exitCode, "stdout": shaped.Stdout, "stderr": shaped.Stderr,
+		"duration_ms": durationMS, "truncated": shaped.Truncated, "total_bytes": shaped.TotalBytes,
+		"total_lines": shaped.TotalLines, "sha256": shaped.SHA256,
+	}, nil
+}
+
+func validateExecOutputOptions(mode string, maxBytes, dedupWindow int) (executor.OutputOptions, error) {
+	opts, err := executor.NormalizeOutputOptions(mode, maxBytes)
+	if err != nil {
+		return executor.OutputOptions{}, err
+	}
+	if dedupWindow < 0 {
+		return executor.OutputOptions{}, fmt.Errorf("dedup_window_seconds must be non-negative")
+	}
+	opts.DedupWindowSeconds = dedupWindow
+	return opts, nil
+}
+
+func execOutputHash(stdout, stderr string) string {
+	sum := sha256.Sum256([]byte(stdout + stderr))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func execOutputCachedBytes(stdout, stderr string) int { return len(stdout) + len(stderr) }
