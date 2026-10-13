@@ -244,6 +244,7 @@ func (s *Store) migrateNotificationV1() error {
 		{ID: "builtin-resource-threshold", Name: "资源阈值告警", EventType: "resource_threshold", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
 		{ID: "builtin-resource-recovery", Name: "资源恢复", EventType: "resource_recovery", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
 		{ID: "builtin-scheduled-report", Name: "定时报告", EventType: "scheduled_report", Severity: "P3", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "builtin-default", Name: "默认事件", EventType: "custom.default", Severity: "P3", TitleTemplate: "{{title}}", BodyTemplate: "{{message}}", Format: "text", VariablesJSON: `["title","message"]`, Enabled: true, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, template := range builtins {
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO notification_templates(id,name,event_type,severity,title_template,body_template,format,variables_json,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, template.ID, template.Name, template.EventType, template.Severity, template.TitleTemplate, template.BodyTemplate, template.Format, template.VariablesJSON, 1, template.CreatedAt, template.UpdatedAt); err != nil {

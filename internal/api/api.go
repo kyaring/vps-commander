@@ -283,38 +283,18 @@ func maskWebhookURL(v string) string {
 	}
 	return v[:8] + "***" + v[len(v)-4:]
 }
+func (s *Server) legacyWebhookGone(w http.ResponseWriter, r *http.Request) {
+	_ = s.audit(r, "", "notification_setting_legacy_gone", r.URL.Path, http.StatusGone, 0, "legacy webhook API removed; use /api/v1/notifications/channels")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": "legacy webhook API removed; use /api/v1/notifications/channels"})
+}
+
 func (s *Server) UpdateWebhookTargetJSON(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	var v storage.WebhookTarget
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&v); err != nil {
-		http.Error(w, "bad json", 400)
-		return
-	}
-	if err := s.Store.SaveWebhookTarget(v); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	_ = s.audit(r, "", "notification_setting", "webhook:"+v.ID, 0, 0, "")
-	jsonOut(w, map[string]any{"ok": true, "id": v.ID})
+	s.legacyWebhookGone(w, r)
 }
 func (s *Server) DeleteWebhookTargetJSON(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	id := r.URL.Query().Get("id")
-	if id == "" {
-		http.Error(w, "id required", 400)
-		return
-	}
-	if err := s.Store.DeleteWebhookTarget(id); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	jsonOut(w, map[string]any{"ok": true})
+	s.legacyWebhookGone(w, r)
 }
 func (s *Server) TestWebhookJSON(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

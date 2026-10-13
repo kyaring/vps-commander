@@ -35,6 +35,7 @@
     </div>
     <div class="mcp-actions"><button id="notificationSettingsSave" type="button">保存通知策略</button><span id="notificationSettingsStatus" role="status"></span></div>
   </article>
+  <p class="muted">旧 Webhook 管理接口已停用。请在下方“通知系统 → 通道”中创建或管理新通道；旧配置列表和测试发送仍可用。</p>
   <div id="webhookList" class="mcp-grid"></div>
   <div id="webhookEditor" hidden style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
     <div class="mcp-form">
@@ -57,7 +58,7 @@
       <label class="full">配置 JSON (Telegram 需填 {"chat_id":"-100..."})<textarea id="webhookConfig">{}</textarea></label>
     </div>
     <div class="mcp-actions">
-      <button id="webhookSave" type="button">保存 Webhook</button>
+      <button id="webhookSave" type="button" disabled>旧 Webhook 已只读</button>
       <button id="webhookTest" type="button">测试连通性</button>
       <button id="webhookCancel" type="button">取消</button>
     </div>
@@ -81,11 +82,11 @@
       <div class="notification-form-grid">
         <label>通道 ID<input id="notifyChannelID" placeholder="telegram-ops" autocomplete="off"></label>
         <label>显示名称<input id="notifyChannelName" placeholder="运维通知"></label>
-        <label>通道类型<select id="notifyChannelType"><option value="webhook">Webhook</option><option value="telegram_bot">Telegram Bot</option><option value="qq_official_bot">QQ 官方机器人（待确认主动推送能力）</option></select></label>
+        <label>通道类型<select id="notifyChannelType"><option value="webhook">Webhook</option><option value="telegram_bot">Telegram Bot</option><option value="qq_official_bot">QQ 官方机器人（待确认主动推送能力）</option><option value="wecom_bot">企业微信机器人（wecom_bot）</option></select></label>
         <label>启用<select id="notifyChannelEnabled"><option value="1">启用</option><option value="0">停用</option></select></label>
-        <label class="full">Webhook URL<input id="notifyChannelEndpoint" type="url" placeholder="https://…（编辑时留空保留原地址）" autocomplete="off"></label>
+        <label class="full" id="notifyChannelEndpointLabel">Webhook URL<input id="notifyChannelEndpoint" type="url" placeholder="https://…（编辑时留空保留原地址）" autocomplete="off"></label>
         <label class="full">公开配置（JSON）<textarea id="notifyChannelConfig" rows="3">{}</textarea></label>
-        <label class="full">凭据 / 自定义请求头（JSON，只写入不回显）<textarea id="notifyChannelSecrets" rows="3" autocomplete="off" spellcheck="false" placeholder='Telegram: {"bot_token":"…"}；Webhook: {"headers":{"Authorization":"Bearer …"}}'></textarea><small>新建 Telegram 需要 bot_token。更新时留空保留已有凭据；凭据使用 VPS_COMMANDER_NOTIFICATION_KEY 加密存储。</small></label>
+        <label class="full">凭据（JSON，只写入不回显）<textarea id="notifyChannelSecrets" rows="3" autocomplete="off" spellcheck="false" placeholder='Telegram: {"bot_token":"…"}；Webhook: {"headers":{"Authorization":"Bearer …"}}；企业微信: {"webhook_url":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…"}'></textarea><small>新建 Telegram 需要 bot_token；企业微信需要 webhook_url。更新时留空保留已有凭据；凭据使用 VPS_COMMANDER_NOTIFICATION_KEY 加密存储。</small></label>
       </div>
       <div class="actions"><button id="notifyChannelSave" type="button">保存通道</button><button id="notifyChannelCancel" type="button">取消</button></div>
     </div>

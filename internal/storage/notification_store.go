@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var notificationSecretHeaderNameRE = regexp.MustCompile("^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -56,13 +57,25 @@ func containsNotificationSecretKey(value any) bool {
 	return false
 }
 
+func validWeComWebhookURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host != "qyapi.weixin.qq.com" || u.Path != "/cgi-bin/webhook/send" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	query := u.Query()
+	if query.Get("key") == "" || len(query) != 1 || len(query["key"]) != 1 {
+		return false
+	}
+	return true
+}
+
 func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON string) error {
 	v.ID = strings.TrimSpace(v.ID)
 	v.Name = strings.TrimSpace(v.Name)
 	if v.ID == "" || v.Name == "" {
 		return errors.New("channel id and name are required")
 	}
-	if v.Type != "webhook" && v.Type != "telegram_bot" && v.Type != "qq_official_bot" {
+	if v.Type != "webhook" && v.Type != "telegram_bot" && v.Type != "qq_official_bot" && v.Type != "wecom_bot" {
 		return errors.New("unsupported notification channel type")
 	}
 	if v.ConfigJSON == "" {
@@ -90,10 +103,29 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 		allowedConfigKeys = map[string]bool{"chat_id": true, "message_thread_id": true}
 	case "qq_official_bot":
 		allowedConfigKeys = map[string]bool{"app_id": true, "target_type": true, "target_id": true}
+	case "wecom_bot":
+		allowedConfigKeys = map[string]bool{"mentioned_list": true}
 	}
 	for key := range configObject {
 		if !allowedConfigKeys[key] {
 			return fmt.Errorf("unsupported public config field %q; credentials and custom headers belong in secrets_json", key)
+		}
+	}
+	if v.Type == "wecom_bot" {
+		if raw, ok := configObject["mentioned_list"]; ok {
+			items, valid := raw.([]any)
+			if !valid || len(items) > 10 {
+				return errors.New("wecom mentioned_list must be an array of at most 10 strings")
+			}
+			for _, item := range items {
+				mention, valid := item.(string)
+				if !valid {
+					return errors.New("wecom mentioned_list entries must be strings")
+				}
+				if utf8.RuneCountInString(mention) > 64 {
+					return errors.New("wecom mentioned_list entries must be at most 64 characters")
+				}
+			}
 		}
 	}
 	if method, ok := configObject["method"]; ok && v.Type == "webhook" && method != "POST" {
@@ -112,6 +144,10 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return errors.New("webhook endpoint must be an http(s) URL without userinfo")
 		}
+	} else if v.Type == "wecom_bot" {
+		if strings.TrimSpace(v.Endpoint) != "" {
+			return errors.New("endpoint is only valid for webhook channels")
+		}
 	} else if strings.TrimSpace(v.Endpoint) != "" {
 		return errors.New("endpoint is only valid for webhook channels")
 	}
@@ -121,6 +157,26 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 		}
 		if err := json.Unmarshal([]byte(v.ConfigJSON), &cfg); err != nil || strings.TrimSpace(cfg.ChatID) == "" {
 			return errors.New("telegram channel requires config.chat_id")
+		}
+	}
+	if v.Type == "wecom_bot" {
+		if len(configObject) > 1 {
+			return errors.New("wecom config only supports mentioned_list")
+		}
+		if secretsJSON != "" {
+			var secrets map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(secretsJSON), &secrets); err != nil || secrets == nil {
+				return errors.New("channel secrets must be a JSON object")
+			}
+			for key := range secrets {
+				if key != "webhook_url" {
+					return fmt.Errorf("unsupported WeCom secret field %q", key)
+				}
+			}
+			var webhookURL string
+			if err := json.Unmarshal(secrets["webhook_url"], &webhookURL); err != nil || !validWeComWebhookURL(webhookURL) {
+				return errors.New("wecom channel requires a valid secrets.webhook_url")
+			}
 		}
 	}
 	if v.Type == "qq_official_bot" {
@@ -190,6 +246,18 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 				return errors.New("telegram channel requires secrets.bot_token")
 			}
 		}
+		if v.Type == "wecom_bot" {
+			for key := range secrets {
+				if key != "webhook_url" {
+					return fmt.Errorf("unsupported WeCom secret field %q", key)
+				}
+			}
+			var webhookURL string
+			_ = json.Unmarshal(secrets["webhook_url"], &webhookURL)
+			if !validWeComWebhookURL(webhookURL) {
+				return errors.New("wecom channel requires a valid secrets.webhook_url")
+			}
+		}
 		if v.Type == "qq_official_bot" {
 			for key := range secrets {
 				if key != "app_secret" {
@@ -209,7 +277,7 @@ func (s *Store) SaveNotificationChannel(v NotificationChannel, secretsJSON strin
 	} else if exists && oldType == v.Type {
 		sealed = oldSecrets // blank secret field on update means retain current credentials
 	}
-	if (v.Type == "telegram_bot" || v.Type == "qq_official_bot") && len(sealed) == 0 {
+	if (v.Type == "telegram_bot" || v.Type == "qq_official_bot" || v.Type == "wecom_bot") && len(sealed) == 0 {
 		return errors.New("provider credentials are required")
 	}
 	if sealed == nil {

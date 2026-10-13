@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -185,6 +186,36 @@ func (m *Manager) sendNotificationDelivery(job storage.NotificationDeliveryJob) 
 			return m.postJSON(ctx, job.Channel.Endpoint, Event{ID: job.Event.ID, Type: job.Event.EventType, Device: job.Event.Device, Severity: job.Event.Severity, Message: job.Event.Message, At: job.Event.CreatedAt, Data: mapStringAny(variables)}, secrets.Headers)
 		}
 		return m.postJSON(ctx, job.Channel.Endpoint, payload, secrets.Headers)
+	case "wecom_bot":
+		plain, err := m.Store.DecryptNotificationChannelSecrets(job.Channel.ID, job.Channel.SecretsCiphertext)
+		if err != nil {
+			return 0, "WeCom credentials could not be decrypted", false
+		}
+		var secrets struct {
+			WebhookURL string `json:"webhook_url"`
+		}
+		if err := json.Unmarshal(plain, &secrets); err != nil || !validWeComURL(secrets.WebhookURL) {
+			return 0, "WeCom webhook credentials are invalid", false
+		}
+		var cfg struct {
+			MentionedList []string `json:"mentioned_list"`
+		}
+		if err := json.Unmarshal([]byte(job.Channel.ConfigJSON), &cfg); err != nil {
+			return 0, "WeCom channel configuration is invalid", false
+		}
+		requestBody := map[string]any{}
+		if format == "markdown" {
+			requestBody["msgtype"] = "markdown"
+			requestBody["markdown"] = map[string]any{"content": message}
+		} else {
+			textBody := map[string]any{"content": message}
+			if len(cfg.MentionedList) > 0 {
+				textBody["mentioned_list"] = cfg.MentionedList
+			}
+			requestBody["msgtype"] = "text"
+			requestBody["text"] = textBody
+		}
+		return m.postWeCom(ctx, secrets.WebhookURL, requestBody)
 	case "telegram_bot":
 		plain, err := m.Store.DecryptNotificationChannelSecrets(job.Channel.ID, job.Channel.SecretsCiphertext)
 		if err != nil {
@@ -252,6 +283,53 @@ func (m *Manager) postJSON(parent context.Context, endpoint string, payload any,
 		return resp.StatusCode, "", true
 	}
 	return resp.StatusCode, fmt.Sprintf("webhook http %d", resp.StatusCode), true
+}
+
+func validWeComURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.Host != "qyapi.weixin.qq.com" || u.Path != "/cgi-bin/webhook/send" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	q := u.Query()
+	return q.Get("key") != "" && len(q) == 1 && len(q["key"]) == 1
+}
+
+func (m *Manager) postWeCom(parent context.Context, endpoint string, payload map[string]any) (int, string, bool) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, "WeCom payload encoding failed", false
+	}
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, "WeCom request could not be created", false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := m.doNotificationRequest(req)
+	if err != nil {
+		return 0, "WeCom network request failed", true
+	}
+	defer resp.Body.Close()
+	var result struct {
+		ErrCode *int `json:"errcode"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&result); err != nil || result.ErrCode == nil {
+		if resp.StatusCode >= 500 {
+			return resp.StatusCode, fmt.Sprintf("WeCom http %d", resp.StatusCode), true
+		}
+		return resp.StatusCode, "WeCom response was invalid", false
+	}
+	if resp.StatusCode >= 500 {
+		return resp.StatusCode, fmt.Sprintf("WeCom http %d", resp.StatusCode), true
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, fmt.Sprintf("WeCom http %d", resp.StatusCode), false
+	}
+	if *result.ErrCode != 0 {
+		return 400, fmt.Sprintf("wecom errcode=%d", *result.ErrCode), false
+	}
+	return resp.StatusCode, "", true
 }
 
 func (m *Manager) postTelegram(parent context.Context, token string, payload map[string]any) (int, string, bool) {
