@@ -14,6 +14,8 @@
 - 节点 wjy5010u（192.168.20.132），仓库 /root/work/vps-commander，生产二进制 /opt/vps-commander/vps-commander-hub，数据库 /opt/vps-commander/data/commander.db，服务名 vps-commander-hub。
 - 公网 https://vcs.king.nyc.mn（/mcp、/api/v1/*）；内网 http://192.168.20.132:9521。
 - 审核岗的访问方式：用远端 MCP 令牌（无 admin 权限）调 exec_command(device=wjy5010u, timeout≤300)。长脚本包成 bash -s <<"EOF" … EOF 传进去；敏感值不写进命令行。
+- 审核岗推送 `review-completed` 事件的凭据文件是 `/etc/vps-commander/review-events.env`（权限 `600 root:root`，含 `VPS_COMMANDER_HUB_URL` 与 `VPS_COMMANDER_EVENT_TOKEN`）；只可在子 shell 中 source，不得 cat、echo、打印内容或将凭据写进命令行。
+- `hub.env` 中的 `VPS_COMMANDER_API_KEY`（`legacy-env`）scope 虽包含 `admin`，但不含 `events:emit`，不能用来发送事件；事件类探针必须使用具备 `events:emit` scope 的令牌。
 - 需要 admin 时：在子 shell 里 source hub.env，取 VPS_COMMANDER_API_KEY，通过 curl -H @- 从 stdin 传 Bearer 头，只调本机 9521。用之前先告诉 OPC。
 - 节点上非登录 shell 的 PATH 里没有 go，先执行 export PATH=/usr/local/go/bin:$PATH。
 - Hub 重启后 MCP 会话会失效，要重新建会话。
@@ -48,7 +50,7 @@
 5. 交付：在分支上提交一次，不 push；推送完成通知（无论完成还是受阻都要推）；向 OPC 回复【提交审核】，写明分支、sha、改动文件、验收摘要。
 6. 回退。
 
-运维卡还要写：前置检查（生产 sha256 前缀、服务 active、依赖资源是否存在，不满足就停）；每一步只执行一次，结果不符合预期就停下报告，不重试；执行前在线备份（sqlite .backup，integrity_check 必须是 ok，备份文件权限 600）；最后做只读核对清单。部署卡写明可复现构建和 sha256 比对，备份目录命名为 backup-pre-<新sha前12位>-<时间戳>。
+运维卡还要写：前置检查（生产 sha256 前缀、服务 active、依赖资源是否存在，不满足就停）；每一步只执行一次，结果不符合预期就停下报告，不重试；执行前在线备份（sqlite .backup，integrity_check 必须是 ok，备份文件权限 600）；必须在备份目录里留存每一步关键 API 的原始响应，文件名带步骤号（例如 `$B/step2-routes.json`），权限 600；最后做只读核对清单。部署卡写明可复现构建和 sha256 比对，备份目录命名为 backup-pre-<新sha前12位>-<时间戳>。
 
 卡要小：一个根因一张卡。热修卡的改动范围就是一两个文件。
 
@@ -68,7 +70,7 @@
 1. 收到【提交审核】后，开临时 worktree /tmp/rvXX，在里面只读检出开发者的提交。
 2. 检查 git diff 基线..提交 的文件清单是否在改动范围内，并跑 check-task。
 3. 独立重跑全部验收：gofmt、vet、build、全量测试、race，以及卡里点名的定向测试。
-4. 做反向验证或独立探针：把关键修复改回去，确认测试会失败；对生产相关的行为写最小探针去验证。
+4. 做反向验证或独立探针：把关键修复改回去，确认测试会失败；对生产相关的行为写最小探针去验证。若某项验收依赖某次 API 响应，而备份目录没有对应的原始响应文件，则视为证据不足。
 5. 写结论：PASS，或 CHANGES REQUESTED（编号列出问题）。非阻塞的建议另列，并记入交接文档的「遗留问题」。
 6. 当场更新 BOARD.md，提交（用审核岗的身份）。推送 review-completed 到审核群：POST /api/v1/events，template_id=review-completed，variables 只能放 {result,commit,summary} 三项（任务号写进 summary 里），带上 severity 和 source，Idempotency-Key 写成 review:<任务>:<sha>:<结果>。
 7. 删掉 /tmp/rvXX。等 OPC 批准后再合并：merge --no-ff，合并提交用审核岗身份；推送 origin main；看板改成 merged。
@@ -84,3 +86,4 @@
 - 面板实际用的静态文件在 internal/web/static/，根目录下的 web/static/ 是旧副本。
 - 节点上没有 node，前端 JS 只能靠 Go 测试做字符串断言。
 - check-task 只能在任务分支上跑，在 main 上会把其他任务的提交算作越界。
+- 开发卡的 check-task 必须在分支提交之后运行（它要求工作区干净）；运行前先执行 `export PATH=/usr/local/go/bin:$PATH`，否则内部的 `docs/process/acceptance.sh` 会报 `gofmt: not found`；若 check-task 失败，用 `git commit --amend` 修正，保持分支上只有一个提交。
