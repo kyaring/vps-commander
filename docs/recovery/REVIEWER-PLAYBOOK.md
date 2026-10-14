@@ -93,6 +93,7 @@
 - 「不构建」指不产出发布物、不跑 release-build；`go build ./...` 是编译检查，属于验收（`docs/process/acceptance.sh` 第 8 行就会跑），**必须执行**。T-20261014-22 曾因这条措辞歧义误停。
 - **执行节点名一律用 `wjy5010u`**（当前唯一注册设备；也可省略 `device`，默认在 Hub 所在节点执行）。`wjyhk` 是**旧节点名**、也是 go.mod 里的模块路径 `github.com/wjyhk/vps-commander`，**不是可用设备**——指定它会被安全策略拒绝：`security mode unknown denies exec`（T-20261014-30 实际发生）。它只该出现在历史文档与测试夹具里。
 - **`go` 与 `gofmt` 都在 `/usr/local/go/bin`，默认 PATH（`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`）里没有它们——`/usr/bin/gofmt` 根本不存在**。所以**每条用到 go/gofmt 的命令都要自己 `export PATH=/usr/local/go/bin:$PATH`，或直接用绝对路径**。此坑已造成 4 次阻塞（T-18、T-30、T-31 等）。根治：T-20261014-32 把两者软链到 `/usr/local/bin`。
+- **把多步合成一条脚本一次执行**（`bash -s <<'EOF' … EOF`），减少往返：本项目 exec 通道偶发**内部错误 / 会话失效**（一个会话里已出现 6 次），往返越少越安全，也越省上下文。
 - **每次 exec 都是新 shell，`export PATH` 不跨调用保留**：每条用到 go 的命令都要自己带 `export PATH=/usr/local/go/bin:$PATH`，或直接用绝对路径 `/usr/local/go/bin/go`。本项目已因此踩坑三次（T-20261014-18 的 acceptance.sh、T-20261014-30 的 build-info 核验）。
 - **可复现构建不嵌入 `vcs.revision`**：`go version -m <bin>` 里查不到 commit；commit 只在 `scripts/release-build.sh` 写的 `$OUT/build-info.txt`（含 `commit=` 与 `sha256=`）。部署卡要核验 commit 时，看这个文件，不要看 `go version -m`。
 - 部署卡的「正式部署」那一步**必须后台执行并写日志**：`setsid nohup /bin/sh …/deploy-hub-local.sh "$BIN" --sha256 "$HASH" > /tmp/deploy.log 2>&1 &`，再轮询日志。因为部署会重启 Hub，而调用方的 exec 会话正是 Hub 承载的——前台执行会被切断，表现为 **`exit_code=-1` 且无输出**（T-20261014-26 实际发生，部署其实已成功，只是调用方看不到结果）。遇到这种返回，不要重试部署，先**分诊现场**（服务是否 active、生产二进制 sha256 是新的还是旧的、healthz、备份目录是否存在）再决定。
