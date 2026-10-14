@@ -86,6 +86,7 @@
 - 面板实际用的静态文件在 internal/web/static/，根目录下的 web/static/ 是旧副本。
 - 节点上没有 node，前端 JS 只能靠 Go 测试做字符串断言。
 - check-task 只能在任务分支上跑，在 main 上会把其他任务的提交算作越界。
+- **卡被修订后，开发分支必须先把 main 合进来（`git rebase main`）再跑 check-task**：check-task 读的是**工作区里的任务书**（`docs/tasks/<编号>.md`），若分支基线早于卡修，它会按旧允许范围判定越界。不要为了更新任务书而把 `docs/tasks/` 检出到工作区（那本身就会越界）。T-20261014-24 的改名卡点就是这么来的。
 - 「不构建」指不产出发布物、不跑 release-build；`go build ./...` 是编译检查，属于验收（`docs/process/acceptance.sh` 第 8 行就会跑），**必须执行**。T-20261014-22 曾因这条措辞歧义误停。
 - 推送交付通知前**必须先** `set -a; . /root/.config/vps-commander/notify.env; set +a`（不要打印该文件），否则 `scripts/notify-agent-completion.sh` 会输出 SKIP、**静默跳过且退出码仍为 0**。T-20261014-21 因此漏发通知（卡修时才发现）。
 - 开发卡的 check-task 必须在分支提交之后运行（它要求工作区干净）；运行前先执行 `export PATH=/usr/local/go/bin:$PATH`，否则内部的 `docs/process/acceptance.sh` 会报 `gofmt: not found`；若 check-task 失败，用 `git commit --amend` 修正，保持分支上只有一个提交。
