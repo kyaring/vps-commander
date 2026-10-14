@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -340,6 +341,7 @@ type SessionBudgetStats struct {
 
 const defaultSessionBudgetBytes int64 = 2097152
 const sessionBudgetIdleTTL = 24 * time.Hour
+const defaultHTTPSessionIdleTTL = 30 * time.Minute
 
 type Server struct {
 	Backend                ActionBackend
@@ -356,6 +358,7 @@ type Server struct {
 	budgetMu           sync.Mutex
 	sessionBudgets     map[string]*sessionBudgetRecord
 	sessionBudgetLimit int64
+	httpSessionIdleTTL time.Duration
 	memoMu             sync.Mutex
 	sessionMemos       map[string]map[string]sessionMemoEntry
 }
@@ -367,6 +370,14 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 			budgetLimit = parsed
 		}
 	}
+	httpSessionIdleTTL := defaultHTTPSessionIdleTTL
+	if raw := strings.TrimSpace(os.Getenv("VPS_COMMANDER_HTTP_SESSION_IDLE_MINUTES")); raw != "" {
+		if minutes, err := strconv.ParseFloat(raw, 64); err == nil && minutes > 0 {
+			if duration := time.Duration(minutes * float64(time.Minute)); duration > 0 {
+				httpSessionIdleTTL = duration
+			}
+		}
+	}
 	return &Server{
 		Backend:            backend,
 		Auth:               authMgr,
@@ -375,24 +386,45 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 		streamSessions:     make(map[string]streamSession),
 		sessionBudgets:     make(map[string]*sessionBudgetRecord),
 		sessionBudgetLimit: budgetLimit,
+		httpSessionIdleTTL: httpSessionIdleTTL,
 		sessionMemos:       make(map[string]map[string]sessionMemoEntry),
 		oauthPending:       make(map[string]pendingOAuthRequest),
 	}
 }
 
-// sessionBudgetKey binds MCP sessions to their server-issued session ID and
-// stateless HTTP requests to the authenticated token plus TCP connection.
+// sessionBudgetKey is the shared identity function for HTTP stats and memo:
+// HTTP callers are keyed by authenticated token ID plus client IP (never port);
+// MCP callers remain keyed by their server-issued MCP session ID.
 func sessionBudgetKey(tokenID, sessionID, remoteAddr string) string {
 	if sessionID != "" {
 		return "mcp:" + sessionID
 	}
-	return "http:" + tokenID + "\x00" + remoteAddr
+	clientIP := remoteAddr
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		clientIP = host
+	}
+	if ip := net.ParseIP(strings.Trim(clientIP, "[]")); ip != nil {
+		clientIP = ip.String()
+	}
+	return "http:" + tokenID + "\x00" + clientIP
 }
 
 func (s *Server) budgetRecordLocked(key, tokenID, sessionID string, now time.Time, create bool) *sessionBudgetRecord {
 	for oldKey, record := range s.sessionBudgets {
-		if now.Sub(record.lastActivity) > sessionBudgetIdleTTL {
+		idleTTL := sessionBudgetIdleTTL
+		isHTTPSession := strings.HasPrefix(oldKey, "http:")
+		if isHTTPSession {
+			idleTTL = s.httpSessionIdleTTL
+		}
+		if now.Sub(record.lastActivity) > idleTTL {
 			delete(s.sessionBudgets, oldKey)
+			if isHTTPSession {
+				// HTTP stats and memo share the same identity key. Expiring one
+				// session must reset both in-memory stores together.
+				s.memoMu.Lock()
+				delete(s.sessionMemos, oldKey)
+				s.memoMu.Unlock()
+			}
 		}
 	}
 	if record := s.sessionBudgets[key]; record != nil {
@@ -1602,6 +1634,14 @@ func (s *Server) sessionMemoIdentityKey(tokenID, sessionID, remoteAddr string) (
 		return "", &SessionMemoError{Status: http.StatusUnauthorized, Message: "Unauthorized"}
 	}
 	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	if sessionID == "" {
+		// HTTP memo access is activity in the same session used by stats. This
+		// also expires an idle session (and clears its memos) before lookup.
+		s.budgetMu.Lock()
+		s.budgetRecordLocked(key, tokenID, "", time.Now(), true)
+		s.budgetMu.Unlock()
+		return key, nil
+	}
 	if sessionID != "" {
 		s.budgetMu.Lock()
 		record := s.sessionBudgets[key]
