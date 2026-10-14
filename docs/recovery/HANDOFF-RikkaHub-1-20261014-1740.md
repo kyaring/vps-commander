@@ -5,7 +5,7 @@ main: 93e93c5
 production_sha256: dab72aba222d
 production_started: 2026-10-14 17:05:48
 service: active
-open_cards: [sws-vault SV-20261015-01]
+open_cards: [sws-vault SV-20261015-01, T-20261015-01]
 next_batch: [SWS Vault 独立项目 S-0…S-8（VAULT-PLAN v1.0）; DevTask 暂停]
 archive: docs/recovery/HANDOFF-ARCHIVE.md
 ---
@@ -28,7 +28,7 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 
 ## 二、进行中与遗留（Hark 22:29 接班；复核生产 dab72aba222d active NRestarts=0 healthz ok）
 - 完成 T-17～T-34，全部 `verified`/`merged`（要点与明细见 `HANDOFF-ARCHIVE.md` 顶部归档节）。方案 C 四项量化目标全部达标。
-- **遗留**：T-20261014-35（DevTask A1）**已出卡但暂缓、未转发**；三条小尾巴未恢复：`T-20261012-01` auth 单测、`T-20261012-02` executor 单测、「工具错误可恢复 / 失败输出保留尾部」。
+- **遗留**：T-20261014-35（DevTask A1）**已出卡但暂缓、未转发**；三条小尾巴未恢复：`T-20261012-01` auth 单测（已改为 T-20261015-01 派给新开发 workbuddy SWS-E003 试用）、`T-20261012-02` executor 单测、「工具错误可恢复 / 失败输出保留尾部」。
 - **待清理**：BOARD.md 里 T-20261014-35 有两行草稿（分支名 feat/devtask-a1-storage 和 feat/devtask-v1136-storage 不一致），转发前要统一成一行，和卡文件对齐。
 ## 三、下一批卡
 1. **【主线 23:11】自有保险库**：VAULT-PLAN v1.1（加管理面板，首批平台为 CF、GitHub、Gitea）：OPC 23:21 定为独立项目 SWS Vault（独立仓库、二进制、库、端口、域名，Hub 只当普通 client），拆 S-0 到 S-8；OPC 03:17 批准：本地仓库 /root/work/sws-vault（main=74a1ff7，远端 kyaring/sws-vault 待 OPC 在 GitHub 建空私有库），大单 SV-20261015-01 已 ready（GPT，M1-M8，只开发不部署）。
