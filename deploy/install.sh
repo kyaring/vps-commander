@@ -198,6 +198,7 @@ ENV
     fi
 
     validate_port "$HUB_PORT" || error "监听端口必须为 1-65535 的数字: ${HUB_PORT}"
+    HUB_ADDR=${HUB_ADDR:-127.0.0.1:${HUB_PORT}}
     if [ -f "${CONF_DIR}/hub.env" ]; then
         if grep -q '^VPS_COMMANDER_INSTALL_COMMAND=' "${CONF_DIR}/hub.env"; then
             sed -i "s#^VPS_COMMANDER_INSTALL_COMMAND=.*#VPS_COMMANDER_INSTALL_COMMAND=\"${INSTALL_COMMAND}\"#" "${CONF_DIR}/hub.env"
@@ -218,7 +219,7 @@ Type=simple
 User=root
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=-${CONF_DIR}/hub.env
-ExecStart=${INSTALL_DIR}/vps-commander-hub -addr 127.0.0.1:${HUB_PORT} -db ${INSTALL_DIR}/data/commander.db
+ExecStart=${INSTALL_DIR}/vps-commander-hub -addr ${HUB_ADDR} -db ${INSTALL_DIR}/data/commander.db
 Restart=always
 RestartSec=3s
 KillSignal=SIGTERM
@@ -235,7 +236,7 @@ SVC
     sleep 1
     if systemctl is-active --quiet vps-commander-hub; then
         success "VPS-Commander Hub 安装并启动成功！"
-        info "监听地址: 127.0.0.1:${HUB_PORT}"
+        info "监听地址: ${HUB_ADDR}"
         if [ "$FRESH_HUB" -eq 1 ]; then
             echo -e "\n================== Hub 初始凭据 =================="
             echo -e "API Key: ${API_KEY}"
