@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/mcp"
 )
 
 func TestRequestLogActorAndCredentialRedaction(t *testing.T) {
@@ -32,21 +33,26 @@ func TestRequestLogActorAndCredentialRedaction(t *testing.T) {
 			if token != sentinel {
 				t.Errorf("validator received unexpected token")
 			}
-			return auth.Principal{Type: "api_token", ID: "tok-7", Name: "hark-2"}, true
+			return auth.Principal{Type: "api_token", ID: "tok-7", Name: "hark-2", Scopes: map[string]bool{"devices:read": true}}, true
 		})),
 	}).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/mcp" {
-			body, err := io.ReadAll(r.Body)
-			if err != nil || !strings.Contains(string(body), paramsSentinel) {
-				t.Errorf("MCP request body was not preserved")
-			}
-		}
 		w.WriteHeader(http.StatusOK)
 	}))
+	mcpHandler := (auth.Middleware{
+		Manager: auth.NewManagerWithValidator("", auth.TokenValidatorFunc(func(token, _ string) (auth.Principal, bool) {
+			authCalls++
+			if token != sentinel {
+				t.Errorf("validator received unexpected MCP token")
+			}
+			return auth.Principal{Type: "api_token", ID: "tok-7", Name: "hark-2", Scopes: map[string]bool{"devices:read": true}}, true
+		})),
+	}).Handler(http.HandlerFunc(mcp.NewServer(&requestLogMCPBackend{}, nil).HandleStreamableHTTP))
 	mux := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api-token", "/mcp":
+		case "/api-token":
 			authenticated.ServeHTTP(w, r)
+		case "/mcp":
+			mcpHandler.ServeHTTP(w, r)
 		case "/panel":
 			auth.WithPrincipal(r.Context(), auth.Principal{Type: "panel", ID: "admin", Name: "panel:admin"})
 			w.WriteHeader(http.StatusOK)
@@ -56,18 +62,53 @@ func TestRequestLogActorAndCredentialRedaction(t *testing.T) {
 	})
 	h := withRequestLoggingAndCORS(mux, nil, nil)
 
-	for _, tc := range []struct{ path, body string }{
-		{"/api-token", ""},
-		{"/unauthorized", ""},
-		{"/panel", ""},
-		{"/mcp", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_devices","arguments":{"secret":"` + paramsSentinel + `"}}}`},
+	largeBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": "list_devices", "arguments": map[string]any{
+			"secret": paramsSentinel, "large": strings.Repeat("x", 100*1024),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(largeBody) <= 64*1024 {
+		t.Fatalf("test MCP body is only %d bytes", len(largeBody))
+	}
+	unauthBody := &readTrackingBody{reader: strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"must_not_be_logged"}}`)}
+	for _, tc := range []struct {
+		path          string
+		body          string
+		authenticated bool
+		tracked       *readTrackingBody
+	}{
+		{path: "/api-token", authenticated: true},
+		{path: "/unauthorized"},
+		{path: "/panel", authenticated: true},
+		{path: "/mcp", body: string(largeBody), authenticated: true},
+		{path: "/mcp", tracked: unauthBody},
 	} {
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
-		if tc.path != "/unauthorized" {
+		if tc.tracked != nil {
+			req.Body = tc.tracked
+		}
+		if tc.authenticated {
 			req.Header.Set("Authorization", "Bearer "+sentinel)
+		}
+		if tc.path == "/mcp" {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
 		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
+		if tc.tracked != nil && tc.tracked.reads != 0 {
+			t.Fatalf("unauthenticated /mcp request body was read %d times", tc.tracked.reads)
+		}
+		if tc.path == "/mcp" && tc.authenticated && rec.Code != http.StatusOK {
+			t.Fatalf("authenticated large MCP request status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if tc.path == "/mcp" && !tc.authenticated && rec.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated MCP request status=%d, want 401", rec.Code)
+		}
 	}
 	if authCalls != 2 {
 		t.Fatalf("authentication executed %d times, want once per authenticated request", authCalls)
@@ -87,8 +128,8 @@ func TestRequestLogActorAndCredentialRedaction(t *testing.T) {
 		}
 		records = append(records, record)
 	}
-	if len(records) != 4 {
-		t.Fatalf("got %d log records, want 4", len(records))
+	if len(records) != 5 {
+		t.Fatalf("got %d log records, want 5", len(records))
 	}
 	byPath := map[string]map[string]any{}
 	for _, record := range records {
@@ -112,7 +153,57 @@ func TestRequestLogActorAndCredentialRedaction(t *testing.T) {
 	if got := byPath["/panel"]["actor_type"]; got != "panel" {
 		t.Fatalf("panel actor_type=%v, want panel", got)
 	}
-	if got := byPath["/mcp"]["mcp_tool"]; got != "list_devices" {
-		t.Fatalf("mcp_tool=%v, want list_devices", got)
+	mcpAuthenticated, mcpUnauthenticated := false, false
+	for _, record := range records {
+		if record["path"] != "/mcp" {
+			continue
+		}
+		if record["status"] == float64(http.StatusOK) {
+			mcpAuthenticated = true
+			if got := record["mcp_tool"]; got != "list_devices" {
+				t.Fatalf("large-body mcp_tool=%v, want list_devices", got)
+			}
+		} else if record["status"] == float64(http.StatusUnauthorized) {
+			mcpUnauthenticated = true
+			if _, exists := record["mcp_tool"]; exists {
+				t.Fatalf("unauthenticated /mcp log unexpectedly has mcp_tool: %#v", record["mcp_tool"])
+			}
+		}
 	}
+	if !mcpAuthenticated || !mcpUnauthenticated {
+		t.Fatalf("missing authenticated/unauthenticated MCP log records: authenticated=%v unauthenticated=%v", mcpAuthenticated, mcpUnauthenticated)
+	}
+}
+
+// readTrackingBody detects any attempt to inspect an unauthenticated request body.
+type readTrackingBody struct {
+	reader *strings.Reader
+	reads  int
+}
+
+func (b *readTrackingBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
+}
+
+func (b *readTrackingBody) Close() error { return nil }
+
+// requestLogMCPBackend is deliberately inert: this test only needs a valid
+// tools/call dispatch to exercise the real MCP request parser and actor holder.
+type requestLogMCPBackend struct{}
+
+func (*requestLogMCPBackend) ListDevices(context.Context) (any, error) {
+	return []map[string]string{{"name": "test"}}, nil
+}
+func (*requestLogMCPBackend) ExecCommand(context.Context, string, string, string, string, int) (any, error) {
+	return nil, nil
+}
+func (*requestLogMCPBackend) ReadFile(context.Context, string, string, string, int64, int64) (any, error) {
+	return nil, nil
+}
+func (*requestLogMCPBackend) WriteFile(context.Context, string, string, string, string) (any, error) {
+	return nil, nil
+}
+func (*requestLogMCPBackend) EditBlock(context.Context, string, string, string, string, string) (any, error) {
+	return nil, nil
 }

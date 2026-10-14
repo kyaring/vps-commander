@@ -2,13 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
-	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -142,36 +139,11 @@ func shouldLogRequest(path string, status int) bool {
 	return path != "/healthz" && !strings.HasPrefix(path, "/static/") && status != http.StatusNotModified
 }
 
-func requestMCPTool(r *http.Request) string {
-	if r.URL.Path != "/mcp" || r.Method != http.MethodPost || r.Body == nil {
-		return ""
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	// Restore both the inspected prefix and any unread remainder for MCP itself.
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(body), r.Body))
-	if err != nil {
-		return ""
-	}
-	var envelope struct {
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Method != "tools/call" {
-		return ""
-	}
-	return strings.TrimSpace(envelope.Params.Name)
-}
-
 func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struct{}, onStatus func(int)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		ctx, actorHolder := auth.WithRequestActor(r.Context())
 		r = r.WithContext(ctx)
-		if tool := requestMCPTool(r); tool != "" {
-			auth.SetRequestMCPTool(r.Context(), tool)
-		}
 		rw := &requestLogWriter{ResponseWriter: w, onStatus: onStatus}
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		allowed := originAllowed(origin, allowedOrigins)

@@ -98,8 +98,9 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | `/api/v1/tokens/{id}` | PATCH | 修改名称、备注、scope、设备白名单、限速、会话数 |
 | `/api/v1/tokens/{id}/rotate` | POST | 轮换密钥 |
 | `/api/v1/tokens/{id}/revoke` | POST | 吊销 |
-| `/api/v1/audits` | GET | 审计查询：`actor`、`device`、`action`、`result`、`transport`、`from`、`to`，游标分页，每页最多 500 条 |
-| `/api/v1/audits/export.csv` | GET | 按同样条件导出 CSV（有行数上限，超出时末尾带截断标记） |
+| `/api/v1/audits` | GET | 审计查询：`actor`、`device`、`action`、`result`、`transport`、`from`、`to`，游标分页，每页最多 500 条；列表中的长文本字段会截断并标记 `truncated: true` |
+| `/api/v1/audits/{id}` | GET | 获取单条审计记录的完整详情（需要 `admin`） |
+| `/api/v1/audits/export.csv` | GET | 按同样条件导出 CSV（有行数上限，超出时末尾带截断标记；字段保持完整） |
 | `/api/v1/security/settings` | GET | 全局与各节点安全等级 |
 | `/api/v1/security/settings/update` | POST | 修改安全等级 |
 | `/api/v1/security/device-credentials/provision` | POST | 为设备签发独立凭据 |
@@ -110,6 +111,10 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | `/api/v1/notifications/webhook/delete` | DELETE | 删除 Webhook |
 | `/api/v1/notifications/webhook/test` | POST | 测试 Webhook |
 | `/metrics` | GET | Prometheus 指标 |
+
+### HTTP 请求日志字段
+
+`http_request` 日志包含 `actor_type` 与 `actor`：鉴权成功时记录调用方类型和令牌名称（没有名称时使用身份 ID），面板会话记录为 `panel`；未鉴权请求使用 `-`。已解析的 MCP `tools/call` 请求额外记录 `mcp_tool`（仅工具名）。日志不记录令牌值、令牌哈希、Authorization、Cookie 或 MCP 参数；未鉴权的 `/mcp` 请求不会读取请求体来推断工具名。
 
 ## 3. 无需认证的端点
 

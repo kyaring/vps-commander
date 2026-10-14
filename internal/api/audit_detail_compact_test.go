@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -96,3 +97,23 @@ func TestAuditListCompactsLargePageAndDetailKeepsFullRecord(t *testing.T) {
 }
 
 func jsonNumber(n int64) string { return strconv.FormatInt(n, 10) }
+
+func TestTruncateAuditFieldPreservesUTF8Across256ByteBoundary(t *testing.T) {
+	inputs := []string{
+		strings.Repeat("中", 85) + "😀" + strings.Repeat("x", 100), // emoji begins at byte 255
+		strings.Repeat("😀", 64) + "中" + strings.Repeat("x", 100), // Chinese begins at byte 256
+	}
+	for i, input := range inputs {
+		record := compactAuditLogs([]storage.AuditLog{{Command: input}})[0]
+		got := record.Command
+		if !record.Truncated {
+			t.Errorf("case %d: truncated=false, want truncated:true", i)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("case %d: truncation produced invalid UTF-8", i)
+		}
+		if len(got) > auditListTextLimit || !strings.HasSuffix(got, "…") {
+			t.Errorf("case %d: invalid compact field length=%d", i, len(got))
+		}
+	}
+}
