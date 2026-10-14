@@ -34,7 +34,7 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 1. **【主线 23:11】自有保险库**：VAULT-PLAN v0.2（参照 Hark 的只写不读、按 id 注入、绑定使用范围），拆卡 V-B 到 V-G，等 OPC 定第一期范围和分工。
 2. **DevTask 恢复（暂停）**（wjyhk 仍不可达，走 STATE-20261013.md §6 重写路线；a~d 已恢复，只剩 e）：A1 storage（T-35 待转发）→ A2 scope → A3 REST+runner lease → A4 7 个 MCP 工具 → A5 runner → A6 E2E+docs；B（面板+通知）需 A 验收并经 OPC 确认。规格见 `docs/recovery/salvage/devtask/`。
 3. 三条小尾巴（见「二」）。
-3. 更后：员工表 B → 面板卡 C → 令牌整理 → 保险库 V-A～V-F（见 `docs/recovery/VAULT-PLAN.md`）。
+4. 更后：员工表 B → 面板卡 C → 令牌整理。
 
 ## 四、遗留（摘要）
 - 明细见归档与 PLAYBOOK §7。重点：**sshd 允许密码登录、数据库无异地备份**；exec 通道偶发失效（建议后续做「MCP 会话跨 Hub 重启存活」）；T-10/T-12/T-09 若干非阻塞项；`127.0.0.1` 硬编码除 `deploy/upgrade-hub.sh`（已修）外均属有意为之。
