@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-15 07:35
+updated: 2026-10-15 07:56
 holder: Hark（10-14 22:29 接班）
 main: 753191c（更新时）
 production_sha256: dab72aba222d
@@ -16,7 +16,7 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 
 ## 在途
 - sws-vault v1：feat/v1-core @7468820，Hark 已终签 verified（SV-03），等 OPC 建 GitHub 库 kyaring/sws-vault，再批准合并和部署。SV-03 遗留：卡面 errata 和 3 条建议，见 sws-vault 看板。
-- T-20261015-02（日志加 actor、audits 瘦身）：R1 代码 ee0db98，卡已修（753191c），等 GPT 合并 main、重验之后交付，审核派给 RikkaHub-1。
+- T-20261015-02：Hark 07:55 终签 verified @bcbda0d，待 OPC 批准合并、部署。另开 T-20261015-03（修测试偶发竞争，ready）。
 - T-20261015-01（workbuddy 试用）：GPT 复审 PASS（b860eb6），等 Hark 终签。
 - 校准 #1：RikkaHub-1 的回应（72a442b）已由 Hark 答复，见 CALIBRATION 文件末尾。
 
