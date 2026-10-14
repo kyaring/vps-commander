@@ -77,8 +77,11 @@
 8. 有生产影响的，另开部署卡。部署完成后做复核：独立构建并比对 sha256；检查服务 active、NRestarts=0；内网和公网 healthz；跑功能探针；确认备份 integrity 为 ok。通过后看板改成 verified，并推送审核事件。
 
 ## 6. 交接文档
-- 当前正本：docs/recovery/HANDOFF-Hark-20261014-0535.md（工作区副本 plans/）。每次回复 OPC 之前都要更新：在工作区改副本，用 base64 写回节点，然后提交、推送。
-- 内容固定五节：当前状态（main sha、生产 sha256、备份目录）；进行中的卡；下一批卡；非阻塞遗留问题；坑。
+- 当前正本：docs/recovery/HANDOFF-Hark-20261014-0535.md。**L2-A 起：正本只保留 YAML 摘要头 + ≤4KB 正文**（判定：`wc -c` ≤ 4096）。
+- **明细一律追加到 `docs/recovery/HANDOFF-ARCHIVE.md` 顶部**（新的在上），不要写进正本；正本只放摘要。
+- 摘要头字段：`updated` `holder` `main` `production_sha256` `production_started` `service` `open_cards` `next_batch` `archive`。
+- 每次回复 OPC 之前都要更新正本并提交、推送。
+- 正文固定五节：当前状态（摘要）、进行中、下一批卡、非阻塞遗留（摘要）、坑（要点，完整见 §7）。
 
 ## 7. 常见坑
 - Cloudflare 1010 会拦 Python-urllib 的默认 UA，脚本里要自带 UA。
