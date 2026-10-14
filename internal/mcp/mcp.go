@@ -223,6 +223,8 @@ func AuditIntent(tool string, raw json.RawMessage) string {
 		}
 	case "move_file":
 		intent = str("source") + " -> " + str("destination")
+	case "memo_set", "memo_get":
+		intent = str("key")
 	case "call_agent_mcp":
 		intent = str("server") + "/" + str("tool")
 	case "diagnostic_command":
@@ -354,6 +356,8 @@ type Server struct {
 	budgetMu           sync.Mutex
 	sessionBudgets     map[string]*sessionBudgetRecord
 	sessionBudgetLimit int64
+	memoMu             sync.Mutex
+	sessionMemos       map[string]map[string]sessionMemoEntry
 }
 
 func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
@@ -371,6 +375,7 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 		streamSessions:     make(map[string]streamSession),
 		sessionBudgets:     make(map[string]*sessionBudgetRecord),
 		sessionBudgetLimit: budgetLimit,
+		sessionMemos:       make(map[string]map[string]sessionMemoEntry),
 		oauthPending:       make(map[string]pendingOAuthRequest),
 	}
 }
@@ -759,7 +764,11 @@ func (s *Server) decodeAndHandleRequest(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return JSONRPCResponse{}, false
 	}
-	return s.handleRequest(r.Context(), r, req), true
+	ctx := r.Context()
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		ctx = withSessionMemoIdentity(ctx, p.TokenID, strings.TrimSpace(r.URL.Query().Get("sessionId")), r.RemoteAddr)
+	}
+	return s.handleRequest(ctx, r, req), true
 }
 
 // decodeJSONRPCRequest parses one JSON-RPC request. On failure it writes HTTP
@@ -870,7 +879,8 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}
 
-	resp := s.handleRequest(r.Context(), r, req)
+	ctx := withSessionMemoIdentity(r.Context(), p.TokenID, clientSessionID, r.RemoteAddr)
+	resp := s.handleRequest(ctx, r, req)
 	toolName := ""
 	if req.Method == "tools/call" {
 		var params CallToolParams
@@ -1023,6 +1033,8 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 
 	case "tools/list":
 		tools := []Tool{
+			{Name: "memo_set", Description: "将一条便签写入当前会话（仅内存，value 不进入审计或日志）", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键"}, "value": {Type: "string", Description: "便签内容，最多 4096 字节"}, "ttl_seconds": {Type: "integer", Description: "可选过期秒数"}}, Required: []string{"key", "value"}}},
+			{Name: "memo_get", Description: "读取当前会话便签；不传 key 时只返回元数据列表，不返回 value", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键；省略时列出元数据"}}}},
 			{
 				Name:        "list_devices",
 				Description: "列出当前所有已注册的 VPS 节点及其在线状态与系统架构",
@@ -1097,7 +1109,16 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 		if p, ok := auth.PrincipalFromContext(ctx); ok {
 			filtered := make([]Tool, 0, len(tools))
 			for _, tool := range tools {
-				if scope := mcpToolScope(tool.Name); scope != "" && p.HasScope(scope) {
+				if scope := mcpToolScope(tool.Name); (scope != "" && p.HasScope(scope)) || tool.Name == "memo_set" || tool.Name == "memo_get" {
+					filtered = append(filtered, tool)
+				}
+			}
+			tools = filtered
+		} else {
+			// Unauthenticated direct/legacy requests do not discover session tools.
+			filtered := make([]Tool, 0, len(tools)-2)
+			for _, tool := range tools {
+				if tool.Name != "memo_set" && tool.Name != "memo_get" {
 					filtered = append(filtered, tool)
 				}
 			}
@@ -1186,12 +1207,12 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 	if !ok {
 		return fmt.Errorf("unauthorized")
 	}
-	if scope := mcpToolScope(name); scope == "" {
+	if scope := mcpToolScope(name); scope == "" && name != "memo_set" && name != "memo_get" {
 		return fmt.Errorf("unknown tool: %s", name)
-	} else if !p.HasScope(scope) {
+	} else if scope != "" && !p.HasScope(scope) {
 		return fmt.Errorf("scope denied: %s", scope)
 	}
-	if device != "" && !p.AllowsDevice(device) {
+	if device != "" && name != "memo_set" && name != "memo_get" && !p.AllowsDevice(device) {
 		return fmt.Errorf("device denied: %s", device)
 	}
 	return nil
@@ -1205,7 +1226,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 	if v, ok := rawDevice["device"].(string); ok {
 		device = v
 	}
-	if device == "" && params.Name != "list_devices" {
+	if device == "" && params.Name != "list_devices" && params.Name != "memo_set" && params.Name != "memo_get" {
 		device = "local"
 	}
 	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
@@ -1215,6 +1236,75 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 		return toolErrorFrom(err), true
 	}
 	switch params.Name {
+	case "memo_set":
+		var args struct {
+			Key        string `json:"key"`
+			Value      string `json:"value"`
+			TTLSeconds *int64 `json:"ttl_seconds"`
+		}
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return map[string]string{"error": "invalid memo_set arguments"}, true
+		}
+		identity := sessionMemoIdentityFromContext(ctx)
+		if identity.tokenID == "" {
+			return map[string]string{"error": "unauthorized"}, true
+		}
+		result, err := s.SetSessionMemo(identity.tokenID, identity.sessionID, identity.remoteAddr, args.Key, args.Value, args.TTLSeconds)
+		status, n, detail := 0, len([]byte(args.Value)), ""
+		if err != nil {
+			status = 1
+			detail = err.Error()
+		}
+		s.AuditSessionMemo(ctx, clientIP, "memo_set", args.Key, n, status, detail)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		return result, false
+
+	case "memo_get":
+		var args struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return map[string]string{"error": "invalid memo_get arguments"}, true
+		}
+		identity := sessionMemoIdentityFromContext(ctx)
+		if identity.tokenID == "" {
+			return map[string]string{"error": "unauthorized"}, true
+		}
+		if args.Key == "" {
+			items, err := s.ListSessionMemos(identity.tokenID, identity.sessionID, identity.remoteAddr)
+			if err != nil {
+				s.AuditSessionMemo(ctx, clientIP, "memo_get", "list", 0, 1, err.Error())
+				return map[string]string{"error": err.Error()}, true
+			}
+			var total int
+			for _, item := range items {
+				total += item.Bytes
+			}
+			s.AuditSessionMemo(ctx, clientIP, "memo_get", "list", total, 0, "")
+			return map[string]any{"memos": items}, false
+		}
+		item, found, err := s.GetSessionMemo(identity.tokenID, identity.sessionID, identity.remoteAddr, args.Key)
+		status, n, detail := 0, 0, ""
+		if err != nil {
+			status = 1
+			detail = err.Error()
+		} else if found {
+			n = item.Bytes
+		} else {
+			status = 1
+			detail = "memo not found"
+		}
+		s.AuditSessionMemo(ctx, clientIP, "memo_get", args.Key, n, status, detail)
+		if err != nil {
+			return map[string]string{"error": err.Error()}, true
+		}
+		if !found {
+			return map[string]string{"error": "memo not found"}, true
+		}
+		return item, false
+
 	case "list_devices":
 		devs, err := s.Backend.ListDevices(ctx)
 		if err != nil {
@@ -1429,5 +1519,230 @@ func (s *Server) HandleDirectRequest(ctx context.Context, req JSONRPCRequest) JS
 	if _, ok := auth.PrincipalFromContext(ctx); !ok {
 		ctx = auth.WithPrincipal(ctx, auth.Principal{Type: "system", ID: "stdio", Name: "stdio"})
 	}
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		tokenID := p.TokenID
+		if tokenID == "" && p.ID != "" {
+			tokenID = p.Type + ":" + p.ID
+		}
+		ctx = withSessionMemoIdentity(ctx, tokenID, "", "stdio")
+	}
 	return s.handleRequest(ctx, &http.Request{RemoteAddr: "stdio"}, req)
+}
+
+// SessionMemoEntry is an in-memory, session-scoped scratchpad item. Values are
+// never written to audit metadata or logs.
+type sessionMemoEntry struct {
+	value     string
+	bytes     int
+	updatedAt time.Time
+	expiresAt time.Time
+}
+
+type SessionMemoSetResult struct {
+	Key       string `json:"key"`
+	Bytes     int    `json:"bytes"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type SessionMemoValue struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Bytes     int    `json:"bytes"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type SessionMemoMetadata struct {
+	Key       string `json:"key"`
+	Bytes     int    `json:"bytes"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type SessionMemoError struct {
+	Status  int
+	Message string
+}
+
+func (e *SessionMemoError) Error() string { return e.Message }
+
+const (
+	SessionMemoMaxValueBytes = 4 * 1024
+	SessionMemoMaxEntries    = 32
+	SessionMemoMaxTotalBytes = 32 * 1024
+	SessionMemoMaxKeyBytes   = 256
+)
+
+type sessionMemoIdentityKey struct{}
+type sessionMemoIdentity struct {
+	tokenID    string
+	sessionID  string
+	remoteAddr string
+}
+
+func withSessionMemoIdentity(ctx context.Context, tokenID, sessionID, remoteAddr string) context.Context {
+	return context.WithValue(ctx, sessionMemoIdentityKey{}, sessionMemoIdentity{tokenID: tokenID, sessionID: sessionID, remoteAddr: remoteAddr})
+}
+
+func sessionMemoIdentityFromContext(ctx context.Context) sessionMemoIdentity {
+	if identity, ok := ctx.Value(sessionMemoIdentityKey{}).(sessionMemoIdentity); ok {
+		return identity
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	if !ok {
+		return sessionMemoIdentity{}
+	}
+	tokenID := p.TokenID
+	if tokenID == "" && p.ID != "" {
+		tokenID = p.Type + ":" + p.ID
+	}
+	return sessionMemoIdentity{tokenID: tokenID}
+}
+
+func (s *Server) sessionMemoIdentityKey(tokenID, sessionID, remoteAddr string) (string, error) {
+	if strings.TrimSpace(tokenID) == "" {
+		return "", &SessionMemoError{Status: http.StatusUnauthorized, Message: "Unauthorized"}
+	}
+	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	if sessionID != "" {
+		s.budgetMu.Lock()
+		record := s.sessionBudgets[key]
+		validOwner := record != nil && record.ownerTokenID == tokenID
+		hasBudgetRecord := record != nil
+		s.budgetMu.Unlock()
+		if !hasBudgetRecord {
+			s.mu.RLock()
+			if sess, ok := s.sessions[sessionID]; ok && sess.ownerTokenID == tokenID {
+				validOwner = true
+			}
+			if sess, ok := s.streamSessions[sessionID]; ok && sess.ownerTokenID == tokenID {
+				validOwner = true
+			}
+			s.mu.RUnlock()
+		}
+		if !validOwner {
+			return "", &SessionMemoError{Status: http.StatusNotFound, Message: "session not found"}
+		}
+	}
+	return key, nil
+}
+
+func (s *Server) cleanupSessionMemosLocked(sessionKey string, now time.Time) map[string]sessionMemoEntry {
+	items := s.sessionMemos[sessionKey]
+	for key, item := range items {
+		if !item.expiresAt.IsZero() && !now.Before(item.expiresAt) {
+			delete(items, key)
+		}
+	}
+	if len(items) == 0 {
+		delete(s.sessionMemos, sessionKey)
+		return nil
+	}
+	return items
+}
+
+func sessionMemoUsage(items map[string]sessionMemoEntry) (count, total int) {
+	for _, item := range items {
+		count++
+		total += item.bytes
+	}
+	return count, total
+}
+
+// SetSessionMemo writes or replaces a key in the caller's current session.
+func (s *Server) SetSessionMemo(tokenID, sessionID, remoteAddr, key, value string, ttlSeconds *int64) (SessionMemoSetResult, error) {
+	key = strings.TrimSpace(key)
+	if key == "" || len([]byte(key)) > SessionMemoMaxKeyBytes {
+		return SessionMemoSetResult{}, &SessionMemoError{Status: http.StatusBadRequest, Message: fmt.Sprintf("key must be 1-%d bytes", SessionMemoMaxKeyBytes)}
+	}
+	valueBytes := len([]byte(value))
+	var expiresAt time.Time
+	if ttlSeconds != nil {
+		maxTTL := int64((1<<63 - 1) / int64(time.Second))
+		if *ttlSeconds <= 0 || *ttlSeconds > maxTTL {
+			return SessionMemoSetResult{}, &SessionMemoError{Status: http.StatusBadRequest, Message: "ttl_seconds must be a positive integer within the supported range"}
+		}
+		expiresAt = time.Now().Add(time.Duration(*ttlSeconds) * time.Second)
+	}
+	sessionKey, err := s.sessionMemoIdentityKey(tokenID, sessionID, remoteAddr)
+	if err != nil {
+		return SessionMemoSetResult{}, err
+	}
+	now := time.Now()
+	s.memoMu.Lock()
+	defer s.memoMu.Unlock()
+	items := s.cleanupSessionMemosLocked(sessionKey, now)
+	if items == nil {
+		items = make(map[string]sessionMemoEntry)
+		s.sessionMemos[sessionKey] = items
+	}
+	count, total := sessionMemoUsage(items)
+	old, replacing := items[key]
+	newCount := count
+	newTotal := total - old.bytes + valueBytes
+	if !replacing {
+		newCount++
+	}
+	if valueBytes > SessionMemoMaxValueBytes {
+		return SessionMemoSetResult{}, &SessionMemoError{Status: http.StatusRequestEntityTooLarge, Message: fmt.Sprintf("value bytes=%d exceeds per-value limit=%d; current usage=%d/%d bytes, entries=%d/%d", valueBytes, SessionMemoMaxValueBytes, total, SessionMemoMaxTotalBytes, count, SessionMemoMaxEntries)}
+	}
+	if newCount > SessionMemoMaxEntries {
+		return SessionMemoSetResult{}, &SessionMemoError{Status: http.StatusRequestEntityTooLarge, Message: fmt.Sprintf("entry quota exceeded: current entries=%d, requested=%d, limit=%d; current usage=%d/%d bytes", count, newCount, SessionMemoMaxEntries, total, SessionMemoMaxTotalBytes)}
+	}
+	if newTotal > SessionMemoMaxTotalBytes {
+		return SessionMemoSetResult{}, &SessionMemoError{Status: http.StatusRequestEntityTooLarge, Message: fmt.Sprintf("session byte quota exceeded: current usage=%d bytes, requested usage=%d bytes, limit=%d bytes; entries=%d/%d", total, newTotal, SessionMemoMaxTotalBytes, count, SessionMemoMaxEntries)}
+	}
+	items[key] = sessionMemoEntry{value: value, bytes: valueBytes, updatedAt: now, expiresAt: expiresAt}
+	result := SessionMemoSetResult{Key: key, Bytes: valueBytes}
+	if !expiresAt.IsZero() {
+		result.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	}
+	return result, nil
+}
+
+// GetSessionMemo reads one value from the caller's current session.
+func (s *Server) GetSessionMemo(tokenID, sessionID, remoteAddr, key string) (SessionMemoValue, bool, error) {
+	key = strings.TrimSpace(key)
+	sessionKey, err := s.sessionMemoIdentityKey(tokenID, sessionID, remoteAddr)
+	if err != nil {
+		return SessionMemoValue{}, false, err
+	}
+	s.memoMu.Lock()
+	defer s.memoMu.Unlock()
+	items := s.cleanupSessionMemosLocked(sessionKey, time.Now())
+	item, found := items[key]
+	if !found {
+		return SessionMemoValue{}, false, nil
+	}
+	return SessionMemoValue{Key: key, Value: item.value, Bytes: item.bytes, UpdatedAt: item.updatedAt.UTC().Format(time.RFC3339)}, true, nil
+}
+
+// ListSessionMemos returns metadata only; it intentionally has no value field.
+func (s *Server) ListSessionMemos(tokenID, sessionID, remoteAddr string) ([]SessionMemoMetadata, error) {
+	sessionKey, err := s.sessionMemoIdentityKey(tokenID, sessionID, remoteAddr)
+	if err != nil {
+		return nil, err
+	}
+	s.memoMu.Lock()
+	defer s.memoMu.Unlock()
+	items := s.cleanupSessionMemosLocked(sessionKey, time.Now())
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]SessionMemoMetadata, 0, len(keys))
+	for _, key := range keys {
+		item := items[key]
+		result = append(result, SessionMemoMetadata{Key: key, Bytes: item.bytes, UpdatedAt: item.updatedAt.UTC().Format(time.RFC3339)})
+	}
+	return result, nil
+}
+
+// AuditSessionMemo writes only the key, byte count and non-sensitive status.
+func (s *Server) AuditSessionMemo(ctx context.Context, clientIP, action, key string, bytes int, status int, _ string) {
+	if sink, ok := s.Backend.(ActionAuditSink); ok {
+		sink.AuditMCPAction(ctx, clientIP, "", action, key, status, 0, fmt.Sprintf("bytes=%d", bytes))
+	}
+	// Suppress the generic MCP error audit for memo tools: the dedicated row
+	// already contains only key, byte count and safe status metadata.
+	MarkAuditRecorded(ctx)
 }
