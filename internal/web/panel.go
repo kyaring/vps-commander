@@ -81,6 +81,7 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/static/", p.static)
 	mux.HandleFunc("/panel/api/devices", p.protected(p.cachedHandler("panel-devices", p.handleDevices)))
 	mux.HandleFunc("/panel/api/audits/export.csv", p.protected(p.auditExportCSV))
+	mux.HandleFunc("/panel/api/audits/", p.protected(p.auditDetailJSON))
 	mux.HandleFunc("/panel/api/audits", p.protected(p.Runner.AuditsJSON))
 	mux.HandleFunc("/panel/api/exec", p.protected(p.Runner.PanelExec))
 	mux.HandleFunc("/panel/api/key/rotate", p.protected(p.Runner.RotateAPIKey))
@@ -126,6 +127,21 @@ func (p *Panel) Handler() http.Handler {
 
 type auditExportRunner interface {
 	AuditExportCSV(http.ResponseWriter, *http.Request)
+}
+
+type auditDetailRunner interface {
+	AuditDetailJSON(http.ResponseWriter, *http.Request)
+}
+
+func (p *Panel) auditDetailJSON(w http.ResponseWriter, r *http.Request) {
+	v, ok := p.Runner.(auditDetailRunner)
+	if !ok {
+		http.Error(w, "audit detail unavailable", http.StatusNotImplemented)
+		return
+	}
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = "/api/v1/audits/" + strings.TrimPrefix(r.URL.Path, "/panel/api/audits/")
+	v.AuditDetailJSON(w, r2)
 }
 
 func (p *Panel) auditExportCSV(w http.ResponseWriter, r *http.Request) {

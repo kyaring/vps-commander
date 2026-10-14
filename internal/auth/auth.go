@@ -101,8 +101,61 @@ func (m *Manager) PrincipalFromRequest(r *http.Request) (Principal, bool) {
 }
 
 type contextKey struct{}
+type requestActorContextKey struct{}
+
+// RequestActor is a per-request holder shared by outer logging middleware and
+// inner authentication handlers. It contains identity labels only, never tokens.
+type RequestActor struct {
+	mu        sync.RWMutex
+	ActorType string
+	Actor     string
+	MCPTool   string
+}
+
+// WithRequestActor installs a holder that outer middleware can inspect after
+// the handler returns, even when authentication derives a child context.
+func WithRequestActor(ctx context.Context) (context.Context, *RequestActor) {
+	h := &RequestActor{ActorType: "-", Actor: "-"}
+	return context.WithValue(ctx, requestActorContextKey{}, h), h
+}
+
+func SetRequestMCPTool(ctx context.Context, tool string) {
+	h, _ := ctx.Value(requestActorContextKey{}).(*RequestActor)
+	if h == nil || strings.TrimSpace(tool) == "" {
+		return
+	}
+	h.mu.Lock()
+	h.MCPTool = tool
+	h.mu.Unlock()
+}
+
+func (h *RequestActor) Snapshot() (actorType, actor, tool string) {
+	if h == nil {
+		return "-", "-", ""
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.ActorType, h.Actor, h.MCPTool
+}
 
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	if h, ok := ctx.Value(requestActorContextKey{}).(*RequestActor); ok && h != nil {
+		actorType, actor := p.Type, p.Name
+		if actorType == "panel" {
+			actor = "panel"
+		} else if strings.TrimSpace(actor) == "" {
+			actor = p.ID
+		}
+		if strings.TrimSpace(actorType) == "" {
+			actorType = "-"
+		}
+		if strings.TrimSpace(actor) == "" {
+			actor = "-"
+		}
+		h.mu.Lock()
+		h.ActorType, h.Actor = actorType, actor
+		h.mu.Unlock()
+	}
 	return context.WithValue(ctx, contextKey{}, p)
 }
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {

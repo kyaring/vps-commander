@@ -16,6 +16,30 @@ func (testRunner) AuditsJSON(w http.ResponseWriter, r *http.Request)   {}
 func (testRunner) PanelExec(w http.ResponseWriter, r *http.Request)    {}
 func (testRunner) RotateAPIKey(w http.ResponseWriter, r *http.Request) {}
 func (testRunner) DeleteDevice(w http.ResponseWriter, r *http.Request) {}
+func (testRunner) AuditDetailJSON(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"path":` + `"` + r.URL.Path + `"}`))
+}
+
+func TestPanelAuditDetailRequiresSessionAndRewritesPath(t *testing.T) {
+	p := New("test-password", "admin", testRunner{})
+	p.sessions["valid-session"] = time.Now().Add(time.Hour)
+	h := p.Handler()
+
+	unauthorized := httptest.NewRecorder()
+	h.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/panel/api/audits/42", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized detail status=%d, want 401", unauthorized.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel/api/audits/42", nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-session"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"path":"/api/v1/audits/42"`) {
+		t.Fatalf("detail proxy status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestStaticCSSContentType(t *testing.T) {
 	p := New("test-password", "admin", testRunner{})

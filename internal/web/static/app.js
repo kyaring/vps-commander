@@ -283,8 +283,16 @@ $("#refresh").onclick=loadDevices;
 $("#auditRefresh").onclick=()=>loadAudits(true);
 $("#auditLoadMore").onclick=()=>{if(auditHasMore)loadAudits(false).catch(e=>$("#auditStatus").textContent=e.message)};
 $("#auditExport").onclick=()=>{const params=AuditUI.buildAuditQuery(currentAuditFilters(),0);location.href="/panel/api/audits/export.csv?"+params.toString()};
-$("#audits").addEventListener("click",event=>{const code=event.target.closest(".audit-command-text");if(!code)return;const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
-$("#audits").addEventListener("keydown",event=>{const code=event.target.closest(".audit-command-text");if(!code||!(event.key==="Enter"||event.key===" "))return;event.preventDefault();const expanded=code.classList.toggle("expanded");code.setAttribute("aria-expanded",String(expanded));});
+async function showAuditDetail(row){
+  const dialog=$("#auditDetailDialog"),status=$("#auditDetailStatus"),body=$("#auditDetailBody");
+  status.textContent="正在加载完整记录…";body.textContent="";
+  if(!dialog.open)dialog.showModal();
+  try{const detail=await api("/audits/"+encodeURIComponent(row.dataset.auditId));body.textContent=JSON.stringify(detail,null,2);status.textContent="完整记录已加载";}
+  catch(e){status.textContent="加载详情失败："+e.message;}
+}
+$("#audits").addEventListener("click",event=>{const row=event.target.closest("tr[data-audit-id]");if(row)showAuditDetail(row);});
+$("#audits").addEventListener("keydown",event=>{const row=event.target.closest("tr[data-audit-id]");if(!row||event.target!==row||!(event.key==="Enter"||event.key===" "))return;event.preventDefault();showAuditDetail(row);});
+$("#auditDetailClose").onclick=()=>$("#auditDetailDialog").close();
 ["#auditActor","#auditDevice","#auditAction","#auditResult","#auditTransport","#auditOAuthClient","#auditFrom","#auditTo"].forEach(id=>$(id).addEventListener("change",()=>loadAudits(true).catch(e=>$("#auditStatus").textContent=e.message)));
 $("#run").onclick=async()=>{
   let o=$("#output");
