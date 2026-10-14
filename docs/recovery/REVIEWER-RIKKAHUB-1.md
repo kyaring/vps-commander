@@ -52,4 +52,4 @@
 
 ## 附：培养期结论（2026-10-15 07:01，OPC 批准）
 前 3 份报告分别评 96、96、94，改为抽查。抽查规则、双方分歧和校准记录见 docs/recovery/CALIBRATION-RikkaHub-1.md。
-- 校准 #1 之后（07:35）：定级口径和抽查规则以 CALIBRATION-RikkaHub-1.md 末尾的 v2 为准。第六节自检增加一条：审核结束后  无输出。
+- 校准 #1 之后（07:35）：定级口径和抽查规则以 CALIBRATION-RikkaHub-1.md 末尾的 v2 为准。第六节自检增加一条：审核结束后 `ls /tmp | grep -E 'rv[0-9]|rv-|swsvault|sv0'` 无输出。
