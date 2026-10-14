@@ -12,6 +12,9 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,8 +107,9 @@ type TextContent struct {
 }
 
 type CallToolResult struct {
-	Content []TextContent `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
+	Content       []TextContent `json:"content"`
+	IsError       bool          `json:"isError,omitempty"`
+	BudgetWarning string        `json:"budget_warning,omitempty"`
 }
 
 // Backend interface for invoking actions
@@ -295,6 +299,46 @@ type streamSession struct {
 	lastActivity      time.Time
 }
 
+type sessionToolAggregate struct {
+	calls int
+	bytes int64
+}
+
+type sessionBudgetRecord struct {
+	sessionID    string
+	ownerTokenID string
+	startedAt    time.Time
+	lastActivity time.Time
+	calls        int
+	bytes        int64
+	tools        map[string]*sessionToolAggregate
+}
+
+type SessionToolStats struct {
+	Name  string `json:"name"`
+	Calls int    `json:"calls"`
+	Bytes int64  `json:"bytes"`
+}
+
+type SessionBudgetInfo struct {
+	LimitBytes int64 `json:"limit_bytes"`
+	UsedPct    int64 `json:"used_pct"`
+	Warn       bool  `json:"warn"`
+}
+
+type SessionBudgetStats struct {
+	SessionID     string             `json:"session_id"`
+	StartedAt     string             `json:"started_at"`
+	ToolCalls     int                `json:"tool_calls"`
+	BytesReturned int64              `json:"bytes_returned"`
+	EstTokens     int64              `json:"est_tokens"`
+	TopTools      []SessionToolStats `json:"top_tools"`
+	Budget        SessionBudgetInfo  `json:"budget"`
+}
+
+const defaultSessionBudgetBytes int64 = 2097152
+const sessionBudgetIdleTTL = 24 * time.Hour
+
 type Server struct {
 	Backend                ActionBackend
 	Auth                   *auth.Manager
@@ -302,22 +346,180 @@ type Server struct {
 	OAuthStore             *storage.Store
 	OAuthPanelSessionValid func(*http.Request) bool
 
-	oauthMu        sync.Mutex
-	oauthPending   map[string]pendingOAuthRequest
-	mu             sync.RWMutex
-	sessions       map[string]*session
-	streamSessions map[string]streamSession
+	oauthMu            sync.Mutex
+	oauthPending       map[string]pendingOAuthRequest
+	mu                 sync.RWMutex
+	sessions           map[string]*session
+	streamSessions     map[string]streamSession
+	budgetMu           sync.Mutex
+	sessionBudgets     map[string]*sessionBudgetRecord
+	sessionBudgetLimit int64
 }
 
 func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
-	return &Server{
-		Backend:        backend,
-		Auth:           authMgr,
-		LocalName:      "local",
-		sessions:       make(map[string]*session),
-		streamSessions: make(map[string]streamSession),
-		oauthPending:   make(map[string]pendingOAuthRequest),
+	budgetLimit := defaultSessionBudgetBytes
+	if raw := strings.TrimSpace(os.Getenv("VPS_COMMANDER_SESSION_BUDGET_BYTES")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			budgetLimit = parsed
+		}
 	}
+	return &Server{
+		Backend:            backend,
+		Auth:               authMgr,
+		LocalName:          "local",
+		sessions:           make(map[string]*session),
+		streamSessions:     make(map[string]streamSession),
+		sessionBudgets:     make(map[string]*sessionBudgetRecord),
+		sessionBudgetLimit: budgetLimit,
+		oauthPending:       make(map[string]pendingOAuthRequest),
+	}
+}
+
+// sessionBudgetKey binds MCP sessions to their server-issued session ID and
+// stateless HTTP requests to the authenticated token plus TCP connection.
+func sessionBudgetKey(tokenID, sessionID, remoteAddr string) string {
+	if sessionID != "" {
+		return "mcp:" + sessionID
+	}
+	return "http:" + tokenID + "\x00" + remoteAddr
+}
+
+func (s *Server) budgetRecordLocked(key, tokenID, sessionID string, now time.Time, create bool) *sessionBudgetRecord {
+	for oldKey, record := range s.sessionBudgets {
+		if now.Sub(record.lastActivity) > sessionBudgetIdleTTL {
+			delete(s.sessionBudgets, oldKey)
+		}
+	}
+	if record := s.sessionBudgets[key]; record != nil {
+		if record.ownerTokenID != tokenID {
+			return nil
+		}
+		record.lastActivity = now
+		return record
+	}
+	if !create {
+		return nil
+	}
+	if sessionID == "" {
+		sessionID = "http-" + s.newSessionID()
+	}
+	record := &sessionBudgetRecord{sessionID: sessionID, ownerTokenID: tokenID, startedAt: now, lastActivity: now, tools: make(map[string]*sessionToolAggregate)}
+	s.sessionBudgets[key] = record
+	return record
+}
+
+// EnsureSessionBudget starts accounting at MCP initialize, without persisting
+// session data or exposing token material in the public session ID.
+func (s *Server) EnsureSessionBudget(tokenID, sessionID string, startedAt time.Time) {
+	if tokenID == "" || sessionID == "" {
+		return
+	}
+	s.budgetMu.Lock()
+	defer s.budgetMu.Unlock()
+	now := startedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	key := sessionBudgetKey(tokenID, sessionID, "")
+	if s.sessionBudgets[key] == nil {
+		s.sessionBudgets[key] = &sessionBudgetRecord{sessionID: sessionID, ownerTokenID: tokenID, startedAt: now, lastActivity: now, tools: make(map[string]*sessionToolAggregate)}
+	}
+}
+
+// SessionBudgetWarning returns a warning only after previously recorded bytes
+// strictly exceed the configured limit. The response that crosses the limit
+// is therefore not warned; subsequent tool responses are.
+func (s *Server) SessionBudgetWarning(tokenID, sessionID, remoteAddr string) string {
+	if tokenID == "" {
+		return ""
+	}
+	s.budgetMu.Lock()
+	defer s.budgetMu.Unlock()
+	now := time.Now()
+	record := s.budgetRecordLocked(sessionBudgetKey(tokenID, sessionID, remoteAddr), tokenID, sessionID, now, false)
+	if record == nil || record.bytes <= s.sessionBudgetLimit {
+		return ""
+	}
+	return fmt.Sprintf("session budget exceeded: %s / %s; consider narrower queries (output_mode=count, dedup_window_seconds)", formatSessionBudgetBytes(record.bytes), formatSessionBudgetBytes(s.sessionBudgetLimit))
+}
+
+func formatSessionBudgetBytes(n int64) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%dB", n)
+	}
+}
+
+// RecordSessionResponse accounts only response-body bytes delivered to the
+// caller. Data remains in memory and is reset whenever the Hub process restarts.
+func (s *Server) RecordSessionResponse(tokenID, sessionID, remoteAddr, toolName string, responseBytes int) {
+	if tokenID == "" {
+		return
+	}
+	s.budgetMu.Lock()
+	defer s.budgetMu.Unlock()
+	now := time.Now()
+	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	record := s.budgetRecordLocked(key, tokenID, sessionID, now, true)
+	if record == nil {
+		return
+	}
+	if toolName == "" {
+		toolName = "http"
+	}
+	record.calls++
+	if responseBytes > 0 {
+		record.bytes += int64(responseBytes)
+	}
+	agg := record.tools[toolName]
+	if agg == nil {
+		agg = &sessionToolAggregate{}
+		record.tools[toolName] = agg
+	}
+	agg.calls++
+	if responseBytes > 0 {
+		agg.bytes += int64(responseBytes)
+	}
+}
+
+// SessionBudgetStats returns only the requesting token's own session. An MCP
+// session ID must already exist and be owned by that token; HTTP sessions are
+// keyed by token ID and the current connection's remote address.
+func (s *Server) SessionBudgetStats(tokenID, sessionID, remoteAddr string) (SessionBudgetStats, bool) {
+	if tokenID == "" {
+		return SessionBudgetStats{}, false
+	}
+	s.budgetMu.Lock()
+	defer s.budgetMu.Unlock()
+	now := time.Now()
+	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	record := s.budgetRecordLocked(key, tokenID, sessionID, now, sessionID == "")
+	if record == nil {
+		return SessionBudgetStats{}, false
+	}
+	limit := s.sessionBudgetLimit
+	usedPct := int64(0)
+	if limit > 0 {
+		usedPct = record.bytes * 100 / limit
+	}
+	top := make([]SessionToolStats, 0, len(record.tools))
+	for name, agg := range record.tools {
+		top = append(top, SessionToolStats{Name: name, Calls: agg.calls, Bytes: agg.bytes})
+	}
+	sort.Slice(top, func(i, j int) bool {
+		if top[i].Bytes == top[j].Bytes {
+			return top[i].Name < top[j].Name
+		}
+		return top[i].Bytes > top[j].Bytes
+	})
+	if len(top) > 5 {
+		top = top[:5]
+	}
+	return SessionBudgetStats{SessionID: record.sessionID, StartedAt: record.startedAt.UTC().Format(time.RFC3339), ToolCalls: record.calls, BytesReturned: record.bytes, EstTokens: record.bytes / 4, TopTools: top, Budget: SessionBudgetInfo{LimitBytes: limit, UsedPct: usedPct, Warn: record.bytes > limit}}, true
 }
 
 func (s *Server) SessionCounts() (sse, streamableHTTP int) {
@@ -669,11 +871,33 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := s.handleRequest(r.Context(), r, req)
+	toolName := ""
+	if req.Method == "tools/call" {
+		var params CallToolParams
+		if json.Unmarshal(req.Params, &params) == nil {
+			toolName = params.Name
+		}
+		if warning := s.SessionBudgetWarning(p.TokenID, clientSessionID, r.RemoteAddr); warning != "" {
+			if result, ok := resp.Result.(CallToolResult); ok {
+				result.BudgetWarning = warning
+				resp.Result = result
+			}
+		}
+	}
 	if resp.rateLimited {
+		responseBody, err := json.Marshal(resp)
+		if err != nil {
+			http.Error(w, "failed to encode JSON-RPC response", http.StatusInternalServerError)
+			return
+		}
+		responseBody = append(responseBody, '\n')
+		if req.Method == "tools/call" {
+			s.RecordSessionResponse(p.TokenID, clientSessionID, r.RemoteAddr, toolName, len(responseBody))
+		}
 		w.Header().Set("Retry-After", "1")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(resp)
+		_, _ = w.Write(responseBody)
 		return
 	}
 	if req.Method == "initialize" {
@@ -716,6 +940,7 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 			clientSessionID = s.newSessionID()
 			s.streamSessions[clientSessionID] = streamSession{ownerTokenID: p.TokenID, ownerQuotaTokenID: p.QuotaID(), protocolVersion: protocolVersion, lastActivity: now}
 			s.mu.Unlock()
+			s.EnsureSessionBudget(p.TokenID, clientSessionID, now)
 		}
 		w.Header().Set("Mcp-Session-Id", clientSessionID)
 	}
@@ -733,6 +958,9 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
+	if req.Method == "tools/call" {
+		s.RecordSessionResponse(p.TokenID, clientSessionID, r.RemoteAddr, toolName, len(responseBody))
+	}
 	_, _ = w.Write(responseBody)
 }
 

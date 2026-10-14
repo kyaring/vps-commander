@@ -863,6 +863,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
 	mux.Handle("/api/v1/health/assertions", s.requireAnyScope([]string{"devices:read", "admin"}, http.HandlerFunc(s.healthAssertions)))
+	mux.HandleFunc("/api/v1/session/stats", s.sessionStats)
 	mux.Handle("/metrics", s.requireScope("admin", http.HandlerFunc(s.Metrics)))
 	mux.Handle("/api/v1/devices", s.requireScope("devices:read", http.HandlerFunc(s.devices)))
 	mux.Handle("/api/v1/exec", s.requireScope("exec", http.HandlerFunc(s.exec)))
@@ -924,7 +925,7 @@ func (s *Server) Routes() http.Handler {
 	})))
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
-	return mux
+	return s.sessionBudgetMiddleware(mux)
 }
 func jsonOut(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
