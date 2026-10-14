@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -64,8 +65,14 @@ func (s *Server) healthAssertions(w http.ResponseWriter, r *http.Request) {
 	}
 	probes := healthAssertionProbes{
 		serviceState: systemdServiceState,
-		internalHTTP: func() error { return checkHealthz("http://127.0.0.1:9521/healthz") },
-		publicHTTP:   checkPublicHealthz,
+		internalHTTP: func() error {
+			rawURL, err := internalHealthzURLFromArgs(os.Args)
+			if err != nil {
+				return err
+			}
+			return checkHealthz(rawURL)
+		},
+		publicHTTP: checkPublicHealthz,
 	}
 	result := s.collectHealthAssertions(probes)
 	body, err := json.Marshal(result)
@@ -163,29 +170,88 @@ func assertionFromProbe(id string, probe func() error, passDetail, failDetail st
 func systemdServiceState() (bool, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "systemctl", "show", "vps-commander-hub.service", "--property=ActiveState", "--property=NRestarts", "--value").Output()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "vps-commander-hub.service", "--property=ActiveState", "--property=NRestarts").Output()
 	if err != nil {
 		return false, 0, err
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) != 2 {
+	return parseSystemdServiceState(string(out))
+}
+
+func parseSystemdServiceState(output string) (bool, int, error) {
+	var activeState string
+	var restartsValue string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			return false, 0, sql.ErrNoRows
+		}
+		switch key {
+		case "ActiveState":
+			if activeState != "" || value == "" {
+				return false, 0, sql.ErrNoRows
+			}
+			activeState = value
+		case "NRestarts":
+			if restartsValue != "" || value == "" {
+				return false, 0, sql.ErrNoRows
+			}
+			restartsValue = value
+		}
+	}
+	validStates := map[string]bool{
+		"active": true, "reloading": true, "inactive": true,
+		"failed": true, "activating": true, "deactivating": true,
+		"maintenance": true,
+	}
+	if !validStates[activeState] || restartsValue == "" {
 		return false, 0, sql.ErrNoRows
 	}
-	restarts, err := strconv.Atoi(strings.TrimSpace(lines[1]))
+	restarts, err := strconv.Atoi(restartsValue)
 	if err != nil || restarts < 0 {
 		return false, 0, sql.ErrNoRows
 	}
-	return strings.TrimSpace(lines[0]) == "active", restarts, nil
+	return activeState == "active", restarts, nil
 }
 
+func internalHealthzURLFromArgs(args []string) (string, error) {
+	var addr string
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-addr" {
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
+				return "", sql.ErrNoRows
+			}
+			addr = strings.TrimSpace(args[i+1])
+			break
+		}
+		if strings.HasPrefix(arg, "-addr=") {
+			addr = strings.TrimSpace(strings.TrimPrefix(arg, "-addr="))
+			break
+		}
+	}
+	if addr == "" {
+		return "", sql.ErrNoRows
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" || port == "" {
+		return "", sql.ErrNoRows
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return "", sql.ErrNoRows
+	}
+	return (&url.URL{Scheme: "http", Host: addr, Path: "/healthz"}).String(), nil
+}
+
+const healthzCheckTimeout = 5 * time.Second
+
 func checkHealthz(rawURL string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), healthzCheckTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := (&http.Client{Timeout: 900 * time.Millisecond, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
+	resp, err := (&http.Client{Timeout: healthzCheckTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}).Do(req)
 	if err != nil {
 		return err
 	}
