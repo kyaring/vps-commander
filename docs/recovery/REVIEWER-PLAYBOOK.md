@@ -91,6 +91,7 @@
 - check-task 只能在任务分支上跑，在 main 上会把其他任务的提交算作越界。
 - **卡被修订后，开发分支必须先把 main 合进来（`git rebase main`）再跑 check-task**：check-task 读的是**工作区里的任务书**（`docs/tasks/<编号>.md`），若分支基线早于卡修，它会按旧允许范围判定越界。不要为了更新任务书而把 `docs/tasks/` 检出到工作区（那本身就会越界）。T-20261014-24 的改名卡点就是这么来的。另注：`git rebase` 要求工作区干净，而开发分支上往往已经攒了未提交的改动（例如上一轮尝试留下的 `git mv` 暂存改名）——**正确顺序是先用 `git commit --amend --no-edit` 把已有改动并入原提交（树随即干净），再 rebase**，不要在给开发的指令里写「必须先干净」而不给出把树弄干净的办法，那会造成死锁。
 - 「不构建」指不产出发布物、不跑 release-build；`go build ./...` 是编译检查，属于验收（`docs/process/acceptance.sh` 第 8 行就会跑），**必须执行**。T-20261014-22 曾因这条措辞歧义误停。
+- **执行节点名一律用 `wjy5010u`**（当前唯一注册设备；也可省略 `device`，默认在 Hub 所在节点执行）。`wjyhk` 是**旧节点名**、也是 go.mod 里的模块路径 `github.com/wjyhk/vps-commander`，**不是可用设备**——指定它会被安全策略拒绝：`security mode unknown denies exec`（T-20261014-30 实际发生）。它只该出现在历史文档与测试夹具里。
 - **每次 exec 都是新 shell，`export PATH` 不跨调用保留**：每条用到 go 的命令都要自己带 `export PATH=/usr/local/go/bin:$PATH`，或直接用绝对路径 `/usr/local/go/bin/go`。本项目已因此踩坑三次（T-20261014-18 的 acceptance.sh、T-20261014-30 的 build-info 核验）。
 - **可复现构建不嵌入 `vcs.revision`**：`go version -m <bin>` 里查不到 commit；commit 只在 `scripts/release-build.sh` 写的 `$OUT/build-info.txt`（含 `commit=` 与 `sha256=`）。部署卡要核验 commit 时，看这个文件，不要看 `go version -m`。
 - 部署卡的「正式部署」那一步**必须后台执行并写日志**：`setsid nohup /bin/sh …/deploy-hub-local.sh "$BIN" --sha256 "$HASH" > /tmp/deploy.log 2>&1 &`，再轮询日志。因为部署会重启 Hub，而调用方的 exec 会话正是 Hub 承载的——前台执行会被切断，表现为 **`exit_code=-1` 且无输出**（T-20261014-26 实际发生，部署其实已成功，只是调用方看不到结果）。遇到这种返回，不要重试部署，先**分诊现场**（服务是否 active、生产二进制 sha256 是新的还是旧的、healthz、备份目录是否存在）再决定。
