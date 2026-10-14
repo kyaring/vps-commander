@@ -1,11 +1,11 @@
 ---
-updated: 2026-10-15 02:40
+updated: 2026-10-15 03:35
 holder: Hark（22:29 自 RikkaHub-1 接班）
 main: 93e93c5
 production_sha256: dab72aba222d
 production_started: 2026-10-14 17:05:48
 service: active
-open_cards: [T-20261014-35]
+open_cards: [sws-vault SV-20261015-01]
 next_batch: [SWS Vault 独立项目 S-0…S-8（VAULT-PLAN v1.0）; DevTask 暂停]
 archive: docs/recovery/HANDOFF-ARCHIVE.md
 ---
@@ -31,8 +31,8 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 - **遗留**：T-20261014-35（DevTask A1）**已出卡但暂缓、未转发**；三条小尾巴未恢复：`T-20261012-01` auth 单测、`T-20261012-02` executor 单测、「工具错误可恢复 / 失败输出保留尾部」。
 - **待清理**：BOARD.md 里 T-20261014-35 有两行草稿（分支名 feat/devtask-a1-storage 和 feat/devtask-v1136-storage 不一致），转发前要统一成一行，和卡文件对齐。
 ## 三、下一批卡
-1. **【主线 23:11】自有保险库**：VAULT-PLAN v1.1（加管理面板，首批平台为 CF、GitHub、Gitea）：OPC 23:21 定为独立项目 SWS Vault（独立仓库、二进制、库、端口、域名，Hub 只当普通 client），拆 S-0 到 S-8；域名由 OPC 自己设；等 OPC 定仓库名和部署节点。
-2. **DevTask 恢复（暂停）**（wjyhk 仍不可达，走 STATE-20261013.md §6 重写路线；a~d 已恢复，只剩 e）：A1 storage（T-35 待转发）→ A2 scope → A3 REST+runner lease → A4 7 个 MCP 工具 → A5 runner → A6 E2E+docs；B（面板+通知）需 A 验收并经 OPC 确认。规格见 `docs/recovery/salvage/devtask/`。
+1. **【主线 23:11】自有保险库**：VAULT-PLAN v1.1（加管理面板，首批平台为 CF、GitHub、Gitea）：OPC 23:21 定为独立项目 SWS Vault（独立仓库、二进制、库、端口、域名，Hub 只当普通 client），拆 S-0 到 S-8；OPC 03:17 批准：本地仓库 /root/work/sws-vault（main=74a1ff7，远端 kyaring/sws-vault 待 OPC 在 GitHub 建空私有库），大单 SV-20261015-01 已 ready（GPT，M1-M8，只开发不部署）。
+2. **DevTask 恢复（暂停）**：A1（T-35，未转发）→A6，规格见 `docs/recovery/salvage/devtask/`、STATE-20261013 §6。
 3. 三条小尾巴（见「二」）。
 4. 更后：员工表 B → 面板卡 C → 令牌整理。
 
