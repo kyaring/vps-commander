@@ -23,6 +23,7 @@
 | :--- | :--- | :--- | :--- |
 | `/api/v1/devices` | GET | `devices:read` | 设备列表、状态、架构、国家、资源画像 |
 | `/api/v1/session/stats` | GET | 任意有效令牌 | 当前调用方会话的工具调用数、响应字节、粗估 token 数、回传字节最多的 5 个工具与预算状态；不需要新增 scope |
+| `/api/v1/session/memo` | GET / POST | 任意有效令牌 | 会话级内存便签；不需要新增 scope；GET 带 key 读值，不带 key 只列元数据 |
 | `/api/v1/exec` | POST | `exec` | `{device, command, workdir?, timeout?, output_mode?, max_bytes?, dedup_window_seconds?}`；`timeout` 秒默认 30、最大 300；输出参数见下文 |
 | `/api/v1/file/read` | POST | `files:read` | `{device, path, offset?, limit?}`，`limit` 默认 256 KiB、最大 1 MiB；返回 `content, bytes, total_size, has_more, eof` |
 | `/api/v1/file/list` | POST | `files:read` | `{device, path, recursive?, max_entries?}` |
@@ -67,6 +68,27 @@ MCP 工具响应以及 JSON 对象形式的 HTTP API 响应，在会话累计字
 ```
 
 该字段只在超阈值后的后续响应中出现；首次使累计值超过阈值的响应本身不带警告。既有响应字段与含义不变。`/api/v1/session/stats` 本身不计入预算，也不附加 `budget_warning`，避免统计接口递归计数。
+
+## 会话级 scratchpad（memo_set / memo_get）
+
+便签只存在 Hub 内存，重启后清空，不写数据库。MCP 会话按 `Mcp-Session-Id` 归并并校验令牌归属；普通 HTTP 按「令牌 + `RemoteAddr`」归并。任何有效令牌均可使用，不新增 scope。
+
+- `POST /api/v1/session/memo`：写入或覆盖。JSON：`{"key":"checked_sha","value":"已核对结论；sha=abc123","ttl_seconds":3600}`；`ttl_seconds` 可省略，设置后到期惰性清理。成功返回 `{"key":"checked_sha","bytes":27,"expires_at":"2026-10-14T16:30:00Z"}`，未设置 TTL 时省略 `expires_at`。
+- `GET /api/v1/session/memo?key=checked_sha`：读取指定便签，返回 `key`、`value`、`bytes`、`updated_at`；不存在返回 `404`。
+- `GET /api/v1/session/memo`：仅返回 `{"memos":[{"key":"checked_sha","bytes":27,"updated_at":"..."}]}`，绝不返回 `value`。
+- MCP `memo_set` 参数与 POST 一致；MCP `memo_get` 传 `key` 读取，省略 `key` 只返回上述元数据列表。
+- 配额：每个 value 最多 4096 字节、每会话最多 32 条、每会话总计最多 32768 字节。任一配额超限返回 HTTP `413` / MCP 工具错误，并说明当前用量和上限。
+- 审计只记录 key、字节数与状态，不记录 value；便签不用于保存令牌、密码或其他秘密。
+
+示例：
+
+```sh
+curl -X POST "$HUB/api/v1/session/memo" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"checked_sha","value":"结论：已核对；sha=abc123","ttl_seconds":3600}'
+curl "$HUB/api/v1/session/memo" -H "Authorization: Bearer $TOKEN"  # 仅元数据
+curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN"  # 读取值
+```
 
 ## 2. 管理接口（需要 `admin`）
 

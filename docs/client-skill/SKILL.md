@@ -55,6 +55,12 @@ Streamable HTTP 要点：地址必须是 `/mcp`（不带结尾斜杠）；initia
 | `list_agent_mcp` | `GET /api/v1/mcp/list` | mcp:call / 低 | device |
 | `call_agent_mcp` | `POST /api/v1/mcp/call` | mcp:call / 中 | device、server、tool、arguments |
 
+### 会话便签：避免重复核验
+
+当已完成只读核验、需要后续轮次复用结论时，使用 `memo_set` 把简短结论与对应 SHA 写入当前会话；后续用 `memo_get` 读取。不要把令牌、密码或其他秘密写入便签。`memo_get` 不传 `key` 只返回 `key/bytes/updated_at` 元数据，不会返回 value；要读值必须显式提供 key。便签只在当前会话内存中有效，Hub 重启会清空，且有 4 KiB 单值、32 条、32 KiB 总量限制。
+
+例：`memo_set({"key":"service-check","value":"服务 active；NRestarts=0；sha=abc123"})`，后续 `memo_get({"key":"service-check"})`，避免重复查询同一状态。
+
 `exec_command` 默认 `output_mode=raw`、`max_bytes=4096`，超限会保留尾部并返回 `truncated/total_bytes/total_lines/sha256`；`head` 保留头部，`count` 只返回字节数、行数和退出码，`none` 不返回正文。需要大输出时显式传 `max_bytes`（最大 1048576）；只读状态查询建议传 `dedup_window_seconds` 以减少重复正文。MCP 对非零退出不标 isError，必须自己看 `exit_code`。
 
 ## 3. 安全规则
