@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+. "${SCRIPT_DIR}/lib-hub-addr.sh"
+
 # VPS-Commander Hub 一键安全升级脚本
 # Repo: https://github.com/kyaring/vps-commander
 # 只替换 Hub 二进制，不修改 /etc/vps-commander/hub.env。
@@ -80,8 +83,9 @@ if ! systemctl is-active --quiet vps-commander-hub; then
 fi
 
 CONNECTED=0
+HUB_HEALTH_URL=$(hub_health_check_url)
 for _ in {1..13}; do
-    if curl -fsS --max-time 2 "http://127.0.0.1:${HUB_PORT}/healthz" >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 "${HUB_HEALTH_URL}" >/dev/null 2>&1; then
         CONNECTED=1
         break
     fi
