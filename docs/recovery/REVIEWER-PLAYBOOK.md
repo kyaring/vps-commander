@@ -31,7 +31,7 @@
 编号：T-YYYYMMDD-NN
 开发者：GPT
 状态：ready（谁、几点批准；和哪张卡有依赖）
-分支：基线 <main 上的 sha>，新建 <type>/<name>
+分支：基线 <main 上的 sha>（**worktree 必须从「含本卡的 main」分出，不要从基线 sha 分出**——否则 check-task 读不到任务书），新建 <type>/<name>
 约束：不 push、不打 tag、不产出发布物、不运行 release-build、不部署；不动生产数据库和生产配置（`go build ./...` 是编译检查、属于验收步骤，必须执行）
 改动范围：允许 a b c；禁止 x y；补充说明写在第二个分号之后
 ```
