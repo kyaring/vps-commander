@@ -41,7 +41,7 @@
 
 ## 会话预算统计与超阈值提醒
 
-`GET /api/v1/session/stats` 接受任意有效令牌，不要求额外 scope；只返回该令牌当前会话的数据。MCP Streamable HTTP 会话使用 `Mcp-Session-Id`，并且会校验会话归属；普通 HTTP API 请求按令牌与当前连接（`RemoteAddr`）归并。统计只保存在 Hub 内存中，Hub 重启后清零，不写数据库。响应不超过 1.5 KiB，且 `session_id` 是会话标识，不包含令牌或凭据。
+`GET /api/v1/session/stats` 接受任意有效令牌，不要求额外 scope；只返回该令牌当前会话的数据。MCP 调用方使用服务端签发的 `Mcp-Session-Id`，并校验会话归属；普通 HTTP 调用方统一按「认证令牌 + 客户端 IP」归并，**不包含 TCP 源端口**。HTTP 会话默认空闲 30 分钟后过期；超过空闲阈值后下一次请求会建立新会话，统计重置且会话 memo 清空。阈值可由 `VPS_COMMANDER_HTTP_SESSION_IDLE_MINUTES`（正数分钟）覆盖。会话统计和 memo 共用同一身份口径。统计和 memo 只保存在 Hub 内存中，Hub 重启后清零，不写数据库。响应不超过 1.5 KiB，且 `session_id` 是会话标识，不包含令牌或凭据。
 
 响应字段：`tool_calls` 为本会话工具调用次数；`bytes_returned` 为回传给调用方的响应正文累计字节；`est_tokens` 是 `bytes_returned / 4` 向下取整的**粗估值**，不是精确 tokenizer 结果；`top_tools` 最多 5 项，按累计响应字节降序；`budget.limit_bytes` 为阈值，默认 `2097152` 字节，可由环境变量 `VPS_COMMANDER_SESSION_BUDGET_BYTES` 设置；`used_pct` 为已用字节占阈值的百分比，`warn` 仅在累计字节**超过**阈值时为 `true`。
 
