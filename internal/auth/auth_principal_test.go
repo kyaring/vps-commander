@@ -80,7 +80,6 @@ func TestExpired(t *testing.T) {
 	}{
 		{"nil timestamp never expires", nil, false},
 		{"timestamp 10 seconds in the past", &past, true},
-		{"timestamp equal to current second", &now, true},
 		{"timestamp 3600 seconds in the future", &future, false},
 	}
 	for _, tc := range tests {
@@ -90,6 +89,26 @@ func TestExpired(t *testing.T) {
 			}
 		})
 	}
+
+	// 「等于当前秒」单独成子测试：若预先取样与调用之间跨秒，该用例会退化为
+	// 「过去时间应过期」，<= 改成 < 的变异就可能漏检。这里先取 before、调用
+	// Expired(&before)、再取 after；只有 before == after（未跨秒）时才断言结果为
+	// true；跨秒则重试，最多 5 次，5 次都跨秒则失败。
+	t.Run("timestamp equal to current second", func(t *testing.T) {
+		for attempt := 1; attempt <= 5; attempt++ {
+			before := time.Now().Unix()
+			got := Expired(&before)
+			after := time.Now().Unix()
+			if before != after {
+				continue
+			}
+			if !got {
+				t.Fatalf("Expired(before=%d) = false within the current second, want true", before)
+			}
+			return
+		}
+		t.Fatal("crossed a second boundary in all 5 attempts; cannot verify the current-second boundary deterministically")
+	})
 }
 
 // TestPrincipalFromRequestLegacy 对应任务卡第二节第 4 条（旧版令牌模式）。
