@@ -1,5 +1,5 @@
 ---
-updated: 2026-10-14 23:15
+updated: 2026-10-14 23:18
 holder: Hark（22:29 自 RikkaHub-1 接班）
 main: 93e93c5
 production_sha256: dab72aba222d
@@ -31,7 +31,7 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 - **遗留**：T-20261014-35（DevTask A1）**已出卡但暂缓、未转发**；三条小尾巴未恢复：`T-20261012-01` auth 单测、`T-20261012-02` executor 单测、「工具错误可恢复 / 失败输出保留尾部」。
 - **待清理**：BOARD.md 里 T-20261014-35 有两行草稿（分支名 feat/devtask-a1-storage 和 feat/devtask-v1136-storage 不一致），转发前要统一成一行，和卡文件对齐。
 ## 三、下一批卡
-1. **【主线 23:11】自有保险库**：VAULT-PLAN v0.2（参照 Hark 的只写不读、按 id 注入、绑定使用范围），拆卡 V-B 到 V-G，等 OPC 定第一期范围和分工。
+1. **【主线 23:11】自有保险库**：VAULT-PLAN v0.3（参照 Hark：只写不读、按 id 注入、绑定使用范围；23:14 起对外服务：namespace、client 令牌、/vault/v1），拆卡 V-B 到 V-G，等 OPC 定分工和首批接入项目。
 2. **DevTask 恢复（暂停）**（wjyhk 仍不可达，走 STATE-20261013.md §6 重写路线；a~d 已恢复，只剩 e）：A1 storage（T-35 待转发）→ A2 scope → A3 REST+runner lease → A4 7 个 MCP 工具 → A5 runner → A6 E2E+docs；B（面板+通知）需 A 验收并经 OPC 确认。规格见 `docs/recovery/salvage/devtask/`。
 3. 三条小尾巴（见「二」）。
 4. 更后：员工表 B → 面板卡 C → 令牌整理。
