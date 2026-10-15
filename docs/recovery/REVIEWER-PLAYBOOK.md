@@ -108,3 +108,5 @@
 - **`scripts/notify-agent-completion.sh` 是相对路径**：必须先 `cd` 到仓库或 worktree 根再用，或用绝对路径（T-20261014-31 曾因 CWD 不对而找不到脚本）。
 - 推送交付通知前**必须先** `set -a; . /root/.config/vps-commander/notify.env; set +a`（不要打印该文件），否则 `scripts/notify-agent-completion.sh` 会输出 SKIP、**静默跳过且退出码仍为 0**。T-20261014-21 因此漏发通知（卡修时才发现）。
 - 开发卡的 check-task 必须在分支提交之后运行（它要求工作区干净）；运行前先执行 `export PATH=/usr/local/go/bin:$PATH`，否则内部的 `docs/process/acceptance.sh` 会报 `gofmt: not found`；若 check-task 失败，用 `git commit --amend` 修正，保持分支上只有一个提交。
+
+- （10-15 11:45，来源 T-03 审核建议 3、4）写卡时，验收命令的预计耗时要低于 Go 默认 10 分钟超时的一半，否则必须显式加 -timeout；所有开发卡的交付要求里都写上「清理自己在 /tmp 下产生的文件」。预跑 check-task 时，临时分支上要先做一个假提交，否则分叉点等于 HEAD，checker 会退回去用卡上写的基线。
