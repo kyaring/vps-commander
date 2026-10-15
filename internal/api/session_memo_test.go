@@ -17,6 +17,23 @@ import (
 	"github.com/wjyhk/vps-commander/internal/mcp"
 )
 
+type synchronizedLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *synchronizedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 type sessionMemoAuditRecord struct {
 	action, command, detail string
 	code                    int
@@ -219,7 +236,7 @@ func TestSessionMemoTTLExpires(t *testing.T) {
 func TestSessionMemoAuditAndLogsNeverContainValue(t *testing.T) {
 	server, _, backend := newSessionMemoServer()
 	secretValue := "ULTRA_SECRET_MEMO_SENTINEL_94f4"
-	var logs bytes.Buffer
+	var logs synchronizedLogBuffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
