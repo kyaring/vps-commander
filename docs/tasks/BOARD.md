@@ -54,3 +54,4 @@
 | T-20261015-02-R1 | 返工：mcp_tool 改到鉴权之后由 MCP 处理器回填 + 补用例 | GPT | cmd/hub/ internal/auth/ internal/api/ internal/mcp/ internal/web/ docs/ | merged（6c4f83c，OPC 11:17 批准；未部署） | feat/obs-actor-audits @ bcbda0d | 1 | R1 PASS（RikkaHub-1 07:27，报告复审一节）；卡基线 5157a9d 过期 → 待裁定 |
 | T-20261015-03 | 修测试偶发竞争：session memo 测试替换全局 slog | GPT | internal/api/ internal/storage/ | merged（6c4f83c，OPC 11:17 批准；未部署） | fix/test-memo-slog-race @ 0512bc4（基线 3cf4ed6，分叉点口径） | 1 | reviewed-pass（RikkaHub-1）；报告 docs/reviews/T-20261015-03-review.md；被审提交 0512bc4 | - | - | 2026-10-15 11:05 |
 | T-20261015-04 | 遗留小项打包：测试日志 buffer 回归保护 + 哨兵自检 | GPT | internal/api/ | ready | test/leftovers-1015 | 0 | Hark 11:40 开卡（来源：T-03 审核建议 1、2） |
+| BL-20261015-skill | Hub 通过 MCP prompts/resources 下发 docs/client-skill（agent 连上即可读取 skill） | 待定 | backlog | OPC 13:10 要求先记下；排在 SV-06 之后；开卡前先核实 Hub 是否已实现 prompts 和 resources | 2026-10-15 13:10 |
