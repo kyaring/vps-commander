@@ -32,3 +32,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - check-task 只认一行「改动范围：允许…；禁止…」，基线取「分支」行里的 sha；返工卡的基线要写 main 上含卡的那个提交。发卡前先在临时 worktree 里跑一遍。
 - 长分支的返工按本轮增量验收。
 - 每次 exec 都是新 shell，go 要写绝对路径 /usr/local/go/bin。部署放后台执行，exit=-1 时不要重试。
+- 10-16 05:25 sws-vault SV-20261016-05（项目与接入方分两步 + 所有密钥页改版 + SV-04 三条 Low，RikkaHub-1 开发，Hark 全量审核）ready，main 721477f，待转发。
