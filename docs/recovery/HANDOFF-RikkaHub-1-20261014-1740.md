@@ -37,3 +37,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - 10-16 07:12 T-01 Errata 2：spill 改为落在 Hub 本机（0600、spill_device 字段），read_file 由 Hub 直接服务并按令牌校验归属；远端 agent 仍禁止修改。
 - 10-16 07:40 OPC 07:33 定 UI v2 线框（三个标签）并要求打成一张大卡：sws-vault SV-20261016-07（RikkaHub-1，feat/ui-v2-ia，基线 e4e8a84，含 rows.Scan、Gitea 端口、upgrade 轮询等遗留）ready，待转发；Hark 全量审核。
 - 10-16 07:45 RikkaHub-1 读卡后停在开工前提问；Hark 给 SV-07 发 errata 1：允许分阶段提交、每个提交都要绿、明确测试 8 的口径。等它继续开发。
+- 10-16 08:00 SV-07 阶段 1 已提交 @108d8a1；errata 2 裁决：A3 不变，cmd/swsvault/main_test.go 只许改取 csrf 的那次 GET。
