@@ -15,10 +15,6 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 角色：OPC=SWS-H000-opc；开发 GPT（SWS-E002）；次要审核 RikkaHub-1（10-15 07:01 起改为抽查，见 CALIBRATION-RikkaHub-1.md）；Hark 负责调度和终签。
 
 ## 在途
-- sws-vault v1：feat/v1-core @7468820，Hark 已终签 verified（SV-03），等 OPC 建 GitHub 库 kyaring/sws-vault，再批准合并和部署。SV-03 遗留：卡面 errata 和 3 条建议，见 sws-vault 看板。
-- T-20261015-02 和 T-03 已于 11:17 经 OPC 批准合入 main（6c4f83c），已推送；生产仍是 dab72aba222d，部署要等 OPC 另行批准。sws-vault 的 GitHub 库已建好（目前为空），节点 ls-remote 可以连通。
-- T-20261015-01（workbuddy）：11:37 经 OPC 批准合入 main。T-20261015-04（遗留小项打包）ready，待转发。sws-vault 的 main 和 feat/v1-core 已推到 GitHub。
-- sws-vault：v1 已于 11:53 经 OPC 批准合入 main（b8ba36a）并推送；S-6 测试部署卡 SV-20261015-04 ready（部署在 Hub 本机，127.0.0.1:9531，不接反代）。
 - 校准 #1：RikkaHub-1 的回应（72a442b）已由 Hark 答复，见 CALIBRATION 文件末尾。
 
 ## 生产与风险
@@ -39,3 +35,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - 10-16 07:10 SV-05+06 由 Hark 终签 verified @e99d60b（feat/project-clients），待 OPC 批准合并和部署（回退目标 cb86accd754c）。
 - 10-16 07:04 经 OPC 07:03 批准，sws-vault SV-05/06 以 --no-ff 合入 cc94504 并推送；部署 cc94504d633a，备份 /var/backups/sws-vault/vault-20261015-230445.sqlite3，healthz 200，description 和 note 两列迁移成功；回退目标 cb86accd754c（swsvault.prev）。
 - 10-16 07:12 T-01 Errata 2：spill 改为落在 Hub 本机（0600、spill_device 字段），read_file 由 Hub 直接服务并按令牌校验归属；远端 agent 仍禁止修改。
+- 10-16 07:40 OPC 07:33 定 UI v2 线框（三个标签）并要求打成一张大卡：sws-vault SV-20261016-07（RikkaHub-1，feat/ui-v2-ia，基线 e4e8a84，含 rows.Scan、Gitea 端口、upgrade 轮询等遗留）ready，待转发；Hark 全量审核。

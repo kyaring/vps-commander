@@ -19,6 +19,12 @@ archive: docs/recovery/HANDOFF-ARCHIVE.md
 铁律：生产变更与合并逐步经 OPC 批准；卡片/提交/日志/聊天绝不出现令牌、webhook、密码；不读 `hub.env`/`notify.env`；每张卡附可直接转发给 GPT 的交接消息，由 OPC 转发。
 必读：`REVIEWER-PLAYBOOK.md` → 本文 → `docs/tasks/BOARD.md`。
 
+## 10-16 07:40 从交接正本移出
+- sws-vault v1：feat/v1-core @7468820，Hark 已终签 verified（SV-03），等 OPC 建 GitHub 库 kyaring/sws-vault，再批准合并和部署。SV-03 遗留：卡面 errata 和 3 条建议，见 sws-vault 看板。
+- T-20261015-02 和 T-03 已于 11:17 经 OPC 批准合入 main（6c4f83c），已推送；生产仍是 dab72aba222d，部署要等 OPC 另行批准。sws-vault 的 GitHub 库已建好（目前为空），节点 ls-remote 可以连通。
+- T-20261015-01（workbuddy）：11:37 经 OPC 批准合入 main。T-20261015-04（遗留小项打包）ready，待转发。sws-vault 的 main 和 feat/v1-core 已推到 GitHub。
+- sws-vault：v1 已于 11:53 经 OPC 批准合入 main（b8ba36a）并推送；S-6 测试部署卡 SV-20261015-04 ready（部署在 Hub 本机，127.0.0.1:9531，不接反代）。
+
 ## 一、当前状态
 - 仓库：main = origin/main = `93e93c5`（接班时）；工作区干净；**worktree 与本地分支均只剩 main**。
 - 生产：`39f3c5c` 的构建，sha256 `dab72aba222d…`，**17:05:48 启动**（T-33 部署）；active、NRestarts=0；内外 healthz 200。
