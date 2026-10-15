@@ -38,3 +38,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - 10-16 06:58 T-20261016-01 Errata 1：C 采用聚合式，D 允许改断言但必须加跨令牌拒绝的断言，A 白名单条目作废，可调用 Cluster.WriteFile（必须 0600）。
 - 10-16 07:10 SV-05+06 由 Hark 终签 verified @e99d60b（feat/project-clients），待 OPC 批准合并和部署（回退目标 cb86accd754c）。
 - 10-16 07:04 经 OPC 07:03 批准，sws-vault SV-05/06 以 --no-ff 合入 cc94504 并推送；部署 cc94504d633a，备份 /var/backups/sws-vault/vault-20261015-230445.sqlite3，healthz 200，description 和 note 两列迁移成功；回退目标 cb86accd754c（swsvault.prev）。
+- 10-16 07:12 T-01 Errata 2：spill 改为落在 Hub 本机（0600、spill_device 字段），read_file 由 Hub 直接服务并按令牌校验归属；远端 agent 仍禁止修改。
