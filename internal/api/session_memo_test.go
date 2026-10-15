@@ -34,6 +34,42 @@ func (b *synchronizedLogBuffer) String() string {
 	return b.buffer.String()
 }
 
+func TestSynchronizedLogBufferConcurrentAccess(t *testing.T) {
+	var logs synchronizedLogBuffer
+	const workers = 8
+	const iterations = 1000
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers/2; worker++ {
+		worker := worker
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				if _, err := fmt.Fprintf(&logs, "writer=%d iteration=%d\n", worker, i); err != nil {
+					t.Errorf("Write: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	for reader := 0; reader < workers/2; reader++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < iterations; i++ {
+				_ = logs.String()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := logs.String(); !strings.Contains(got, "writer=") {
+		t.Fatalf("concurrent writes were not captured: %q", got)
+	}
+}
+
 type sessionMemoAuditRecord struct {
 	action, command, detail string
 	code                    int
@@ -246,9 +282,16 @@ func TestSessionMemoAuditAndLogsNeverContainValue(t *testing.T) {
 	}
 	_ = sessionMemoRequest(t, server, http.MethodGet, "/api/v1/session/memo?key=audit-key", "", "token-audit", "192.0.2.17:1234")
 	_ = sessionMemoRequest(t, server, http.MethodGet, "/api/v1/session/memo", "", "token-audit", "192.0.2.17:1234")
+	// Emit a known, non-sensitive marker so this test proves the configured
+	// handler actually captured log output before checking for secret leakage.
+	slog.Info("session memo test log marker", "key", "audit-key")
 	audit := backend.auditText()
-	if strings.Contains(audit, secretValue) || strings.Contains(logs.String(), secretValue) {
-		t.Fatalf("value leaked into audit or logs; audit=%q logs=%q", audit, logs.String())
+	logText := logs.String()
+	if !strings.Contains(logText, "session memo test log marker") || !strings.Contains(logText, "audit-key") {
+		t.Fatalf("log buffer did not capture the expected marker: %q", logText)
+	}
+	if strings.Contains(audit, secretValue) || strings.Contains(logText, secretValue) {
+		t.Fatalf("value leaked into audit or logs; audit=%q logs=%q", audit, logText)
 	}
 	if !strings.Contains(audit, "audit-key") || !strings.Contains(audit, "bytes=") {
 		t.Fatalf("audit must contain key and byte count: %q", audit)
