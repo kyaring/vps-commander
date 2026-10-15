@@ -36,3 +36,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - 10-16 06:40 OPC 定 Hub MCP 三张卡全部交给 RikkaHub-1：T-20261016-01 ready（基线 32c2ffd，排在 SV-05 之后）；02、03 blocked，二者同批部署。
 - 10-16 06:55 SV-05 @b02154b 由 Hark 全量审核：CHANGES REQUESTED（空授权列表导致越权和静默撤权、使用范围页丢失 no_client_access）；返工卡 SV-20261016-06 ready（sws-vault main 4c1dfbe）。
 - 10-16 06:58 T-20261016-01 Errata 1：C 采用聚合式，D 允许改断言但必须加跨令牌拒绝的断言，A 白名单条目作废，可调用 Cluster.WriteFile（必须 0600）。
+- 10-16 07:10 SV-05+06 由 Hark 终签 verified @e99d60b（feat/project-clients），待 OPC 批准合并和部署（回退目标 cb86accd754c）。
