@@ -25,7 +25,7 @@ for (const text of ['deploy-token','经 OAuth · Chat&lt;GPT&gt;','title="OAuth 
 }
 assert.ok(!row.includes('echo <denied>'), 'command text must be HTML-escaped');
 assert.ok(row.includes('title="echo &lt;denied&gt;"'), 'tooltip must contain escaped full command');
-assert.ok(row.includes('aria-expanded="false"') && row.includes('audit-command-text'), 'command must be keyboard-focusable and collapsible');
+assert.ok(row.includes('data-audit-id="9"') && row.includes('tabindex="0"') && row.includes('audit-command-text'), 'row must be keyboard-focusable and open details');
 assert.ok(!row.includes('device:node-a'), 'redundant device target column must be gone');
 assert.equal((row.match(/<td/g)||[]).length, 10, 'audit row must have 10 cells matching the header');
 const plain = AuditUI.renderAuditRow({id:1,timestamp:1,actor_name:'hark',transport:'rest',device:'n',action:'exec',command:'ls',target_type:'device',target:'n'}, [], {});

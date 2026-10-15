@@ -142,6 +142,8 @@ func shouldLogRequest(path string, status int) bool {
 func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struct{}, onStatus func(int)) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		ctx, actorHolder := auth.WithRequestActor(r.Context())
+		r = r.WithContext(ctx)
 		rw := &requestLogWriter{ResponseWriter: w, onStatus: onStatus}
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		allowed := originAllowed(origin, allowedOrigins)
@@ -167,7 +169,12 @@ func withRequestLoggingAndCORS(mux http.Handler, allowedOrigins map[string]struc
 			status = http.StatusOK
 		}
 		if shouldLogRequest(r.URL.Path, status) {
-			slog.Info("http_request", "method", r.Method, "path", r.URL.Path, "client_ip", auth.ClientIP(r), "status", status, "duration_ms", time.Since(started).Milliseconds(), "bytes", rw.bytes)
+			actorType, actor, mcpTool := actorHolder.Snapshot()
+			attrs := []any{"method", r.Method, "path", r.URL.Path, "client_ip", auth.ClientIP(r), "actor_type", actorType, "actor", actor, "status", status, "duration_ms", time.Since(started).Milliseconds(), "bytes", rw.bytes}
+			if mcpTool != "" {
+				attrs = append(attrs, "mcp_tool", mcpTool)
+			}
+			slog.Info("http_request", attrs...)
 		}
 	})
 }

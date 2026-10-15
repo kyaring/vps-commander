@@ -1171,6 +1171,9 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				Error:   &JSONRPCError{Code: -32602, Message: "invalid tool params"},
 			}
 		}
+		// The outer request logger shares this holder through the context. Set
+		// only the tool name after MCP authentication and parsing; never arguments.
+		auth.SetRequestMCPTool(ctx, params.Name)
 
 		clientIP := auth.ClientIP(r)
 		state := &auditState{}

@@ -76,6 +76,17 @@ func TestAuditUIPanelColumnsAndRowTemplate(t *testing.T) {
 	if !strings.Contains(js, "audit-result") {
 		t.Error(`audit-ui.js does not render the audit-result class`)
 	}
+	appBytes, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := string(appBytes)
+	if !strings.Contains(index, `id="auditDetailDialog"`) || !strings.Contains(app, `api("/audits/"+encodeURIComponent(row.dataset.auditId))`) {
+		t.Error("audit row detail dialog or on-demand detail fetch is missing")
+	}
+	if !strings.Contains(app, `addEventListener("click",event=>{const row=event.target.closest("tr[data-audit-id]")`) {
+		t.Error("audit table rows do not trigger detail loading")
+	}
 }
 
 func TestAuditUINodeRegression(t *testing.T) {

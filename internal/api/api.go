@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -627,7 +628,99 @@ func (s *Server) AuditsJSON(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audit query failed", 500)
 		return
 	}
-	jsonOut(w, logs)
+	jsonOut(w, compactAuditLogs(logs))
+}
+
+const auditListTextLimit = 256
+const auditListTextMax = 224
+
+func truncateAuditField(value string) (string, bool) {
+	if len(value) <= auditListTextLimit {
+		return value, false
+	}
+	end := auditListTextMax - len("…")
+	for end > 0 && (value[end]&0xc0) == 0x80 {
+		end--
+	}
+	return value[:end] + "…", true
+}
+
+type auditListRecord struct {
+	ID            int64  `json:"id"`
+	Timestamp     int64  `json:"timestamp"`
+	CallerIP      string `json:"caller_ip,omitempty"`
+	Device        string `json:"device,omitempty"`
+	Action        string `json:"action,omitempty"`
+	Command       string `json:"command,omitempty"`
+	ExitCode      int    `json:"exit_code"`
+	DurationMS    int64  `json:"duration_ms"`
+	ErrorMsg      string `json:"error_msg,omitempty"`
+	ActorType     string `json:"actor_type,omitempty"`
+	ActorID       string `json:"actor_id,omitempty"`
+	ActorName     string `json:"actor_name,omitempty"`
+	OAuthClientID string `json:"oauth_client_id,omitempty"`
+	Transport     string `json:"transport,omitempty"`
+	TargetType    string `json:"target_type,omitempty"`
+	Target        string `json:"target,omitempty"`
+	Result        string `json:"result,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+}
+
+func compactAuditLogs(logs []storage.AuditLog) []auditListRecord {
+	out := make([]auditListRecord, 0, len(logs))
+	for _, log := range logs {
+		v := auditListRecord{
+			ID: log.ID, Timestamp: log.Timestamp, CallerIP: log.CallerIP, Device: log.Device,
+			Action: log.Action, Command: log.Command, ExitCode: log.ExitCode, DurationMS: log.DurationMS,
+			ErrorMsg: log.ErrorMsg, ActorType: log.ActorType, ActorID: log.ActorID, ActorName: log.ActorName,
+			OAuthClientID: log.OAuthClientID, Transport: log.Transport, TargetType: log.TargetType, Target: log.Target,
+			Result: log.Result, RequestID: log.RequestID, SessionID: log.SessionID,
+		}
+		fields := []*string{&v.Command, &v.ErrorMsg, &v.Target, &v.Result}
+		for _, field := range fields {
+			if value, truncated := truncateAuditField(*field); truncated {
+				*field = value
+				v.Truncated = true
+			}
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func (s *Server) AuditDetailJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.Store == nil {
+		http.Error(w, "audit query failed", http.StatusInternalServerError)
+		return
+	}
+	idText := strings.TrimPrefix(r.URL.Path, "/api/v1/audits/")
+	id, err := strconv.ParseInt(idText, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid audit id", http.StatusBadRequest)
+		return
+	}
+	if err := s.Store.FlushAudits(); err != nil {
+		http.Error(w, "audit query failed", http.StatusInternalServerError)
+		return
+	}
+	var entry storage.AuditLog
+	err = s.Store.DB.QueryRow(`SELECT id,timestamp,COALESCE(caller_ip,''),COALESCE(device,''),COALESCE(action,''),COALESCE(command,''),exit_code,duration_ms,COALESCE(error_msg,''),COALESCE(actor_type,''),COALESCE(actor_id,''),COALESCE(actor_name,''),COALESCE(oauth_client_id,''),COALESCE(transport,''),COALESCE(target_type,''),COALESCE(target,''),COALESCE(result,''),COALESCE(request_id,''),COALESCE(session_id,'') FROM audit_logs WHERE id=?`, id).Scan(
+		&entry.ID, &entry.Timestamp, &entry.CallerIP, &entry.Device, &entry.Action, &entry.Command, &entry.ExitCode, &entry.DurationMS, &entry.ErrorMsg, &entry.ActorType, &entry.ActorID, &entry.ActorName, &entry.OAuthClientID, &entry.Transport, &entry.TargetType, &entry.Target, &entry.Result, &entry.RequestID, &entry.SessionID)
+	if err == sql.ErrNoRows {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "audit query failed", http.StatusInternalServerError)
+		return
+	}
+	jsonOut(w, entry)
 }
 
 type MCPServiceRequest struct {
@@ -897,6 +990,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/notifications/webhook/delete", s.requireScope("admin", http.HandlerFunc(s.DeleteWebhookTargetJSON)))
 	mux.Handle("/api/v1/notifications/webhook/test", s.requireScope("admin", http.HandlerFunc(s.TestWebhookJSON)))
 	mux.Handle("/api/v1/audits/export.csv", s.requireScope("admin", http.HandlerFunc(s.AuditExportCSV)))
+	mux.Handle("/api/v1/audits/", s.requireScope("admin", http.HandlerFunc(s.AuditDetailJSON)))
 	mux.Handle("/api/v1/audits", s.requireScope("admin", http.HandlerFunc(s.AuditsJSON)))
 	mux.Handle("/api/v1/oauth/clients", s.requireScope("admin", http.HandlerFunc(s.OAuthClientsJSON)))
 	mux.Handle("/api/v1/oauth/clients/", s.requireScope("admin", http.HandlerFunc(s.OAuthClientDisableJSON)))
