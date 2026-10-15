@@ -34,3 +34,4 @@ DevTask A1–A6（T-35 暂缓，看板里有两行要合成一行）；三条小
 - 每次 exec 都是新 shell，go 要写绝对路径 /usr/local/go/bin。部署放后台执行，exit=-1 时不要重试。
 - 10-16 05:25 sws-vault SV-20261016-05（项目与接入方分两步 + 所有密钥页改版 + SV-04 三条 Low，RikkaHub-1 开发，Hark 全量审核）ready，main 721477f，待转发。
 - 10-16 06:40 OPC 定 Hub MCP 三张卡全部交给 RikkaHub-1：T-20261016-01 ready（基线 32c2ffd，排在 SV-05 之后）；02、03 blocked，二者同批部署。
+- 10-16 06:55 SV-05 @b02154b 由 Hark 全量审核：CHANGES REQUESTED（空授权列表导致越权和静默撤权、使用范围页丢失 no_client_access）；返工卡 SV-20261016-06 ready（sws-vault main 4c1dfbe）。
