@@ -82,7 +82,7 @@ func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 			"resource":                 base + "/mcp",
 			"authorization_servers":    []string{base},
 			"bearer_methods_supported": []string{"header"},
-			"scopes_supported":         []string{"devices:read", "files:read", "files:write", "exec", "process", "mcp:call"},
+			"scopes_supported":         append([]string(nil), oauthSupportedScopes...),
 		}
 	} else {
 		metadata = map[string]any{
@@ -92,6 +92,7 @@ func (s *Server) HandleOAuthMetadata(w http.ResponseWriter, r *http.Request) {
 			"response_types_supported":              []string{"code"},
 			"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 			"code_challenge_methods_supported":      []string{"S256"},
+			"scopes_supported":                      append([]string(nil), oauthSupportedScopes...),
 			"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
 		}
 	}
