@@ -1,3 +1,32 @@
+## 2026-10-16 全量扫描与主审规划（Claude-1，main 基线 46291d1，只读）
+
+### 扫描结果
+- 代码规模：非测试 Go 约 1.3 万行，测试约 1.9 万行；internal/api、storage、mcp 最大。最大文件 api.go 1807 行、mcp.go 1791 行、storage.go 1337 行。
+- go vet 全部通过；go test -count=1 ./... 14 个包全部通过（退出码 0）。
+- 路由鉴权：未加 requireScope 的 mux 注册有 /healthz、/openapi.json、/agent/ws、/session/stats、/session/memo（后两者内部校验身份）、/static/、/panel 页面，以及 panel 下的 protected 包装路由。
+- 高风险点：
+  1. /probe/summary 无需认证，生产实测返回 200，内容包括节点名、国家、CPU/内存/网络累计量、开机时间、docker 标记（internal/web/panel.go:80，调用 DevicesJSON）。文档称其为"公共"端点，但信息量偏大，需 OPC 裁定。
+  2. cmd/agent/main.go:157 提供 -insecure 选项跳过 TLS 校验，默认关闭，需在部署文档中明确风险。
+  3. exec 使用 /bin/sh -c（executor.go:45、session.go:100），这是设计本身，靠 scope、白名单和安全等级兜底；需确认 High 等级的文档与实现一致。
+  4. panic 仅出现在随机数失败场景（tokens.go:29、auth.go:75、cmd/hub/main.go:33），可接受。
+  5. 183 处 `_ =` 忽略错误，多为审计写入，需要抽样确认哪些可能掩盖真实故障。
+- 文档：10-16 已更新版本标注、路线图、API、MCP 工具表（14 个）、环境变量、运维第 10 节（分支 docs/status-refresh-1016，c377170、25fafba，未合并）。
+
+### 主审规划（待 OPC 排期，不擅自执行）
+1. [OPC 决定] /probe/summary 保持公开还是改为需要令牌；若保留，去掉节点名和国家。
+2. [等待] sws-vault SV-20261016-07：提交后全量审，按卡 Errata 2 逐行核对 cmd/ 例外。
+3. [Hub 在途] T-20261016-01 先合并；02、03 同批部署，不提前开工。T-20261015-04 小卡可随时派。
+4. [安全小卡] 收紧 /probe/summary（依 OPC 决定），加回归测试。
+5. [技术债] 拆分 api.go、mcp.go（纯搬迁，行为不变，单独成卡，只改一个包）；审计 183 处 `_ =` 忽略错误，分三类（审计写入、清理、其他），其他类必须补日志。
+6. [文档] docs/notification-v1.1.35-design.md 与现行版本的差异，标注为历史设计；security.md 补充 /probe/summary 的暴露范围。
+7. [部署] docs/roadmap.md 的 v1.1.36 与 DevTask 决策，等 OPC 决定是否恢复 T-35。
+
+### 不做
+- 本次未修改业务代码，未合并、未部署，未读取 hub.env、notify.env 的值。
+- /tmp/claude1-scan 下的 vet 与 test 日志在本次扫描后保留，由下次接班人确认后清理。
+
+---
+
 ## 2026-10-16 17:52 Claude-1 接班记录
 
 - 读取：REVIEWER-PLAYBOOK（含 §5b 复审、§7 坑）、正本 4752610、两块看板、CALIBRATION-RikkaHub-1（含 RikkaHub-1 回应与 Hark 答复；定级口径 v2 与抽查规则 v2 生效：五种情形必须全量复核，终签用三行表）。
