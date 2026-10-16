@@ -61,3 +61,4 @@
 | T-20261016-06 | 删除公开探针页面与 /probe/summary（OPC 10-16 选 1） | GPT | internal/web/ docs/security.md docs/api.md | reviewed-pass（代码与验收 PASS；规模 992 行需 OPC 豁免三个静态文件的删除行；合并待批准） | feat/remove-public-probe | 1 | 审核报告 docs/reviews/T-20261016-06-review.md；被审提交 f6b1075；卡基线 bb37f61 未推送 |
 | T-20261016-04 | 收紧 /probe/summary 公开返回（已取消） | GPT | internal/web/ docs/api.md docs/security.md | cancelled（OPC 10-16 改选 C，由 T-20261016-05 取代） | fix/probe-summary-allowlist | 0 | GPT 前置检查受阻（probe.js 依赖将被删字段） |
 | T-20261016-05 | 文档化公开探针接口暴露范围（已作废） | GPT | docs/security.md docs/api.md docs/roadmap.md | cancelled（OPC 10-16 改选 1，由 T-20261016-06 取代；分支 docs/probe-exposure 不合并） | docs/probe-exposure | 1 | 审核 FAIL（返工，remote_ip 漏写）已作废，GPT 无需返工；基线 e59a84e |
+| T-20261016-07 | OAuth 授权端点兼容缺省 resource/scope（Grok 连接器） | GPT | internal/mcp/oauth_flow.go internal/mcp/oauth.go 新测试文件 | ready（OPC 10-16 19:39 同意） | fix/oauth-authorize-defaults | 0 | Hark 19:58 开卡；基线见卡 |
