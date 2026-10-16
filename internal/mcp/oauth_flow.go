@@ -10,6 +10,7 @@ import (
 	"errors"
 	"html/template"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -42,7 +43,15 @@ var authorizePage = template.Must(template.New("oauth-authorize").Funcs(template
 <p class="muted">访问令牌绑定到本次 OAuth 客户端和资源，并且不会获得所选命名令牌以外的权限。</p>
 <button type="submit" name="decision" value="approve">批准授权</button><button class="danger" type="submit" name="decision" value="deny">拒绝</button></form></main><script nonce="{{.Nonce}}">document.querySelector('form').addEventListener('submit',function(event){const submitter=event.submitter;if(submitter){const decision=document.createElement('input');decision.type='hidden';decision.name='decision';decision.value=submitter.value;this.appendChild(decision)}this.querySelectorAll('button[type=submit]').forEach(function(button){button.disabled=true});if(submitter)submitter.textContent=submitter.value==='approve'?'正在提交…':'正在拒绝…'});</script></body></html>`))
 
-var oauthScopes = map[string]bool{"devices:read": true, "files:read": true, "files:write": true, "exec": true, "process": true, "mcp:call": true}
+var oauthSupportedScopes = []string{"devices:read", "files:read", "files:write", "exec", "process", "mcp:call"}
+
+var oauthScopes = func() map[string]bool {
+	out := make(map[string]bool, len(oauthSupportedScopes))
+	for _, scope := range oauthSupportedScopes {
+		out[scope] = true
+	}
+	return out
+}()
 
 func (s *Server) setOAuthBrowserHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -170,6 +179,7 @@ func (s *Server) oauthClientAndRedirect(id, redirect string) (storage.OAuthClien
 func (s *Server) oauthRedirectError(w http.ResponseWriter, redirect, state, code string) {
 	u, err := url.Parse(redirect)
 	if err != nil {
+		slog.Warn("oauth_authorize_rejected", "code", "invalid_request", "check", "client_or_redirect", "client_id", "", "has_resource", false, "has_scope", false, "has_state", state != "", "has_challenge", false)
 		http.Error(w, "invalid redirect URI", 400)
 		return
 	}
@@ -217,38 +227,68 @@ func hasDuplicateParams(values url.Values, names ...string) bool {
 	return false
 }
 
+func (s *Server) logOAuthAuthorizeRejected(q url.Values, code, check string) {
+	slog.Warn("oauth_authorize_rejected",
+		"code", code,
+		"check", check,
+		"client_id", q.Get("client_id"),
+		"has_resource", q.Has("resource"),
+		"has_scope", q.Has("scope"),
+		"has_state", q.Has("state"),
+		"has_challenge", q.Has("code_challenge"),
+	)
+}
+
 func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	client, valid := s.oauthClientAndRedirect(q.Get("client_id"), q.Get("redirect_uri"))
 	if !valid {
+		s.logOAuthAuthorizeRejected(q, "invalid_request", "client_or_redirect")
 		http.Error(w, "invalid OAuth client or redirect_uri", 400)
 		return
 	}
 	state := q.Get("state")
-	fail := func(code string) { s.oauthRedirectError(w, q.Get("redirect_uri"), state, code) }
+	fail := func(code, check string) {
+		s.logOAuthAuthorizeRejected(q, code, check)
+		s.oauthRedirectError(w, q.Get("redirect_uri"), state, code)
+	}
 	if hasDuplicateParams(q, "response_type", "client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method", "resource", "scope") {
-		fail("invalid_request")
+		fail("invalid_request", "duplicate_param")
 		return
 	}
 	if state == "" || len(state) > 1024 || !utf8.ValidString(state) || q.Get("response_type") != "code" {
-		fail("invalid_request")
+		fail("invalid_request", "state_or_response_type")
 		return
 	}
 	challenge := q.Get("code_challenge")
 	decoded, err := base64.RawURLEncoding.DecodeString(challenge)
 	if q.Get("code_challenge_method") != "S256" || err != nil || len(decoded) != sha256.Size || len(challenge) != 43 {
-		fail("invalid_request")
+		fail("invalid_request", "pkce")
 		return
 	}
 	resource, enabled := OAuthResourceURL()
-	if !enabled || q.Get("resource") != resource {
-		fail("invalid_target")
+	defaultedResource := q.Get("resource") == ""
+	if !enabled || (!defaultedResource && q.Get("resource") != resource) {
+		fail("invalid_target", "resource_mismatch")
 		return
 	}
-	requested, err := parseOAuthScopes(q.Get("scope"))
-	if err != nil {
-		fail("invalid_scope")
-		return
+	defaultedScope := strings.TrimSpace(q.Get("scope")) == ""
+	var requested []string
+	if defaultedScope {
+		requested = append([]string(nil), oauthSupportedScopes...)
+	} else {
+		requested, err = parseOAuthScopes(q.Get("scope"))
+		if err != nil {
+			check := "scope_invalid"
+			if strings.Contains(err.Error(), "scope required") {
+				check = "scope_empty_after_filter"
+			}
+			fail("invalid_scope", check)
+			return
+		}
+	}
+	if defaultedResource || defaultedScope {
+		slog.Info("oauth_authorize_defaulted", "client_id", client.ID, "defaulted_resource", defaultedResource, "defaulted_scope", defaultedScope)
 	}
 	tokens, err := s.OAuthStore.ListAPITokens()
 	if err != nil {
