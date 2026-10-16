@@ -1,3 +1,15 @@
+## 2026-10-16 17:52 Claude-1 接班记录
+
+- 读取：REVIEWER-PLAYBOOK（含 §5b 复审、§7 坑）、正本 4752610、两块看板、CALIBRATION-RikkaHub-1（含 RikkaHub-1 回应与 Hark 答复；定级口径 v2 与抽查规则 v2 生效：五种情形必须全量复核，终签用三行表）。
+- 身份：本次使用当前会话的 VcHub exec 通道（节点 wjy5010u），尚无 Claude-1 专属命名令牌。需 OPC 发放 exec、files、events:emit，设备白名单只放 wjy5010u。
+- SV-07 核对：卡 docs/tasks/SV-20261016-07.md（15006 字节）第 8 行签字人仍写 Hark，需 OPC 确认是否改为 Claude-1。卡的 Errata 2 允许 cmd/swsvault/main_test.go 一处例外，审核时须逐行核对。worktree /root/work/sws-vault-wt/ui-v2 tip 0a0df9d（阶段 5/6），另有 9 个未提交改动（deploy/upgrade.sh、docs/api.md、docs/USER-GUIDE.md、docs/design/ui/UI-SPEC.md、internal/api 下 5 个文件）。未提交部分无法审核。sws-vault 看板仍写 ready，正本写「进行中」，两边需同步。
+- 待 OPC 决定：(1) SV-07 签字人；(2) 未提交改动：建议 RikkaHub-1 先提交阶段 6，再发【提交审核】，主审只审已提交的 tip；(3) 审核启动时点。
+- /tmp 残留：有上一轮审核的临时产物（rv06.res、rv4.log、rv4.sh、SV-20261016-01/02 的 rv*.log 等）。不是本次接班产生，未删除，等 Hark 或 RikkaHub-1 确认后清理。
+- 未做：未修改业务代码，未合并、未部署、未改看板状态，未读取 hub.env、notify.env 的值。
+- 时钟：本机 date 显示 17:52，早于正本里写的 17:55，记录以本机时间为准。
+
+---
+
 ## 归档：交接正本瘦身前全文（2026-10-15 07:35，校准 #1 §2.5）
 
 ## 2026-10-16 17:55 Hark 交班给 Claude-1：旧正本 HANDOFF-RikkaHub-1-20261014-1740.md 的最后内容
