@@ -58,4 +58,4 @@
 | T-20261016-01 | MCP 返回层：溢出文件 + 返回形状收敛 + 预算按令牌计算 + 未知会话降级（tools/list 零改动） | RikkaHub-1 | internal/mcp/ internal/api/ internal/executor/ | ready（排在 sws-vault SV-20261016-05 之后） | feat/mcp-result-layer | 0 | Hark 06:40 开卡（OPC 06:35 定全部交给 RikkaHub-1） |
 | T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ internal/executor/ | blocked（等 T-01 合并） | feat/mcp-exec-async | 0 | 基线转发时填入 |
 | T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | blocked（等 T-02 开工后） | feat/mcp-toolset-v2 | 0 | 基线转发时填入 |
-| T-20261016-04 | 收紧 /probe/summary 公开返回（OPC 选 A） | GPT | internal/web/ docs/api.md docs/security.md | ready（OPC 10-16 批准，选 A） | fix/probe-summary-allowlist | 0 | 基线 8315bbd（含本卡）；Claude-1 10-16 起草 |
+| T-20261016-04 | 收紧 /probe/summary 公开返回（OPC 选 A） | GPT | internal/web/ docs/api.md docs/security.md | blocked（GPT 前置检查受阻：probe.js 依赖将被删字段，等 OPC 裁定） | fix/probe-summary-allowlist | 0 | 基线 8315bbd（含本卡）；Claude-1 10-16 起草 |
