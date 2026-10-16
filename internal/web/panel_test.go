@@ -11,7 +11,54 @@ import (
 
 type testRunner struct{}
 
-func (testRunner) DevicesJSON(w http.ResponseWriter, r *http.Request)  {}
+func (testRunner) DevicesJSON(w http.ResponseWriter, r *http.Request) {}
+
+type remoteIPTestRunner struct{ testRunner }
+
+func (remoteIPTestRunner) DevicesJSON(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`[{"name":"node-01","remote_ip":"192.0.2.10"}]`))
+}
+
+func TestPublicProbeRoutesRemovedAndPanelDevicesProtected(t *testing.T) {
+	p := New("test-password", "admin", remoteIPTestRunner{})
+	p.sessions["valid-session"] = time.Now().Add(time.Hour)
+	h := p.Handler()
+
+	for _, tc := range []struct {
+		path      string
+		forbidden string
+	}{
+		{path: "/probe/summary", forbidden: "remote_ip"},
+		{path: "/", forbidden: "probe.js"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("anonymous GET %s status=%d, want 404; body=%s", tc.path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), tc.forbidden) {
+			t.Errorf("anonymous GET %s body unexpectedly contains %q: %s", tc.path, tc.forbidden, rec.Body.String())
+		}
+	}
+
+	unauth := httptest.NewRecorder()
+	h.ServeHTTP(unauth, httptest.NewRequest(http.MethodGet, "/panel/api/devices", nil))
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET /panel/api/devices status=%d, want 401", unauth.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel/api/devices", nil)
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-session"})
+	authenticated := httptest.NewRecorder()
+	h.ServeHTTP(authenticated, req)
+	if authenticated.Code != http.StatusOK {
+		t.Fatalf("authenticated GET /panel/api/devices status=%d, body=%s", authenticated.Code, authenticated.Body.String())
+	}
+	if !strings.Contains(authenticated.Body.String(), `"remote_ip":"192.0.2.10"`) {
+		t.Fatalf("authenticated device response lost remote_ip: %s", authenticated.Body.String())
+	}
+}
 func (testRunner) AuditsJSON(w http.ResponseWriter, r *http.Request)   {}
 func (testRunner) PanelExec(w http.ResponseWriter, r *http.Request)    {}
 func (testRunner) RotateAPIKey(w http.ResponseWriter, r *http.Request) {}
@@ -68,7 +115,7 @@ func TestCachedHandlerUsesETagAndTwoSecondCache(t *testing.T) {
 		_, _ = w.Write([]byte(`{"version":1}`))
 	})
 	request := func(etag string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/probe/summary", nil)
+		req := httptest.NewRequest(http.MethodGet, "/cache/test", nil)
 		if etag != "" {
 			req.Header.Set("If-None-Match", etag)
 		}
