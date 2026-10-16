@@ -77,7 +77,6 @@ func (p *Panel) Handler() http.Handler {
 	mux.HandleFunc("/panel/logout", p.logout)
 	mux.HandleFunc("/panel", p.index)
 	mux.HandleFunc("/panel/", p.index)
-	mux.HandleFunc("/probe/summary", p.cachedHandler("probe-summary", p.probeSummary))
 	mux.HandleFunc("/static/", p.static)
 	mux.HandleFunc("/panel/api/devices", p.protected(p.cachedHandler("panel-devices", p.handleDevices)))
 	mux.HandleFunc("/panel/api/audits/export.csv", p.protected(p.auditExportCSV))
@@ -121,7 +120,6 @@ func (p *Panel) Handler() http.Handler {
 		mux.HandleFunc("/panel/api/notifications/deliveries/retry", p.protected(runner.NotificationDeliveryRetryV1JSON))
 		mux.HandleFunc("/panel/api/notifications/deliveries", p.protected(runner.NotificationDeliveriesV1JSON))
 	}
-	mux.HandleFunc("/", p.probe)
 	return mux
 }
 
@@ -375,22 +373,14 @@ func (p *Panel) handleDevices(w http.ResponseWriter, r *http.Request) {
 	p.Runner.DevicesJSON(w, r)
 }
 
-func (p *Panel) probeSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-	p.Runner.DevicesJSON(w, r)
-}
-
 func (p *Panel) cachedHandler(key string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			next(w, r)
 			return
 		}
-		// These two cached endpoints do not vary by query parameters. Keeping
-		// one bounded entry per endpoint also prevents arbitrary-query cache growth.
+		// This cached endpoint does not vary by query parameters. Keeping one
+		// bounded entry also prevents arbitrary-query cache growth.
 		cacheKey := key
 		now := time.Now()
 		p.cacheMu.Lock()
@@ -447,16 +437,6 @@ func etagMatches(header, etag string) bool {
 		}
 	}
 	return false
-}
-
-func (p *Panel) probe(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	data, _ := staticFS.ReadFile("static/probe.html")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
 }
 
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {

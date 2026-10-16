@@ -122,7 +122,6 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | :--- | :--- |
 | `/healthz` | 健康检查 |
 | `/openapi.json` | OpenAPI 描述 |
-| `/probe/summary` | 公共探针摘要（2 秒缓存，支持 `ETag`） |
 | `/.well-known/oauth-*` | OAuth Authorization Server / Protected Resource Metadata；OAuth 仅在配置 `VPS_COMMANDER_PUBLIC_URL` 后启用 |
 | `/agent/ws` | Agent WebSocket（使用设备凭据认证） |
 | `/panel/*` | 管理面板（面板密码登录，含 OAuth 客户端管理和授权撤销） |
