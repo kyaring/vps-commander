@@ -58,6 +58,7 @@
 | T-20261016-01 | MCP 返回层：溢出文件 + 返回形状收敛 + 预算按令牌计算 + 未知会话降级（tools/list 零改动） | RikkaHub-1 | internal/mcp/ internal/api/ internal/executor/ | ready（排在 sws-vault SV-20261016-05 之后） | feat/mcp-result-layer | 0 | Hark 06:40 开卡（OPC 06:35 定全部交给 RikkaHub-1） |
 | T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ internal/executor/ | blocked（等 T-01 合并） | feat/mcp-exec-async | 0 | 基线转发时填入 |
 | T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | blocked（等 T-02 开工后） | feat/mcp-toolset-v2 | 0 | 基线转发时填入 |
+| T-20261016-06 | 删除公开探针页面与 /probe/summary（OPC 10-16 选 1） | GPT | internal/web/ docs/security.md docs/api.md | reviewed-pass（代码与验收 PASS；规模 992 行需 OPC 豁免三个静态文件的删除行；合并待批准） | feat/remove-public-probe | 1 | 审核报告 docs/reviews/T-20261016-06-review.md；被审提交 f6b1075；卡基线 bb37f61 未推送 |
 | T-20261016-04 | 收紧 /probe/summary 公开返回（已取消） | GPT | internal/web/ docs/api.md docs/security.md | cancelled（OPC 10-16 改选 C，由 T-20261016-05 取代） | fix/probe-summary-allowlist | 0 | GPT 前置检查受阻（probe.js 依赖将被删字段） |
 | T-20261016-05 | 文档化公开探针接口暴露范围（已作废） | GPT | docs/security.md docs/api.md docs/roadmap.md | cancelled（OPC 10-16 改选 1，由 T-20261016-06 取代；分支 docs/probe-exposure 不合并） | docs/probe-exposure | 1 | 审核 FAIL（返工，remote_ip 漏写）已作废，GPT 无需返工；基线 e59a84e |
 | T-20261016-06 | 删除公开探针页面与 /probe/summary（取代 T-05） | GPT | internal/web/ docs/security.md docs/api.md docs/roadmap.md | ready（OPC 10-16 批准） | feat/remove-public-probe | 0 | 基线 bb37f61（含本卡） |
