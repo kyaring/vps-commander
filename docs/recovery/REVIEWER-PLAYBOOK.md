@@ -83,7 +83,7 @@
 4. **状态用词**：复核人写 **`rechecked-pass`**；**`verified` 属于终签**，留给 Hark 出。责任链要能一眼看出是谁签的哪一段。
 
 ## 6. 交接文档
-- 当前正本：docs/recovery/HANDOFF-RikkaHub-1-20261014-1740.md（持有人 Hark，22:29 自 RikkaHub-1 接班；此前为 docs/recovery/HANDOFF-Hark-20261014-0535.md，已移交）。**L2-A 起：正本只保留 YAML 摘要头 + ≤4KB 正文**（判定：`wc -c` ≤ 4096）。
+- 当前正本：docs/recovery/HANDOFF-Claude-1-20261016-1755.md（10-16 17:55 Hark 交给 Claude-1；旧正本 HANDOFF-RikkaHub-1-20261014-1740.md 已归档到 ARCHIVE 顶部）。**L2-A 起：正本只保留 YAML 摘要头 + ≤4KB 正文**（判定：`wc -c` ≤ 4096）。
 - **明细一律追加到 `docs/recovery/HANDOFF-ARCHIVE.md` 顶部**（新的在上），不要写进正本；正本只放摘要。
 - 摘要头字段：`updated` `holder` `main` `production_sha256` `production_started` `service` `open_cards` `next_batch` `archive`。
 - 每次回复 OPC 之前都要更新正本并提交、推送。
