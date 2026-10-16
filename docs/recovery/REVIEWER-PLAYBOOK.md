@@ -4,7 +4,7 @@
 
 ## 1. 角色与铁律
 - OPC（SWS-H000-opc）是唯一决策人。合并、推送以外的生产变更、部署、吊销令牌，每一步都要 OPC 明确批准：先给方案和回退，等回复「可以」或「直接下卡」。
-- 审核岗负责规划、写任务卡、独立审核、复核运维结果。不改业务代码；合并和推送只在 OPC 批准后做。
+- 审核岗负责规划、写任务卡、独立审核、复核运维结果。不改业务代码；合并只在 OPC 批准后做。**提交只在节点本地 commit；任何 git push 都要 OPC 对该次推送单独批准（OPC 10-16 19:48），交接文档也不例外。**
 - 开发者目前只有 GPT（SWS-E002-gpt），经 OAuth 接入。所有卡都写「开发者：GPT」，一张卡只派一个开发者，各卡之间改动的文件不重叠。
 - 外接 agent 不会自己领任务。每次开卡、修卡、出审核意见后，都要给 OPC 一段可以直接转发的交接消息（模板见第 4 节）。
 - 敏感信息：令牌、密码、私钥、webhook 地址一律不得进入卡、提交、日志、审核意见或聊天。不读 /etc/vps-commander/hub.env 和 notify.env 的内容，需要时只在子 shell 里 source 后使用。
@@ -20,7 +20,7 @@
 - 节点上非登录 shell 的 PATH 里没有 go，先执行 export PATH=/usr/local/go/bin:$PATH。
 - Hub 重启后 MCP 会话会失效，要重新建会话。
 - 耗时长的命令（全量测试、race）用 setsid nohup 放到后台、写日志再读，否则 MCP 调用会超时。
-- 提交身份：git -c user.name=Hark -c user.email=hark@reviewer.local（接班的人把名字换成自己的）。推送用节点 SSH key，推到 origin main。
+- 提交身份：git -c user.name=Hark -c user.email=hark@reviewer.local（接班的人把名字换成自己的）。推送用节点 SSH key 推到 origin main，**仅在 OPC 批准该次推送后**。
 
 ## 3. 任务卡风格（check-task.sh 会解析，格式不能错）
 文件：正本放 docs/tasks/T-YYYYMMDD-NN.md，看板 docs/tasks/BOARD.md 加一行；工作区副本放 plans/cards/。
@@ -83,10 +83,10 @@
 4. **状态用词**：复核人写 **`rechecked-pass`**；**`verified` 属于终签**，留给 Hark 出。责任链要能一眼看出是谁签的哪一段。
 
 ## 6. 交接文档
-- 当前正本：docs/recovery/HANDOFF-Claude-1-20261016-1755.md（10-16 17:55 Hark 交给 Claude-1；旧正本 HANDOFF-RikkaHub-1-20261014-1740.md 已归档到 ARCHIVE 顶部）。**L2-A 起：正本只保留 YAML 摘要头 + ≤4KB 正文**（判定：`wc -c` ≤ 4096）。
+- 当前正本：docs/recovery/HANDOFF-Hark-20261016-1955.md（10-16 19:44 Hark 接回；Claude-1 正本已归档到 ARCHIVE 顶部）。**L2-A 起：正本只保留 YAML 摘要头 + ≤4KB 正文**（判定：`wc -c` ≤ 4096）。
 - **明细一律追加到 `docs/recovery/HANDOFF-ARCHIVE.md` 顶部**（新的在上），不要写进正本；正本只放摘要。
 - 摘要头字段：`updated` `holder` `main` `production_sha256` `production_started` `service` `open_cards` `next_batch` `archive`。
-- 每次回复 OPC 之前都要更新正本并提交、推送。
+- 每次回复 OPC 之前都要更新正本并**本地**提交；推送等 OPC 批准。
 - 正文固定五节：当前状态（摘要）、进行中、下一批卡、非阻塞遗留（摘要）、坑（要点，完整见 §7）。
 
 ## 7. 常见坑
