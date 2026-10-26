@@ -299,7 +299,7 @@ func (b *MCPBackend) WriteFile(ctx context.Context, clientIP, device, path, cont
 			return nil, err
 		}
 	} else {
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		if err := executor.WriteFileAtomic(path, []byte(content), 0644); err != nil {
 			return nil, fmt.Errorf("write failed: %w", err)
 		}
 		n = int64(len(content))
