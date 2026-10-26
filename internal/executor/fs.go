@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +31,14 @@ type FileInfo struct {
 	Mode    string `json:"mode"`
 	ModTime int64  `json:"mod_time"`
 }
+
+// MaxSearchFileBytes caps the size of a file Search will read. Larger files are
+// skipped rather than loaded whole into memory.
+const MaxSearchFileBytes = 10 * 1024 * 1024
+
+// binaryProbeBytes is how much of a file is inspected for NUL bytes when
+// deciding whether it is binary. NULs beyond this prefix are not considered.
+const binaryProbeBytes = 8 * 1024
 
 type SearchResult struct {
 	Path string `json:"path"`
@@ -94,6 +103,15 @@ func GetFileInfo(path string) (FileInfo, error) {
 	return FileInfo{Path: path, Name: i.Name(), IsDir: i.IsDir(), Size: i.Size(), Mode: i.Mode().String(), ModTime: i.ModTime().Unix()}, nil
 }
 
+// isBinary reports whether the first binaryProbeBytes bytes contain a NUL byte.
+func isBinary(b []byte) bool {
+	probe := b
+	if len(probe) > binaryProbeBytes {
+		probe = probe[:binaryProbeBytes]
+	}
+	return bytes.IndexByte(probe, 0) >= 0
+}
+
 func Search(ctx context.Context, root, query string, maxResults int) ([]SearchResult, error) {
 	if root == "" || query == "" {
 		return nil, errors.New("root and query required")
@@ -118,8 +136,15 @@ func Search(ctx context.Context, root, query string, maxResults int) ([]SearchRe
 		if d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
+		info, err := d.Info()
+		if err != nil || info.Size() > MaxSearchFileBytes {
+			return nil
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
+			return nil
+		}
+		if isBinary(b) {
 			return nil
 		}
 		if strings.Contains(string(b), query) {
