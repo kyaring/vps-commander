@@ -28,3 +28,14 @@
 
 ## 未做
 未合并、未推送、未部署。合并顺序：01 → 02 → 04 → 03，合并前须完成 R1、R2，并经 OPC 批准。
+
+## 复审（2026-10-27 07:15 +08，第二轮）
+对象：01 485f134、02 abffb7e、04 d978ea0、05 d53d920、03 8e72dbf；规划分支 eab6573。
+- range-diff 显示变基后的原提交与上一轮逐字一致（=），本轮只审增量。
+- R1 已修复：先检查 IsRegular，再判断 nlink；补了目录用例和指向目录的符号链接用例。通过。
+- R2 已按 (b) 解决：新卡 05 把 Hub 本机的 REST file/write 和 MCP write_file 都改为 WriteFileAtomic，补了 6 个用例；文档与代码一致。通过。
+- 建议已全部落实：02 只在属主或属组不同时才 chown；04 用 LimitReader 封顶、只读普通文件、补了 FIFO 测试；文档注明不保留的属性。
+- 复现：5 张卡的 check-task 都按链上前一提交作基线，全部通过，工作区干净；go test -race 覆盖 executor 与 api，通过；以 nobody 运行 Search、WriteFileAtomic、EditBlock 的测试，通过。
+- 结论：01、02、03、04、05 全部 verified（Hark 终签）。
+- 遗留（不阻塞）：(1) 父目录带 setgid 位、且原文件属组等于进程 egid 时，会跳过 chown，新文件的属组会变成目录的属组，属于罕见边角；(2) 卡 01、02 文件里状态仍是 draft，待确认项没有回写到卡里，OPC 的决定只记录在提交信息中，建议回写。
+- 未合并、未推送、未部署；合并顺序 01→02→04→05→03（docs/hardening-notes 头 8e72dbf 已含全部），规划分支 eab6573 一并合并；每一步都需 OPC 批准。
