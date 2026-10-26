@@ -1676,7 +1676,7 @@ func (s *Server) fileWrite(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if err := os.WriteFile(req.Path, []byte(req.Content), 0644); err != nil {
+		if err := executor.WriteFileAtomic(req.Path, []byte(req.Content), 0644); err != nil {
 			http.Error(w, "write failed: "+err.Error(), 500)
 			return
 		}

@@ -1,15 +1,18 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type Entry struct {
@@ -28,6 +31,14 @@ type FileInfo struct {
 	Mode    string `json:"mode"`
 	ModTime int64  `json:"mod_time"`
 }
+
+// MaxSearchFileBytes caps the size of a file Search will read. Larger files are
+// skipped rather than loaded whole into memory.
+const MaxSearchFileBytes = 10 * 1024 * 1024
+
+// binaryProbeBytes is how much of a file is inspected for NUL bytes when
+// deciding whether it is binary. NULs beyond this prefix are not considered.
+const binaryProbeBytes = 8 * 1024
 
 type SearchResult struct {
 	Path string `json:"path"`
@@ -92,6 +103,31 @@ func GetFileInfo(path string) (FileInfo, error) {
 	return FileInfo{Path: path, Name: i.Name(), IsDir: i.IsDir(), Size: i.Size(), Mode: i.Mode().String(), ModTime: i.ModTime().Unix()}, nil
 }
 
+// readSearchFile reads at most MaxSearchFileBytes+1 bytes. The file may grow
+// between the size check and the read, so the reader itself enforces the cap.
+// It reports false when the file cannot be read or is over the cap.
+func readSearchFile(path string) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxSearchFileBytes+1))
+	if err != nil || int64(len(b)) > MaxSearchFileBytes {
+		return nil, false
+	}
+	return b, true
+}
+
+// isBinary reports whether the first binaryProbeBytes bytes contain a NUL byte.
+func isBinary(b []byte) bool {
+	probe := b
+	if len(probe) > binaryProbeBytes {
+		probe = probe[:binaryProbeBytes]
+	}
+	return bytes.IndexByte(probe, 0) >= 0
+}
+
 func Search(ctx context.Context, root, query string, maxResults int) ([]SearchResult, error) {
 	if root == "" || query == "" {
 		return nil, errors.New("root and query required")
@@ -113,11 +149,19 @@ func Search(ctx context.Context, root, query string, maxResults int) ([]SearchRe
 		if d.IsDir() {
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
+		// Only regular files. Symlinks, FIFOs, sockets and device nodes are skipped:
+		// opening a FIFO or a device for reading can block the walk indefinitely.
+		if !d.Type().IsRegular() {
 			return nil
 		}
-		b, err := os.ReadFile(path)
-		if err != nil {
+		if info, err := d.Info(); err != nil || info.Size() > MaxSearchFileBytes {
+			return nil
+		}
+		b, ok := readSearchFile(path)
+		if !ok {
+			return nil
+		}
+		if isBinary(b) {
 			return nil
 		}
 		if strings.Contains(string(b), query) {
@@ -137,9 +181,10 @@ func Search(ctx context.Context, root, query string, maxResults int) ([]SearchRe
 }
 
 type FileReadItem struct {
-	Path    string `json:"path"`
-	Content string `json:"content,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Path      string `json:"path"`
+	Content   string `json:"content,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 type ProcessInfo struct {
 	PID      int    `json:"pid"`
@@ -148,6 +193,8 @@ type ProcessInfo struct {
 	MemoryKB uint64 `json:"memory_kb,omitempty"`
 }
 
+// ReadMultipleFiles reads at most limit bytes from each path. Reads are bounded:
+// a file larger than limit is never loaded in full.
 func ReadMultipleFiles(paths []string, limit int64) []FileReadItem {
 	if limit <= 0 || limit > 1024*1024 {
 		limit = 256 * 1024
@@ -155,19 +202,50 @@ func ReadMultipleFiles(paths []string, limit int64) []FileReadItem {
 	out := make([]FileReadItem, 0, len(paths))
 	for _, p := range paths {
 		v := FileReadItem{Path: p}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			v.Error = e.Error()
+		content, truncated, err := readLimited(p, limit)
+		if err != nil {
+			v.Error = err.Error()
 		} else {
-			if int64(len(b)) > limit {
-				b = b[:limit]
-			}
-			v.Content = string(b)
+			v.Content = content
+			v.Truncated = truncated
 		}
 		out = append(out, v)
 	}
 	return out
 }
+
+// readLimited reads up to limit bytes. It reads limit+1 bytes so truncation is
+// detected exactly without reading the rest of the file.
+func readLimited(path string, limit int64) (string, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return "", false, err
+	}
+	if int64(len(b)) <= limit {
+		return string(b), false, nil
+	}
+	return string(trimPartialUTF8(b[:limit])), true, nil
+}
+
+// trimPartialUTF8 drops an incomplete multi-byte character at the end of b so a
+// truncated read still ends on a character boundary.
+func trimPartialUTF8(b []byte) []byte {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			return b
+		}
+	}
+	return b
+}
+
 func CreateDirectory(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("path required")
