@@ -122,14 +122,14 @@ curl -s https://hub.example.com/api/v1/exec \
 | :--- | :--- | :--- | :--- |
 | `list_devices` | `devices:read` | Low | 无 |
 | `read_file` | `files:read` | Low | `device`、`path`；`offset`；`limit` 默认 256 KiB，最大 1 MiB |
-| `read_multiple_files` | `files:read` | Low | `device`、`paths`（数组）、`limit`（单文件） |
+| `read_multiple_files` | `files:read` | Low | `device`、`paths`（数组）、`limit`（单文件）；返回项含 `truncated`（截断时为 true） |
 | `diagnostic_command` | `files:read` | Low | `device`、`action`（`docker_ps`、`docker_logs`、`docker_inspect`、`systemctl_status`、`journalctl`、`ss_listen`、`df`、`free`、`uptime`）、`target`、`lines`（1–500） |
 | `list_agent_mcp` | `files:read` | Low | `device` |
 | `list_processes` | `process` | Low | `device` |
 | `create_directory` | `files:write` | Medium | `device`、`path` |
 | `move_file` | `files:write` | Medium | `device`、`source`、`destination` |
-| `edit_block` | `files:write` | Medium | `device`、`path`、`old_text`（须唯一匹配）、`new_text`；原子写回 |
-| `write_file` | `files:write` | Medium | `device`、`path`、`content`；创建或整体覆写 |
+| `edit_block` | `files:write` | Medium | `device`、`path`、`old_text`（须唯一匹配）、`new_text`；原子写回；符号链接写入真实目标（链接保持不变）；悬空链接报错；硬链接返回 `hardlinked file refused` |
+| `write_file` | `files:write` | Medium | `device`、`path`、`content`；创建或整体覆写；原子写入（临时文件 + rename），保留已有文件的权限与属主，新建文件为 0644；符号链接写入真实目标；硬链接与非普通文件被拒绝 |
 | `call_agent_mcp` | `mcp:call` | Medium | `device`、`server`、`tool`、`arguments`（对象） |
 | `exec_command` | `exec` | High | `device`、`command`、`workdir`、`timeout`（秒，最大 300） |
 
@@ -138,7 +138,7 @@ curl -s https://hub.example.com/api/v1/exec \
 ### 使用建议
 
 - 修改配置优先用 `edit_block`，而不是 `write_file` 整体覆写。
-- 需要长期运行的后台命令请自行重定向输出：`nohup cmd > /var/log/cmd.log 2>&1 < /dev/null &`。一次性 exec 中未重定向的后台子进程会让调用一直等到超时（通常返回 `exit_code=124`）并被一起杀掉。
+- 需要长期运行的后台命令请自行重定向输出：`nohup cmd > /var/log/cmd.log 2>&1 < /dev/null &`。一次性 exec 中未重定向的后台子进程不会让调用一直等待：命令本身正常退出后，调用最多再等 2 秒即返回 shell 的退出码；只有超时才会连同进程组一起被 SIGKILL（返回 `exit_code=124`）。
 - 重启服务、删除文件、改防火墙等高风险操作，客户端应先向人确认。
 
 ## 7. Agent MCP

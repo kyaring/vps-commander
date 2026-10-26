@@ -29,8 +29,8 @@
 | `/api/v1/file/list` | POST | `files:read` | `{device, path, recursive?, max_entries?}` |
 | `/api/v1/file/info` | POST | `files:read` | `{device, path}` |
 | `/api/v1/file/search` | POST | `files:read` | `{device, root, query, max_results?}` |
-| `/api/v1/file/write` | POST | `files:write` | `{device, path, content}`，创建或整体覆写 |
-| `/api/v1/devices/file/edit_block` | POST | `files:write` | `{device, path, old_text, new_text}`，`old_text` 必须唯一匹配 |
+| `/api/v1/file/write` | POST | `files:write` | `{device, path, content}`，创建或整体覆写；原子写入（临时文件 + fsync + rename）；保留已有文件的权限与属主，新建文件为 0644；符号链接写入真实目标；硬链接与非普通文件被拒绝 |
+| `/api/v1/devices/file/edit_block` | POST | `files:write` | `{device, path, old_text, new_text}`，`old_text` 必须唯一匹配；符号链接写入真实目标（链接保持不变）；悬空链接报错；硬链接（nlink > 1）拒绝修改，返回 `hardlinked file refused` |
 | `/api/v1/process/session?action=start\|read\|input\|stop\|list` | POST | `process` | `{device, session_id?, command?, workdir?, data?}` |
 | `/api/v1/mcp/list` | GET | `mcp:call` | `?device=`，列出该 Agent 挂载的 MCP 服务 |
 | `/api/v1/mcp/call` | POST | `mcp:call` | `{device, server, tool, arguments}` |
