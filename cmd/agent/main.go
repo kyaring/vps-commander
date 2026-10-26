@@ -575,7 +575,7 @@ func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRunti
 		if len(p.Content) > 1024*1024 {
 			return sendError(writeJSON, msg.ID, errors.New("content too large"))
 		}
-		if err := os.WriteFile(p.Path, []byte(p.Content), 0644); err != nil {
+		if err := executor.WriteFileAtomic(p.Path, []byte(p.Content), 0644); err != nil {
 			return sendError(writeJSON, msg.ID, err)
 		}
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"bytes": len(p.Content)}})
