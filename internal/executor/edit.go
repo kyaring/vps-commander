@@ -44,6 +44,9 @@ func EditBlock(path, oldText, newText string, expectedHash ...string) (EditBlock
 	if err != nil {
 		return EditBlockResult{}, err
 	}
+	if !info.Mode().IsRegular() {
+		return EditBlockResult{}, fmt.Errorf("not a regular file: %s", resolved)
+	}
 	if linkCount(info) > 1 {
 		return EditBlockResult{}, ErrHardlinked
 	}

@@ -270,3 +270,26 @@ func TestReadMultipleFilesHugeSparseFileIsBounded(t *testing.T) {
 		t.Fatalf("read took %v, want bounded", elapsed)
 	}
 }
+
+// R1: a directory, directly or through a symlink, is refused as not a regular file.
+// Directories have nlink >= 2, so the regular-file check must come before the hardlink check.
+func TestEditBlockRefusesDirectory(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "sublink")
+	if err := os.Symlink(sub, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{sub, link} {
+		_, err := EditBlock(p, "a", "b")
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("EditBlock(%s): err = %v, want not a regular file", p, err)
+		}
+		if errors.Is(err, ErrHardlinked) {
+			t.Fatalf("EditBlock(%s): misreported as hardlink: %v", p, err)
+		}
+	}
+}
