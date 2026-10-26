@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -161,5 +162,26 @@ func TestWriteFileAtomicRefusesHardlink(t *testing.T) {
 		if string(got) != "orig" {
 			t.Fatalf("%s = %q, want unchanged", p, got)
 		}
+	}
+}
+
+// Owner/group already equal to the process: the write succeeds and ownership is unchanged.
+func TestWriteFileAtomicSameOwnerUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "own.txt")
+	writeFile(t, path, "a", 0o644)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFileAtomic(path, []byte("b"), 0o644); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bs, as := before.Sys().(*syscall.Stat_t), after.Sys().(*syscall.Stat_t)
+	if bs.Uid != as.Uid || bs.Gid != as.Gid {
+		t.Fatalf("owner changed: %d:%d -> %d:%d", bs.Uid, bs.Gid, as.Uid, as.Gid)
 	}
 }

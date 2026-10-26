@@ -16,8 +16,11 @@ import (
 //   - A dangling symbolic link is an error; nothing is created.
 //   - A hardlinked file is refused (ErrHardlinked), matching EditBlock.
 //   - A path that exists but is not a regular file (directory, device, FIFO) is refused.
-//   - An existing file keeps its permission bits and owner; newFileMode applies
-//     only when the target does not exist yet.
+//   - An existing file keeps its permission bits (9 bits), owner and group;
+//     newFileMode applies only when the target does not exist yet.
+//   - Not preserved: setuid/setgid/sticky bits, extended attributes, ACLs.
+//   - chown is attempted only when the owner or group differs from the
+//     current process, so a process writing its own files never needs chown.
 func WriteFileAtomic(path string, data []byte, newFileMode os.FileMode) error {
 	if path == "" {
 		return errors.New("path required")
@@ -69,7 +72,7 @@ func WriteFileAtomic(path string, data []byte, newFileMode os.FileMode) error {
 		_ = tmp.Close()
 		return err
 	}
-	if owner != nil {
+	if owner != nil && (int(owner.Uid) != os.Geteuid() || int(owner.Gid) != os.Getegid()) {
 		if err := tmp.Chown(int(owner.Uid), int(owner.Gid)); err != nil {
 			_ = tmp.Close()
 			return err
