@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 type Entry struct {
@@ -137,9 +139,10 @@ func Search(ctx context.Context, root, query string, maxResults int) ([]SearchRe
 }
 
 type FileReadItem struct {
-	Path    string `json:"path"`
-	Content string `json:"content,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Path      string `json:"path"`
+	Content   string `json:"content,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 type ProcessInfo struct {
 	PID      int    `json:"pid"`
@@ -148,6 +151,8 @@ type ProcessInfo struct {
 	MemoryKB uint64 `json:"memory_kb,omitempty"`
 }
 
+// ReadMultipleFiles reads at most limit bytes from each path. Reads are bounded:
+// a file larger than limit is never loaded in full.
 func ReadMultipleFiles(paths []string, limit int64) []FileReadItem {
 	if limit <= 0 || limit > 1024*1024 {
 		limit = 256 * 1024
@@ -155,19 +160,50 @@ func ReadMultipleFiles(paths []string, limit int64) []FileReadItem {
 	out := make([]FileReadItem, 0, len(paths))
 	for _, p := range paths {
 		v := FileReadItem{Path: p}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			v.Error = e.Error()
+		content, truncated, err := readLimited(p, limit)
+		if err != nil {
+			v.Error = err.Error()
 		} else {
-			if int64(len(b)) > limit {
-				b = b[:limit]
-			}
-			v.Content = string(b)
+			v.Content = content
+			v.Truncated = truncated
 		}
 		out = append(out, v)
 	}
 	return out
 }
+
+// readLimited reads up to limit bytes. It reads limit+1 bytes so truncation is
+// detected exactly without reading the rest of the file.
+func readLimited(path string, limit int64) (string, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return "", false, err
+	}
+	if int64(len(b)) <= limit {
+		return string(b), false, nil
+	}
+	return string(trimPartialUTF8(b[:limit])), true, nil
+}
+
+// trimPartialUTF8 drops an incomplete multi-byte character at the end of b so a
+// truncated read still ends on a character boundary.
+func trimPartialUTF8(b []byte) []byte {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			return b
+		}
+	}
+	return b
+}
+
 func CreateDirectory(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("path required")
