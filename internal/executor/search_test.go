@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // 要求 1-a: files above MaxSearchFileBytes are skipped; smaller matching files still match.
@@ -104,5 +106,34 @@ func TestSearchMaxResultsAndLineNumber(t *testing.T) {
 func TestSearchMissingRootErrors(t *testing.T) {
 	if _, err := Search(context.Background(), filepath.Join(t.TempDir(), "nope"), "x", 10); err == nil {
 		t.Fatal("want error for missing root")
+	}
+}
+
+// Hark 建议：遍历时不得打开 FIFO（会永久阻塞）；其余普通文件照常搜索。
+func TestSearchSkipsFIFO(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0o644); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "ok.txt"), "needle\n", 0o644)
+	type out struct {
+		res []SearchResult
+		err error
+	}
+	done := make(chan out, 1)
+	go func() {
+		res, err := Search(context.Background(), dir, "needle", 100)
+		done <- out{res, err}
+	}()
+	select {
+	case o := <-done:
+		if o.err != nil {
+			t.Fatalf("Search: %v", o.err)
+		}
+		if len(o.res) != 1 || filepath.Base(o.res[0].Path) != "ok.txt" {
+			t.Fatalf("results = %+v, want only ok.txt", o.res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Search blocked on a FIFO")
 	}
 }

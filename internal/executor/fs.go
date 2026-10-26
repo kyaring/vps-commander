@@ -103,6 +103,22 @@ func GetFileInfo(path string) (FileInfo, error) {
 	return FileInfo{Path: path, Name: i.Name(), IsDir: i.IsDir(), Size: i.Size(), Mode: i.Mode().String(), ModTime: i.ModTime().Unix()}, nil
 }
 
+// readSearchFile reads at most MaxSearchFileBytes+1 bytes. The file may grow
+// between the size check and the read, so the reader itself enforces the cap.
+// It reports false when the file cannot be read or is over the cap.
+func readSearchFile(path string) ([]byte, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, MaxSearchFileBytes+1))
+	if err != nil || int64(len(b)) > MaxSearchFileBytes {
+		return nil, false
+	}
+	return b, true
+}
+
 // isBinary reports whether the first binaryProbeBytes bytes contain a NUL byte.
 func isBinary(b []byte) bool {
 	probe := b
@@ -133,15 +149,16 @@ func Search(ctx context.Context, root, query string, maxResults int) ([]SearchRe
 		if d.IsDir() {
 			return nil
 		}
-		if d.Type()&os.ModeSymlink != 0 {
+		// Only regular files. Symlinks, FIFOs, sockets and device nodes are skipped:
+		// opening a FIFO or a device for reading can block the walk indefinitely.
+		if !d.Type().IsRegular() {
 			return nil
 		}
-		info, err := d.Info()
-		if err != nil || info.Size() > MaxSearchFileBytes {
+		if info, err := d.Info(); err != nil || info.Size() > MaxSearchFileBytes {
 			return nil
 		}
-		b, err := os.ReadFile(path)
-		if err != nil {
+		b, ok := readSearchFile(path)
+		if !ok {
 			return nil
 		}
 		if isBinary(b) {
