@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/cluster"
+	"github.com/wjyhk/vps-commander/internal/executor"
 )
 
 // fakeAgent stands in for a remote node. It implements the agent behaviour the Hub relies on:
@@ -431,5 +433,32 @@ func TestRemoteCancelFailureIsAudited(t *testing.T) {
 	}
 	if n := countAudit(t, s, "action = 'exec_cancel' AND result = 'error' AND error_msg LIKE '%kill failed%'"); n != 1 {
 		t.Fatalf("cancel-failure audit rows = %d, want 1", n)
+	}
+}
+
+// A process that exits on its own after the kill deadline is exited with its exit code; only a
+// session the agent removed at expiry (ttlEnded) is classified agent_session_ttl.
+func TestRemoteSettleClassifiesNaturalExitAfterDeadline(t *testing.T) {
+	f := newFakeAgent()
+	s := newRemoteTestServer(t, f)
+	m := s.jobsFor()
+	p := auth.Principal{Type: "api_token", ID: "tok-A", Name: "tok-A", TokenID: "tok-A"}
+	mk := func(id string) *execJob {
+		j := &execJob{ID: id, Owner: "tok-A", Device: "node-x", Status: "running", Remote: true,
+			Started: time.Now().Add(-40 * time.Minute), ClientIP: "127.0.0.1", Summary: "x"}
+		m.mu.Lock()
+		m.jobs[id] = j
+		m.mu.Unlock()
+		return j
+	}
+	natural := mk("job-natural")
+	m.settleRemote(s, p, natural, executor.Result{ExitCode: 0, Stdout: "ok"}, "", false)
+	if natural.Status != "exited" || natural.ExitCode != 0 || natural.Reason != "" {
+		t.Fatalf("natural exit after deadline: status=%s reason=%s exit=%d", natural.Status, natural.Reason, natural.ExitCode)
+	}
+	expired := mk("job-expired")
+	m.settleRemote(s, p, expired, executor.Result{}, "", true)
+	if expired.Status != "killed" || expired.Reason != "agent_session_ttl" {
+		t.Fatalf("agent expiry: status=%s reason=%s", expired.Status, expired.Reason)
 	}
 }

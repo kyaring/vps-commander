@@ -101,19 +101,19 @@ func (m *execJobs) monitorRemote(s *Server, rp remoteProcessAPI, p auth.Principa
 		cancel()
 		switch {
 		case err != nil && !rp.Online(j.Device):
-			m.settleRemote(s, p, j, executor.Result{}, "node_offline")
+			m.settleRemote(s, p, j, executor.Result{}, "node_offline", false)
 			return
 		case err != nil && strings.Contains(err.Error(), "session not found"):
 			// The agent removed the session. If that happened at its expiry, the agent ended the process.
 			if m.now().Sub(j.Started) >= m.remoteKillAfter {
-				m.settleRemote(s, p, j, executor.Result{}, "")
+				m.settleRemote(s, p, j, executor.Result{}, "", true)
 				return
 			}
-			m.settleRemote(s, p, j, executor.Result{}, "session_gone")
+			m.settleRemote(s, p, j, executor.Result{}, "session_gone", false)
 			return
 		case err == nil && !out.Running:
 			res := executor.Result{ExitCode: out.ExitCode, Stdout: out.Stdout, Stderr: out.Stderr, DurationMS: time.Since(j.Started).Milliseconds()}
-			m.settleRemote(s, p, j, res, "")
+			m.settleRemote(s, p, j, res, "", false)
 			return
 		}
 		m.mu.Lock()
@@ -140,7 +140,9 @@ func (m *execJobs) monitorRemote(s *Server, rp remoteProcessAPI, p auth.Principa
 
 // settleRemote records the outcome of a remote job, stores its output, writes the end audit and
 // marks it finished. lostReason is set when the process state can no longer be known.
-func (m *execJobs) settleRemote(s *Server, p auth.Principal, j *execJob, res executor.Result, lostReason string) {
+// ttlEnded is true only when the agent removed the session at its expiry; a process that exits on
+// its own is never classified as agent_session_ttl, whatever the elapsed time.
+func (m *execJobs) settleRemote(s *Server, p auth.Principal, j *execJob, res executor.Result, lostReason string, ttlEnded bool) {
 	shaped, _ := executor.ShapeOutput(res.Stdout, res.Stderr, "raw", executor.DefaultOutputBytes)
 	spill := ""
 	if lostReason == "" {
@@ -165,7 +167,7 @@ func (m *execJobs) settleRemote(s *Server, p auth.Principal, j *execJob, res exe
 		status, reason = "lost", lostReason
 	case j.killReason != "":
 		status, reason, timedOut = "killed", j.killReason, j.killReason == "timeout"
-	case now.Sub(j.Started) >= m.remoteKillAfter:
+	case ttlEnded:
 		status, reason = "killed", "agent_session_ttl"
 	}
 	j.Status, j.Reason, j.TimedOut = status, reason, timedOut
