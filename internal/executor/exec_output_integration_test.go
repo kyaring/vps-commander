@@ -49,11 +49,11 @@ func TestHTTPExecOutputModesAndDefaultTruncation(t *testing.T) {
 		t.Fatalf("default truncation metadata: %#v", got)
 	}
 	count := call(`{"command":"printf 'abc\\ndef'","output_mode":"count"}`)
-	if len(count) != 3 || count["total_bytes"] != float64(7) || count["total_lines"] != float64(2) {
+	if count["total_bytes"] != float64(7) || count["total_lines"] != float64(2) || count["stdout"] != "" || count["stderr"] != "" || count["truncated"] != false || count["spill_path"] != "" || count["sha256"] == nil {
 		t.Fatalf("count response: %#v", count)
 	}
 	none := call(`{"command":"printf 'abc'","output_mode":"none"}`)
-	if none["stdout"] != nil || none["exit_code"] != float64(0) || none["sha256"] == nil {
+	if none["stdout"] != "" || none["exit_code"] != float64(0) || none["sha256"] == nil {
 		t.Fatalf("none response: %#v", none)
 	}
 }
@@ -88,7 +88,7 @@ func TestHTTPExecDedupHitAndExpiry(t *testing.T) {
 	if got := call(); got["stdout"] != "done" {
 		t.Fatalf("first response: %#v", got)
 	}
-	if got := call(); got["unchanged"] != true || got["hash"] == nil || got["first_seen"] == nil || got["cached_bytes"] != float64(4) || got["exit_code"] != float64(0) || got["stdout"] != nil {
+	if got := call(); got["unchanged"] != true || got["hash"] == nil || got["first_seen"] == nil || got["cached_bytes"] != float64(4) || got["exit_code"] != float64(0) || got["stdout"] != "" {
 		t.Fatalf("dedup response: %#v", got)
 	}
 	time.Sleep(1100 * time.Millisecond)

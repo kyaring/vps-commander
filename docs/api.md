@@ -18,11 +18,16 @@
 
 正文模式返回 `truncated`、`total_bytes`、`total_lines` 和 `sha256` 元数据。`count` 只返回 `total_bytes`、`total_lines`、`exit_code`；`none` 返回退出码与元数据，不返回正文。需要大输出时显式提高 `max_bytes`（最大 1 MiB）。
 
+exec 的返回字段在所有 `output_mode` 下都完全相同，字段始终存在：`device`、`exit_code`、`stdout`、`stderr`、`duration_ms`、`truncated`、`total_bytes`、`total_lines`、`sha256`、`spill_path`、`spill_device`。`sha256` 为 stdout 与 stderr 拼接后的字节流的前 12 位十六进制（格式与之前相同）。`count` 与 `none` 模式下 `stdout`、`stderr` 均为空串。MCP 的 `tools/call` 结果在 exec 成功时同时返回 `structuredContent`（与 text 内容相同的对象）。
+
+输出被截断（`truncated=true`）时，Hub 把完整的 stdout+stderr 写入数据库文件所在目录下的 `mcp-spill/`：目录权限 0700，文件名随机，文件权限 0600。返回的 `spill_path` 为其绝对路径，`spill_device` 固定为 `@hub-spill`。读取方式：`read_file`（或 `POST /api/v1/file/read`）传入 `device=@hub-spill`、`path=<spill_path>`、`offset`、`limit` 分页读取。`@hub-spill` 不要求在令牌的设备白名单中，但仍需要 `files:read` scope。溢出文件保留 24 小时，目录总量上限 256 MiB，超出时先删除最旧的文件。Hub 重启后溢出文件不再可读。溢出文件只对写入它的令牌可见：其他令牌读取、文件不存在、已过期三种情况返回同一个错误 `spill file not found or expired`。溢出文件写入失败时 `spill_path` 为空串，命令结果照常返回。
+
+
 
 | 接口 | 方法 | scope | 请求体 / 说明 |
 | :--- | :--- | :--- | :--- |
 | `/api/v1/devices` | GET | `devices:read` | 设备列表、状态、架构、国家、资源画像 |
-| `/api/v1/session/stats` | GET | 任意有效令牌 | 当前调用方会话的工具调用数、响应字节、粗估 token 数、回传字节最多的 5 个工具与预算状态；不需要新增 scope |
+| `/api/v1/session/stats` | GET | 任意有效令牌 | 该令牌所有未过期会话的工具调用数、响应字节、粗估 token 数、回传字节最多的 5 个工具与预算状态；不需要新增 scope |
 | `/api/v1/session/memo` | GET / POST | 任意有效令牌 | 会话级内存便签；不需要新增 scope；GET 带 key 读值，不带 key 只列元数据 |
 | `/api/v1/exec` | POST | `exec` | `{device, command, workdir?, timeout?, output_mode?, max_bytes?, dedup_window_seconds?}`；`timeout` 秒默认 30、最大 300；输出参数见下文 |
 | `/api/v1/file/read` | POST | `files:read` | `{device, path, offset?, limit?}`，`limit` 默认 256 KiB、最大 1 MiB；返回 `content, bytes, total_size, has_more, eof` |
@@ -72,6 +77,11 @@ MCP 工具响应以及 JSON 对象形式的 HTTP API 响应，在会话累计字
 ## 会话级 scratchpad（memo_set / memo_get）
 
 便签只存在 Hub 内存，重启后清空，不写数据库。MCP 会话按 `Mcp-Session-Id` 归并并校验令牌归属；普通 HTTP 按「令牌 + `RemoteAddr`」归并。任何有效令牌均可使用，不新增 scope。
+
+Streamable HTTP 的 `Mcp-Session-Id` 处理：未知或已过期的会话 id 不再返回 404。请求在新会话中照常执行，响应头 `Mcp-Session-Id` 返回新 id，新会话归当前令牌所有。会话存在但属于其他令牌时仍返回 403，不会降级或复用。无效令牌仍返回 401。`DELETE` 一个未知或已结束的会话返回 204（幂等，不新建会话）。旧版 SSE 端点 `/mcp/message` 的行为不变。
+
+预算统计按令牌汇总：`/api/v1/session/stats` 与预算告警合计该令牌所有未过期会话的字节。某会话的闲置超时到期后，其字节不再计入。`session_id` 为请求所用的会话，`started_at` 为该令牌最早会话的开始时间。
+
 
 - `POST /api/v1/session/memo`：写入或覆盖。JSON：`{"key":"checked_sha","value":"已核对结论；sha=abc123","ttl_seconds":3600}`；`ttl_seconds` 可省略，设置后到期惰性清理。成功返回 `{"key":"checked_sha","bytes":27,"expires_at":"2026-10-14T16:30:00Z"}`，未设置 TTL 时省略 `expires_at`。
 - `GET /api/v1/session/memo?key=checked_sha`：读取指定便签，返回 `key`、`value`、`bytes`、`updated_at`；不存在返回 `404`。

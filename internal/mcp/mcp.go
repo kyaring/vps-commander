@@ -108,9 +108,19 @@ type TextContent struct {
 }
 
 type CallToolResult struct {
-	Content       []TextContent `json:"content"`
-	IsError       bool          `json:"isError,omitempty"`
-	BudgetWarning string        `json:"budget_warning,omitempty"`
+	Content           []TextContent `json:"content"`
+	IsError           bool          `json:"isError,omitempty"`
+	BudgetWarning     string        `json:"budget_warning,omitempty"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
+}
+
+// structuredContentFor returns the structured form of a successful exec result. The same
+// object is also rendered as text, so older clients keep working.
+func structuredContentFor(tool string, res any, isErr bool) any {
+	if tool == "exec_command" && !isErr {
+		return res
+	}
+	return nil
 }
 
 // Backend interface for invoking actions
@@ -341,6 +351,10 @@ type SessionBudgetStats struct {
 
 const defaultSessionBudgetBytes int64 = 2097152
 const sessionBudgetIdleTTL = 24 * time.Hour
+
+// SpillDeviceName is the reserved device name for Hub-local spill files (truncated exec output).
+// It is not a registered node; reads with this name are served by the Hub from its own disk.
+const SpillDeviceName = "@hub-spill"
 const defaultHTTPSessionIdleTTL = 30 * time.Minute
 
 type Server struct {
@@ -392,10 +406,10 @@ func NewServer(backend ActionBackend, authMgr *auth.Manager) *Server {
 	}
 }
 
-// sessionBudgetKey is the shared identity function for HTTP stats and memo:
+// sessionMemoKey is the shared identity function for HTTP stats and memo:
 // HTTP callers are keyed by authenticated token ID plus client IP (never port);
 // MCP callers remain keyed by their server-issued MCP session ID.
-func sessionBudgetKey(tokenID, sessionID, remoteAddr string) string {
+func sessionMemoKey(tokenID, sessionID, remoteAddr string) string {
 	if sessionID != "" {
 		return "mcp:" + sessionID
 	}
@@ -409,7 +423,9 @@ func sessionBudgetKey(tokenID, sessionID, remoteAddr string) string {
 	return "http:" + tokenID + "\x00" + clientIP
 }
 
-func (s *Server) budgetRecordLocked(key, tokenID, sessionID string, now time.Time, create bool) *sessionBudgetRecord {
+// pruneBudgetsLocked removes every budget record whose idle TTL has passed.
+// Callers must hold budgetMu.
+func (s *Server) pruneBudgetsLocked(now time.Time) {
 	for oldKey, record := range s.sessionBudgets {
 		idleTTL := sessionBudgetIdleTTL
 		isHTTPSession := strings.HasPrefix(oldKey, "http:")
@@ -427,6 +443,10 @@ func (s *Server) budgetRecordLocked(key, tokenID, sessionID string, now time.Tim
 			}
 		}
 	}
+}
+
+func (s *Server) budgetRecordLocked(key, tokenID, sessionID string, now time.Time, create bool) *sessionBudgetRecord {
+	s.pruneBudgetsLocked(now)
 	if record := s.sessionBudgets[key]; record != nil {
 		if record.ownerTokenID != tokenID {
 			return nil
@@ -457,7 +477,7 @@ func (s *Server) EnsureSessionBudget(tokenID, sessionID string, startedAt time.T
 	if now.IsZero() {
 		now = time.Now()
 	}
-	key := sessionBudgetKey(tokenID, sessionID, "")
+	key := sessionMemoKey(tokenID, sessionID, "")
 	if s.sessionBudgets[key] == nil {
 		s.sessionBudgets[key] = &sessionBudgetRecord{sessionID: sessionID, ownerTokenID: tokenID, startedAt: now, lastActivity: now, tools: make(map[string]*sessionToolAggregate)}
 	}
@@ -466,18 +486,57 @@ func (s *Server) EnsureSessionBudget(tokenID, sessionID string, startedAt time.T
 // SessionBudgetWarning returns a warning only after previously recorded bytes
 // strictly exceed the configured limit. The response that crosses the limit
 // is therefore not warned; subsequent tool responses are.
+// tokenBudget is the sum over every live session owned by one token.
+type tokenBudget struct {
+	bytes     int64
+	calls     int
+	tools     map[string]*sessionToolAggregate
+	startedAt time.Time
+}
+
+// tokenBudgetLocked sums the budget of every session owned by tokenID that has not
+// passed its idle TTL. Expired records are pruned first, so they drop out of the total.
+// The stored key is still per session; only the reported total is per token.
+// Callers must hold budgetMu.
+func (s *Server) tokenBudgetLocked(tokenID string, now time.Time) tokenBudget {
+	s.pruneBudgetsLocked(now)
+	out := tokenBudget{tools: make(map[string]*sessionToolAggregate)}
+	for _, record := range s.sessionBudgets {
+		if record.ownerTokenID != tokenID {
+			continue
+		}
+		out.bytes += record.bytes
+		out.calls += record.calls
+		if out.startedAt.IsZero() || record.startedAt.Before(out.startedAt) {
+			out.startedAt = record.startedAt
+		}
+		for name, agg := range record.tools {
+			t := out.tools[name]
+			if t == nil {
+				t = &sessionToolAggregate{}
+				out.tools[name] = t
+			}
+			t.calls += agg.calls
+			t.bytes += agg.bytes
+		}
+	}
+	return out
+}
+
+// SessionBudgetWarning returns a warning only after the token's recorded bytes, summed over
+// its live sessions, strictly exceed the configured limit. The response that crosses the
+// limit is not warned; subsequent tool responses are. The budget only warns, never blocks.
 func (s *Server) SessionBudgetWarning(tokenID, sessionID, remoteAddr string) string {
 	if tokenID == "" {
 		return ""
 	}
 	s.budgetMu.Lock()
 	defer s.budgetMu.Unlock()
-	now := time.Now()
-	record := s.budgetRecordLocked(sessionBudgetKey(tokenID, sessionID, remoteAddr), tokenID, sessionID, now, false)
-	if record == nil || record.bytes <= s.sessionBudgetLimit {
+	agg := s.tokenBudgetLocked(tokenID, time.Now())
+	if agg.bytes <= s.sessionBudgetLimit {
 		return ""
 	}
-	return fmt.Sprintf("session budget exceeded: %s / %s; consider narrower queries (output_mode=count, dedup_window_seconds)", formatSessionBudgetBytes(record.bytes), formatSessionBudgetBytes(s.sessionBudgetLimit))
+	return fmt.Sprintf("session budget exceeded: %s / %s; consider narrower queries (output_mode=count, dedup_window_seconds)", formatSessionBudgetBytes(agg.bytes), formatSessionBudgetBytes(s.sessionBudgetLimit))
 }
 
 func formatSessionBudgetBytes(n int64) string {
@@ -500,7 +559,7 @@ func (s *Server) RecordSessionResponse(tokenID, sessionID, remoteAddr, toolName 
 	s.budgetMu.Lock()
 	defer s.budgetMu.Unlock()
 	now := time.Now()
-	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	key := sessionMemoKey(tokenID, sessionID, remoteAddr)
 	record := s.budgetRecordLocked(key, tokenID, sessionID, now, true)
 	if record == nil {
 		return
@@ -526,6 +585,9 @@ func (s *Server) RecordSessionResponse(tokenID, sessionID, remoteAddr, toolName 
 // SessionBudgetStats returns only the requesting token's own session. An MCP
 // session ID must already exist and be owned by that token; HTTP sessions are
 // keyed by token ID and the current connection's remote address.
+// SessionBudgetStats reports the requesting token's budget over all of its live sessions.
+// sessionID (when given) must already exist and be owned by that token; the reported
+// session_id is that session, while the totals and top tools cover the whole token.
 func (s *Server) SessionBudgetStats(tokenID, sessionID, remoteAddr string) (SessionBudgetStats, bool) {
 	if tokenID == "" {
 		return SessionBudgetStats{}, false
@@ -533,19 +595,19 @@ func (s *Server) SessionBudgetStats(tokenID, sessionID, remoteAddr string) (Sess
 	s.budgetMu.Lock()
 	defer s.budgetMu.Unlock()
 	now := time.Now()
-	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
-	record := s.budgetRecordLocked(key, tokenID, sessionID, now, sessionID == "")
-	if record == nil {
+	current := s.budgetRecordLocked(sessionMemoKey(tokenID, sessionID, remoteAddr), tokenID, sessionID, now, sessionID == "")
+	if current == nil {
 		return SessionBudgetStats{}, false
 	}
+	agg := s.tokenBudgetLocked(tokenID, now)
 	limit := s.sessionBudgetLimit
 	usedPct := int64(0)
 	if limit > 0 {
-		usedPct = record.bytes * 100 / limit
+		usedPct = agg.bytes * 100 / limit
 	}
-	top := make([]SessionToolStats, 0, len(record.tools))
-	for name, agg := range record.tools {
-		top = append(top, SessionToolStats{Name: name, Calls: agg.calls, Bytes: agg.bytes})
+	top := make([]SessionToolStats, 0, len(agg.tools))
+	for name, t := range agg.tools {
+		top = append(top, SessionToolStats{Name: name, Calls: t.calls, Bytes: t.bytes})
 	}
 	sort.Slice(top, func(i, j int) bool {
 		if top[i].Bytes == top[j].Bytes {
@@ -556,7 +618,7 @@ func (s *Server) SessionBudgetStats(tokenID, sessionID, remoteAddr string) (Sess
 	if len(top) > 5 {
 		top = top[:5]
 	}
-	return SessionBudgetStats{SessionID: record.sessionID, StartedAt: record.startedAt.UTC().Format(time.RFC3339), ToolCalls: record.calls, BytesReturned: record.bytes, EstTokens: record.bytes / 4, TopTools: top, Budget: SessionBudgetInfo{LimitBytes: limit, UsedPct: usedPct, Warn: record.bytes > limit}}, true
+	return SessionBudgetStats{SessionID: current.sessionID, StartedAt: agg.startedAt.UTC().Format(time.RFC3339), ToolCalls: agg.calls, BytesReturned: agg.bytes, EstTokens: agg.bytes / 4, TopTools: top, Budget: SessionBudgetInfo{LimitBytes: limit, UsedPct: usedPct, Warn: agg.bytes > limit}}, true
 }
 
 func (s *Server) SessionCounts() (sse, streamableHTTP int) {
@@ -894,21 +956,31 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 			exists = false
 		}
 		if !exists {
+			// Unknown or expired id: serve this request in a new session owned by the
+			// caller's token instead of failing. The new id goes back in the header.
 			s.mu.Unlock()
-			http.Error(w, "unknown or expired MCP session", http.StatusNotFound)
-			return
-		}
-		if stored.ownerTokenID != "" && stored.ownerTokenID != p.TokenID {
+			id, status, msg := s.openStreamSession(p, protocolVersion, time.Now())
+			if status != 0 {
+				http.Error(w, msg, status)
+				return
+			}
+			clientSessionID = id
+			w.Header().Set("Mcp-Session-Id", id)
+		} else {
+			// A session that exists but belongs to another token is still refused.
+			// It is never degraded and never reused.
+			if stored.ownerTokenID != "" && stored.ownerTokenID != p.TokenID {
+				s.mu.Unlock()
+				http.Error(w, "session owner mismatch", http.StatusForbidden)
+				return
+			}
+			stored.lastActivity = time.Now()
+			if stored.protocolVersion != "" {
+				protocolVersion = stored.protocolVersion
+			}
+			s.streamSessions[clientSessionID] = stored
 			s.mu.Unlock()
-			http.Error(w, "session owner mismatch", http.StatusForbidden)
-			return
 		}
-		stored.lastActivity = time.Now()
-		if stored.protocolVersion != "" {
-			protocolVersion = stored.protocolVersion
-		}
-		s.streamSessions[clientSessionID] = stored
-		s.mu.Unlock()
 	}
 
 	ctx := withSessionMemoIdentity(r.Context(), p.TokenID, clientSessionID, r.RemoteAddr)
@@ -953,36 +1025,12 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if clientSessionID == "" {
-			now := time.Now()
-			s.mu.Lock()
-			for id, stored := range s.streamSessions {
-				if now.Sub(stored.lastActivity) >= sseSessionIdleTimeout {
-					delete(s.streamSessions, id)
-					slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(id), "actor", stored.ownerTokenID, "reason", "idle_timeout")
-				}
-			}
-			if len(s.streamSessions) >= 500 {
-				s.mu.Unlock()
-				http.Error(w, "too many MCP sessions", http.StatusTooManyRequests)
+			id, status, msg := s.openStreamSession(p, protocolVersion, time.Now())
+			if status != 0 {
+				http.Error(w, msg, status)
 				return
 			}
-			if p.MaxSessions > 0 && p.QuotaID() != "" {
-				count := 0
-				for _, stored := range s.streamSessions {
-					if stored.ownerQuotaTokenID == p.QuotaID() {
-						count++
-					}
-				}
-				if count >= p.MaxSessions {
-					s.mu.Unlock()
-					http.Error(w, "token MCP session limit reached", http.StatusTooManyRequests)
-					return
-				}
-			}
-			clientSessionID = s.newSessionID()
-			s.streamSessions[clientSessionID] = streamSession{ownerTokenID: p.TokenID, ownerQuotaTokenID: p.QuotaID(), protocolVersion: protocolVersion, lastActivity: now}
-			s.mu.Unlock()
-			s.EnsureSessionBudget(p.TokenID, clientSessionID, now)
+			clientSessionID = id
 		}
 		w.Header().Set("Mcp-Session-Id", clientSessionID)
 	}
@@ -1006,6 +1054,39 @@ func (s *Server) HandleStreamableHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(responseBody)
 }
 
+// openStreamSession creates a Streamable HTTP session owned by p. On failure it returns a
+// non-zero HTTP status and the message to send. The caller must not hold s.mu.
+func (s *Server) openStreamSession(p auth.Principal, protocolVersion string, now time.Time) (string, int, string) {
+	s.mu.Lock()
+	for id, stored := range s.streamSessions {
+		if now.Sub(stored.lastActivity) >= sseSessionIdleTimeout {
+			delete(s.streamSessions, id)
+			slog.Warn("MCP session closed", "transport", "streamable_http", "session_id", shortSessionID(id), "actor", stored.ownerTokenID, "reason", "idle_timeout")
+		}
+	}
+	if len(s.streamSessions) >= 500 {
+		s.mu.Unlock()
+		return "", http.StatusTooManyRequests, "too many MCP sessions"
+	}
+	if p.MaxSessions > 0 && p.QuotaID() != "" {
+		count := 0
+		for _, stored := range s.streamSessions {
+			if stored.ownerQuotaTokenID == p.QuotaID() {
+				count++
+			}
+		}
+		if count >= p.MaxSessions {
+			s.mu.Unlock()
+			return "", http.StatusTooManyRequests, "token MCP session limit reached"
+		}
+	}
+	id := s.newSessionID()
+	s.streamSessions[id] = streamSession{ownerTokenID: p.TokenID, ownerQuotaTokenID: p.QuotaID(), protocolVersion: protocolVersion, lastActivity: now}
+	s.mu.Unlock()
+	s.EnsureSessionBudget(p.TokenID, id, now)
+	return id, 0, ""
+}
+
 // deleteStreamSession ends a Streamable HTTP session (MCP 2025-03-26 session
 // termination). Only the token that created the session may delete it.
 func (s *Server) deleteStreamSession(w http.ResponseWriter, r *http.Request, p auth.Principal) {
@@ -1018,7 +1099,7 @@ func (s *Server) deleteStreamSession(w http.ResponseWriter, r *http.Request, p a
 	stored, exists := s.streamSessions[sessionID]
 	if !exists {
 		s.mu.Unlock()
-		http.Error(w, "unknown or expired MCP session", http.StatusNotFound)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if stored.ownerTokenID != "" && stored.ownerTokenID != p.TokenID {
@@ -1200,7 +1281,8 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				Content: []TextContent{
 					{Type: "text", Text: string(resJSON)},
 				},
-				IsError: isErr,
+				IsError:           isErr,
+				StructuredContent: structuredContentFor(params.Name, res, isErr),
 			},
 			rateLimited: te.rateLimited,
 		}
@@ -1247,7 +1329,8 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 	} else if scope != "" && !p.HasScope(scope) {
 		return fmt.Errorf("scope denied: %s", scope)
 	}
-	if device != "" && name != "memo_set" && name != "memo_get" && !p.AllowsDevice(device) {
+	spillRead := name == "read_file" && device == SpillDeviceName
+	if device != "" && name != "memo_set" && name != "memo_get" && !spillRead && !p.AllowsDevice(device) {
 		return fmt.Errorf("device denied: %s", device)
 	}
 	return nil
@@ -1636,7 +1719,7 @@ func (s *Server) sessionMemoIdentityKey(tokenID, sessionID, remoteAddr string) (
 	if strings.TrimSpace(tokenID) == "" {
 		return "", &SessionMemoError{Status: http.StatusUnauthorized, Message: "Unauthorized"}
 	}
-	key := sessionBudgetKey(tokenID, sessionID, remoteAddr)
+	key := sessionMemoKey(tokenID, sessionID, remoteAddr)
 	if sessionID == "" {
 		// HTTP memo access is activity in the same session used by stats. This
 		// also expires an idle session (and clears its memos) before lookup.

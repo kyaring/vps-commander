@@ -63,6 +63,9 @@ Streamable HTTP 要点：地址必须是 `/mcp`（不带结尾斜杠）；initia
 
 `exec_command` 默认 `output_mode=raw`、`max_bytes=4096`，超限会保留尾部并返回 `truncated/total_bytes/total_lines/sha256`；`head` 保留头部，`count` 只返回字节数、行数和退出码，`none` 不返回正文。需要大输出时显式传 `max_bytes`（最大 1048576）；只读状态查询建议传 `dedup_window_seconds` 以减少重复正文。MCP 对非零退出不标 isError，必须自己看 `exit_code`。
 
+输出被截断后，完整输出保存在 Hub 上，返回的 `spill_path` 即其位置。用 `read_file` 读取：`device` 填 `@hub-spill`，`path` 填 `spill_path`，按 `offset` 与 `limit` 分页；返回的 `has_more` 为 false 即已读完。`dedup_window_seconds` 默认为 0。只有在同一轮核验中重复运行同一条命令、且中间没有任何写操作时，才设置它。
+
+
 ## 3. 安全规则
 1. 重启服务、重启机器、改防火墙、删除文件、覆写已有文件等高风险操作：先把确切命令给人看，得到明确同意再执行。
 2. 改配置优先 `edit_block`，不用 `write_file` 整体覆写。

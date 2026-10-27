@@ -122,7 +122,7 @@ func (b *MCPBackend) ExecCommandWithOptions(ctx context.Context, clientIP, devic
 		_ = b.server.auditMCPContext(withCommandExit(ctx), clientIP, device, "exec", command, res.ExitCode, res.DurationMS, execAuditMessage(res))
 	}
 
-	shaped, err := execOutputResponse(device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	shaped, err := b.server.execResponse(p.QuotaID(), device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +168,9 @@ func (b *MCPBackend) DiagnosticCommand(ctx context.Context, clientIP, device str
 }
 
 func (b *MCPBackend) ReadFile(ctx context.Context, clientIP, device, path string, offset, limit int64) (any, error) {
+	if device == mcp.SpillDeviceName {
+		return b.readSpill(ctx, clientIP, path, offset, limit)
+	}
 	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
