@@ -73,6 +73,7 @@ type Server struct {
 	spill                 *spillStore
 	jobsOnce              sync.Once
 	jobs                  *execJobs
+	remoteProc            remoteProcessAPI
 }
 
 const (

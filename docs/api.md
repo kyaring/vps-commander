@@ -227,25 +227,30 @@ Example:
 
 ## 异步 exec（MCP exec_start / exec_status / exec_cancel）
 
-预计超过 30 秒的命令（例如 `go test -race ./...`）用异步方式运行，避免单次工具调用一直等待。仅限本机 Hub；远端节点的异步 exec 暂不支持（见下文限制）。
+预计超过 30 秒的命令（例如 `go test -race ./...`）用异步方式运行，避免单次工具调用一直等待。本机与远端节点都支持；远端节点通过 agent 的会话进程（`start_process`、`read_process_output`、`force_terminate`）运行，不需要升级 agent。
 
 - `exec_start`：参数 `device`（缺省为本机）、`command`、`workdir`。返回 `job_id` 与 `status=running`。
 - `exec_status`：参数 `job_id`。轮询直到 `status` 不再是 `running`。
-- `exec_cancel`：参数 `job_id`。结束整个进程组，`status` 变为 `killed`，`reason=cancel`。取消后进程结束，输出与退出码随即补全。
+- `exec_cancel`：参数 `job_id`。结束进程（本机结束整个进程组；远端调用 agent 的 `force_terminate`，即 SIGKILL 进程组）。只有确认进程已结束，`status` 才变为 `killed`，`reason=cancel`。
 
-状态取值：`running`、`exited`（正常结束，`exit_code` 为退出码）、`killed`（超时或被取消，`reason` 为 `timeout` 或 `cancel`）、`lost`（Hub 重启时仍在运行，`reason=hub_restart`；进程可能仍在运行，但 Hub 不再跟踪）、`expired`（结束超过 24 小时）。运行中 `exit_code` 为 -1。
+状态取值：`running`、`exited`（正常结束，`exit_code` 为退出码）、`killed`（超时或被取消，`reason` 为 `timeout`、`cancel` 或 `agent_session_ttl`）、`lost`（`reason` 为 `hub_restart`、`node_offline` 或 `session_gone`）、`expired`（结束超过 24 小时）。运行中 `exit_code` 为 -1。
 
-返回字段与同步 exec 相同（`stdout`、`stderr`、`truncated`、`total_bytes`、`total_lines`、`sha256`、`spill_path`、`spill_device`、`timed_out`），另加 `job_id`、`status`、`reason`、`started_at`、`ended_at`、`max_runtime_s`（60 分钟）。完整输出始终写入溢出文件，用 `read_file` 且 `device=@hub-spill` 分页读取 `spill_path`。
+返回字段与同步 exec 相同（`stdout`、`stderr`、`truncated`、`total_bytes`、`total_lines`、`sha256`、`spill_path`、`spill_device`、`timed_out`），另加 `job_id`、`status`、`reason`、`started_at`、`ended_at`、`max_runtime_s`、`remote`。完整输出始终写入溢出文件，用 `read_file` 且 `device=@hub-spill` 分页读取 `spill_path`。
 
-限制与保留：
+限制与行为：
 
-- 最长运行时间 60 分钟，超时后进程组被结束，`status=killed`，`reason=timeout`。
-- 远端节点暂不支持异步 exec：`exec_start` 对远端设备返回 `async exec is not supported on remote nodes`。原因是远端 exec 运行期间，节点上的取消指令无法送达（agent 在 exec 期间持有节点的操作锁）。远端命令仍可用同步 `exec_command`，其超时为 300 秒。
+- 最长运行时间：本机 60 分钟；远端 30 分钟。远端的上限来自 agent 的会话寿命（`executor.DefaultSessionTTL`，30 分钟）：agent 到期会杀掉会话，`start_process` 没有 TTL 参数。Hub 同样在 30 分钟时自行结束进程，原因记为 `timeout`；如果 agent 先结束，原因记为 `agent_session_ttl`。以上数字来自代码，尚未在真实节点上实测。
+- 远端输出：输出在 agent 端的环形缓冲中保留，每个流最多 2 MiB（`DefaultRingCapacity`）；更多的输出会被丢弃。
+- 远端会话数：每个节点最多 4 个会话（`MaxSessionsPerManager` = 8 MiB / 2 MiB），包括本机其他会话进程。已结束的会话在闲置 10 分钟后才会被 agent 回收，期间仍占用一个会话位；会话位满时 `exec_start` 返回 agent 的错误。
+- 取消的确认：远端取消先下发 `force_terminate`；agent 拒绝时返回 `kill failed, job still running`，job 保持 `running`；已下发但 20 秒内未确认进程结束时返回 `kill sent but the process has not been confirmed ended`，job 保持 `running`，之后由 Hub 监控结算。
+- 名额：运行中的 job 占用创建它的令牌的并发 exec 名额，直到进程确认结束或 job 被判定为 `lost`，之后才释放。名额满时启动返回 `token concurrent exec limit reached`。
+- 节点离线：远端 job 标记为 `lost`（`reason=node_offline`），名额释放。进程可能仍在 agent 上运行，直到 agent 的会话到期。Hub 重启：运行中的 job 标记为 `lost`（`reason=hub_restart`），远端进程同样可能继续运行到会话到期。
 - 归属：job 只属于创建它的令牌（按 `TokenID`）。其他令牌查询或取消时，与不存在的 job 返回同一个错误 `job not found`。
-- 名额：运行中的 job 占用创建它的令牌的并发 exec 名额，直到进程真正结束；与同步 exec 共用同一上限，名额满时启动返回 `token concurrent exec limit reached`。
-- 保留：job 结束后 24 小时内，状态和输出可用；超过 24 小时，状态显示 `expired`，输出被清空，溢出文件由后台清扫删除（不依赖任何读取）。job 记录本身保留到结束后 7 天，之后删除。
+- 保留：job 结束后 24 小时内，状态和输出可用；超过 24 小时，状态显示 `expired`，输出被清空，溢出文件由后台清扫删除。job 记录本身保留到结束后 7 天。
 - 审计：启动与取消各记一条（`exec_start`、`exec_cancel`）；job 结束时补记一条 `exec` 审计，即使客户端已断开。
+
+为什么同步 exec 无法取消、远端异步 job 如何取消：agent 为 `exec` 请求使用 `context.Background()` 加自身超时，协议里也没有取消 exec 的消息，所以 Hub 无法结束一个正在运行的同步 exec。agent 对每个请求各起一个 goroutine，并没有对节点加锁。另一方面，Hub 进程内的节点操作锁（`cluster` 的 `OpMu`）会串行化同一节点上的高风险动作（`exec`、`start_process`、`force_terminate` 等）：同一节点上一个同步 exec 运行期间，异步 job 的取消会排队等到它结束。远端异步 job 的 `start_process` 和 `force_terminate` 只短暂持有该锁，因此不会因为其他 job 而阻塞。
 
 同步 exec 超时时，返回 `timed_out=true`，审计结果记为 `timeout`。
 
-MCP `tools/list` 变更：新增 `exec_start`、`exec_status`、`exec_cancel` 三个工具，tools/list 响应为 6427 字节（此前 5426 字节），sha256 `221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2`（此前 `e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951`）。
+MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；tools/list 响应为 6455 字节（此前 6427 字节），sha256 `50d4dafbdf0001b31207b150235180858b6e7777437e0f7684dbf448a5cd6342`（此前 `221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2`）。
