@@ -41,7 +41,11 @@ func (p Principal) AuditName() string {
 }
 
 func (p Principal) HasScope(scope string) bool {
-	return p.Type == "panel" || p.Type == "system" || p.Scopes[scope]
+	if p.Type == "panel" || p.Type == "system" || p.Scopes[scope] {
+		return true
+	}
+	// admin implies every devtask scope (DevTask spec §1); no other scope is implied.
+	return strings.HasPrefix(scope, "devtask:") && p.Scopes["admin"]
 }
 
 func (p Principal) AllowsDevice(device string) bool {

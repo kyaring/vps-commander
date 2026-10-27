@@ -970,6 +970,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/file/list", s.requireScope("files:read", http.HandlerFunc(s.listDirectory)))
 	mux.Handle("/api/v1/file/info", s.requireScope("files:read", http.HandlerFunc(s.fileInfo)))
 	mux.Handle("/api/v1/file/search", s.requireScope("files:read", http.HandlerFunc(s.searchFiles)))
+	mux.Handle("/api/v1/devtask-projects", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskProjects))))
+	mux.Handle("/api/v1/devtask-settings", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskSettings))))
 	mux.Handle("/api/v1/process/session", s.requireScope("process", http.HandlerFunc(s.processSession)))
 	mux.Handle("/api/v1/file/write", s.requireScope("files:write", http.HandlerFunc(s.fileWrite)))
 	mux.Handle("/api/v1/devices/file/edit_block", s.requireScope("files:write", http.HandlerFunc(s.editBlock)))
