@@ -1,5 +1,8 @@
 ## 2026-10-16 全量扫描与主审规划（Claude-1，main 基线 46291d1，只读）
 
+## 2026-10-27 17:10 从正本移出
+- 10-27 16:58 OPC 批准合并 D1 和 T-16-01，合并后本地 main 为 f21b378，验收和 race 全绿，未推送、未部署；T-16-02 已转发 Claude。- 10-27 17:05 T-16-01 交付 4c74bab（Claude），规模豁免，Hark 终签 verified。- 10-27 16:50 D1 交付 77939e6（Claude；通知署名为 gpt 身份），Hark 终签 verified，合并待 OPC 批准。- 10-27 按恢复计划转发两张卡给 Claude（OPC 07:28 指定全部发 Claude；基线 30e0abc）：T-20261014-35 DevTask D1（Claude，feat/devtask-a1-storage）；T-20261016-01 MCP 返回层（Claude，feat/mcp-result-layer-2，Errata 3）。02、03 等 01；f（MCP emit_event）因为改动 tools/list，排在 T-16-03 之后再开卡。
+
 ## 2026-10-16 19:55 Hark 接回主审：Claude-1 正本最终内容
 
 ---
