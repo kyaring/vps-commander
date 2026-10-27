@@ -55,7 +55,7 @@
 | T-20261015-04 | 遗留小项打包：测试日志 buffer 回归保护 + 哨兵自检 | GPT | internal/api/ | ready | test/leftovers-1015 | 0 | Hark 11:40 开卡（来源：T-03 审核建议 1、2） |
 | BL-20261015-skill | Hub 通过 MCP prompts/resources 下发 docs/client-skill（agent 连上即可读取 skill） | 待定 | backlog | OPC 13:10 要求先记下；排在 SV-06 之后；开卡前先核实 Hub 是否已实现 prompts 和 resources | 2026-10-15 13:10 |
 | T-20261016-01 | MCP 返回层：溢出文件 + 返回形状收敛 + 预算按令牌计算 + 未知会话降级（tools/list 零改动） | Claude | internal/mcp/ internal/api/ internal/executor/ | merged（OPC 16:58 批准，本地 main f21b378；未推送、未部署） | feat/mcp-result-layer-2 @4c74bab（Claude）；报告 docs/reviews/T-20261016-01-review.md | 0 | Hark 06:40 开卡（OPC 06:35 定全部交给 RikkaHub-1） |
-| T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | Claude | internal/mcp/ internal/api/ internal/executor/ | ready（10-27 转发 Claude；与 03 同批部署） | feat/mcp-exec-async | 0 | 基线转发时填入 |
+| T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | Claude | internal/mcp/ internal/api/ internal/executor/ | changes-requested（ab59239；P2 远端取消/名额，P3 输出保留；见 reviews） | feat/mcp-exec-async | 0 | 基线转发时填入 |
 | T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | blocked（等 T-02 开工后） | feat/mcp-toolset-v2 | 0 | 基线转发时填入 |
 | T-20261016-06 | 删除公开探针页面与 /probe/summary（OPC 10-16 选 1） | GPT | internal/web/ docs/security.md docs/api.md | deployed（fc6708b 合并，21:05 部署 99e93fb5e429；OPC 21:03 豁免） | feat/remove-public-probe | 1 | 审核报告 docs/reviews/T-20261016-06-review.md；被审提交 f6b1075；卡基线 bb37f61 未推送 |
 | T-20261016-04 | 收紧 /probe/summary 公开返回（已取消） | GPT | internal/web/ docs/api.md docs/security.md | cancelled（OPC 10-16 改选 C，由 T-20261016-05 取代） | fix/probe-summary-allowlist | 0 | GPT 前置检查受阻（probe.js 依赖将被删字段） |
