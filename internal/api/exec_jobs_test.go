@@ -370,13 +370,13 @@ func drainTestJobs(s *Server) {
 	}
 }
 
-// Remote devices are refused before any job or exec slot is created (a remote exec cannot be cancelled).
-func TestAsyncExecRejectsRemoteDevices(t *testing.T) {
+// A remote device with no reachable node is refused (authorization first, as for sync exec) and takes no exec slot.
+func TestAsyncExecRemoteWithoutNodeTakesNoSlot(t *testing.T) {
 	s, _ := newSpillTestServer(t)
 	s.TokenLimiter = NewTokenLimiter(1)
 	b := s.NewMCPBackend()
-	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "node-x", "true", ""); err == nil || err.Error() != errAsyncRemote.Error() {
-		t.Fatalf("remote start err = %v, want %v", err, errAsyncRemote)
+	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "node-x", "true", ""); err == nil {
+		t.Fatal("remote start without a node succeeded")
 	}
 	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "local", "true", ""); err != nil {
 		t.Fatalf("slot left occupied by the refused remote start: %v", err)

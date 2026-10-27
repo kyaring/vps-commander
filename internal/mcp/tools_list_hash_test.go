@@ -11,12 +11,13 @@ import (
 	"github.com/wjyhk/vps-commander/internal/auth"
 )
 
-// tools/list recorded after the T-20261016-02 rework (exec_start, exec_status, exec_cancel; remote exec_start refused).
-// Earlier value (first T-20261016-02 submission): sha256 3abe94ff8d644cd831dc5fe7ef548a2c742609e87df505f789befee0e7d99279, 6433 bytes.
+// tools/list recorded after T-20261027-06 (exec_start description now covers remote nodes).
+// Earlier value (T-20261016-02 rework): sha256 221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2, 6427 bytes.
+// Before T-20261027-06 (remote exec_start refused): see T-20261016-02.
 // Previous value (T-20261016-01, base 30e0abc): sha256 e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951, 5426 bytes.
 const (
-	toolsListBaselineSHA256 = "221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2"
-	toolsListBaselineBytes  = 6427
+	toolsListBaselineSHA256 = "50d4dafbdf0001b31207b150235180858b6e7777437e0f7684dbf448a5cd6342"
+	toolsListBaselineBytes  = 6455
 	toolsListMaxBytes       = 10240
 )
 
