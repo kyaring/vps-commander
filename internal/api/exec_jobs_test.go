@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
+	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/mcp"
 )
 
@@ -205,7 +206,7 @@ func TestExecJobMaxRuntimeKillsAtLimit(t *testing.T) {
 	if m == nil {
 		t.Fatal("no job manager")
 	}
-	m.localMax = time.Second
+	m.max = time.Second
 	b := s.NewMCPBackend()
 	ctx := jobCtx("tok-A")
 	v, err := b.StartExec(ctx, "127.0.0.1", "local", "sleep 30", "")
@@ -366,5 +367,75 @@ func drainTestJobs(s *Server) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Remote devices are refused before any job or exec slot is created (a remote exec cannot be cancelled).
+func TestAsyncExecRejectsRemoteDevices(t *testing.T) {
+	s, _ := newSpillTestServer(t)
+	s.TokenLimiter = NewTokenLimiter(1)
+	b := s.NewMCPBackend()
+	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "node-x", "true", ""); err == nil || err.Error() != errAsyncRemote.Error() {
+		t.Fatalf("remote start err = %v, want %v", err, errAsyncRemote)
+	}
+	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "local", "true", ""); err != nil {
+		t.Fatalf("slot left occupied by the refused remote start: %v", err)
+	}
+}
+
+// Output expiry does not depend on anyone reading the file: the sweep removes it.
+func TestSpillSweepRemovesExpiredWithoutAccess(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	st, err := newSpillStore(filepath.Join(t.TempDir(), "mcp-spill"), 1<<20, 24*time.Hour, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write the fresh file first: a later write would prune expired files on its own, which
+	// would hide whether sweep works. After the expired file is written, only sweep runs.
+	fresh, err := st.writeAt("tok-A", []byte("new output"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := st.writeAt("tok-A", []byte("old output"), now.Add(-25*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("setup: expired file missing before sweep: %v", err)
+	}
+	st.sweep()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expired output still on disk: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh output removed: %v", err)
+	}
+}
+
+// The job record stops holding output 24 h after the job ended, long before the record itself is forgotten.
+func TestJobOutputClearedAfterRetention(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	dir := t.TempDir()
+	m, err := newExecJobs(dir, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := &execJob{ID: "job-out", Owner: "tok-A", Status: "exited", Ended: now, SpillPath: "/x/out.out",
+		Shaped: executor.ShapedOutput{Stdout: "secret-output-text"}}
+	m.mu.Lock()
+	m.jobs[j.ID] = j
+	m.persist(j)
+	m.mu.Unlock()
+	now = now.Add(25 * time.Hour)
+	view, err := m.get("tok-A", j.ID)
+	if err != nil || view.Status != "expired" || view.Shaped.Stdout != "" {
+		t.Fatalf("view after retention: status=%v stdout=%q err=%v", view.Status, view.Shaped.Stdout, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, j.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "secret-output-text") || strings.Contains(string(raw), "/x/out.out") {
+		t.Fatal("record still holds output after the retention period")
 	}
 }

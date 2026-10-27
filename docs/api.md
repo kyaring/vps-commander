@@ -227,24 +227,25 @@ Example:
 
 ## 异步 exec（MCP exec_start / exec_status / exec_cancel）
 
-预计超过 30 秒的命令（例如 `go test -race ./...`）用异步方式运行，避免单次工具调用一直等待：
+预计超过 30 秒的命令（例如 `go test -race ./...`）用异步方式运行，避免单次工具调用一直等待。仅限本机 Hub；远端节点的异步 exec 暂不支持（见下文限制）。
 
 - `exec_start`：参数 `device`（缺省为本机）、`command`、`workdir`。返回 `job_id` 与 `status=running`。
 - `exec_status`：参数 `job_id`。轮询直到 `status` 不再是 `running`。
-- `exec_cancel`：参数 `job_id`。结束整个进程组，`status` 记为 `killed`，`reason=cancel`。
+- `exec_cancel`：参数 `job_id`。结束整个进程组，`status` 变为 `killed`，`reason=cancel`。取消后进程结束，输出与退出码随即补全。
 
-状态取值：`running`、`exited`（命令正常结束，`exit_code` 为其退出码）、`killed`（超时或被取消，`reason` 为 `timeout`、`agent_timeout_cap` 或 `cancel`）、`lost`（Hub 重启时仍在运行，`reason=hub_restart`；进程可能仍在运行，但 Hub 不再跟踪）、`expired`（结束超过 24 小时）。运行中 `exit_code` 为 -1。
+状态取值：`running`、`exited`（正常结束，`exit_code` 为退出码）、`killed`（超时或被取消，`reason` 为 `timeout` 或 `cancel`）、`lost`（Hub 重启时仍在运行，`reason=hub_restart`；进程可能仍在运行，但 Hub 不再跟踪）、`expired`（结束超过 24 小时）。运行中 `exit_code` 为 -1。
 
-返回字段与同步 exec 相同（`stdout`、`stderr`、`truncated`、`total_bytes`、`total_lines`、`sha256`、`spill_path`、`spill_device`、`timed_out`），另加 `job_id`、`status`、`reason`、`started_at`、`ended_at`、`max_runtime_s`。完整输出始终写入溢出文件，用 `read_file` 且 `device=@hub-spill` 分页读取 `spill_path`。
+返回字段与同步 exec 相同（`stdout`、`stderr`、`truncated`、`total_bytes`、`total_lines`、`sha256`、`spill_path`、`spill_device`、`timed_out`），另加 `job_id`、`status`、`reason`、`started_at`、`ended_at`、`max_runtime_s`（60 分钟）。完整输出始终写入溢出文件，用 `read_file` 且 `device=@hub-spill` 分页读取 `spill_path`。
 
-限制：
+限制与保留：
 
-- 最长运行时间：Hub 本机 60 分钟；远端节点 300 秒。远端 Agent 会把 exec 超时钳到 300 秒（当前 Agent 版本，见 `cmd/agent`），因此远端超时记为 `killed`，`reason=agent_timeout_cap`。
+- 最长运行时间 60 分钟，超时后进程组被结束，`status=killed`，`reason=timeout`。
+- 远端节点暂不支持异步 exec：`exec_start` 对远端设备返回 `async exec is not supported on remote nodes`。原因是远端 exec 运行期间，节点上的取消指令无法送达（agent 在 exec 期间持有节点的操作锁）。远端命令仍可用同步 `exec_command`，其超时为 300 秒。
 - 归属：job 只属于创建它的令牌（按 `TokenID`）。其他令牌查询或取消时，与不存在的 job 返回同一个错误 `job not found`。
-- 名额：运行中的 job 占用创建它的令牌的并发 exec 名额，与同步 exec 共用同一上限；名额满时启动返回 `token concurrent exec limit reached`。
-- 保留：结束后的状态与输出保留 24 小时，之后状态为 `expired`。
+- 名额：运行中的 job 占用创建它的令牌的并发 exec 名额，直到进程真正结束；与同步 exec 共用同一上限，名额满时启动返回 `token concurrent exec limit reached`。
+- 保留：job 结束后 24 小时内，状态和输出可用；超过 24 小时，状态显示 `expired`，输出被清空，溢出文件由后台清扫删除（不依赖任何读取）。job 记录本身保留到结束后 7 天，之后删除。
 - 审计：启动与取消各记一条（`exec_start`、`exec_cancel`）；job 结束时补记一条 `exec` 审计，即使客户端已断开。
 
 同步 exec 超时时，返回 `timed_out=true`，审计结果记为 `timeout`。
 
-MCP `tools/list` 变更：新增 `exec_start`、`exec_status`、`exec_cancel` 三个工具，tools/list 响应为 6433 字节（此前 5426 字节），sha256 `3abe94ff8d644cd831dc5fe7ef548a2c742609e87df505f789befee0e7d99279`（此前 `e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951`）。
+MCP `tools/list` 变更：新增 `exec_start`、`exec_status`、`exec_cancel` 三个工具，tools/list 响应为 6427 字节（此前 5426 字节），sha256 `221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2`（此前 `e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951`）。

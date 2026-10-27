@@ -15,23 +15,26 @@ import (
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
-	"github.com/wjyhk/vps-commander/internal/cluster"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/mcp"
 )
 
 const (
-	jobLocalMaxRuntime  = 60 * time.Minute
-	jobRemoteMaxRuntime = 300 * time.Second // the agent clamps exec timeouts to 300 s (cmd/agent)
-	jobRetention        = spillTTL          // status and output kept 24 h, like spill files
-	jobForgetAfter      = 7 * 24 * time.Hour
-	jobsDirName         = "jobs"
+	jobMaxRuntime  = 60 * time.Minute
+	jobRetention   = spillTTL // status and output kept 24 h, like spill files
+	jobForgetAfter = 7 * 24 * time.Hour
+	jobsDirName    = "jobs"
 )
 
-// errJobNotFound is returned for unknown jobs and for jobs owned by another token alike.
-var errJobNotFound = errors.New("job not found")
+var (
+	// errJobNotFound is returned for unknown jobs and for jobs owned by another token alike.
+	errJobNotFound = errors.New("job not found")
+	// errAsyncRemote: a remote exec cannot be cancelled (the agent holds the node's operation lock
+	// for the whole exec), so async jobs are only offered on the local Hub.
+	errAsyncRemote = errors.New("async exec is not supported on remote nodes: a running remote exec cannot be cancelled")
+)
 
-// execJob is one asynchronous exec. The owner is the TokenID of the token that started it.
+// execJob is one asynchronous exec on the local Hub. The owner is the TokenID of the token that started it.
 type execJob struct {
 	ID         string                `json:"job_id"`
 	Owner      string                `json:"owner"`
@@ -40,7 +43,6 @@ type execJob struct {
 	Status     string                `json:"status"` // running, exited, killed, lost (expired is derived)
 	Reason     string                `json:"reason,omitempty"`
 	ExitCode   int                   `json:"exit_code"`
-	Remote     bool                  `json:"remote"`
 	TimedOut   bool                  `json:"timed_out"`
 	ClientIP   string                `json:"client_ip"`
 	Started    time.Time             `json:"started_at"`
@@ -57,12 +59,11 @@ type execJob struct {
 // execJobs owns every job of this Hub. Records are also written under the spill directory so
 // that a restart can report jobs that were running as lost instead of running.
 type execJobs struct {
-	mu        sync.Mutex
-	dir       string
-	jobs      map[string]*execJob
-	now       func() time.Time
-	localMax  time.Duration
-	remoteMax time.Duration
+	mu   sync.Mutex
+	dir  string
+	jobs map[string]*execJob
+	now  func() time.Time
+	max  time.Duration
 }
 
 func newExecJobs(dir string, now func() time.Time) (*execJobs, error) {
@@ -72,7 +73,7 @@ func newExecJobs(dir string, now func() time.Time) (*execJobs, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	m := &execJobs{dir: dir, jobs: make(map[string]*execJob), now: now, localMax: jobLocalMaxRuntime, remoteMax: jobRemoteMaxRuntime}
+	m := &execJobs{dir: dir, jobs: make(map[string]*execJob), now: now, max: jobMaxRuntime}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -94,13 +95,10 @@ func newExecJobs(dir string, now func() time.Time) (*execJobs, error) {
 			j.Status, j.Reason, j.Ended = "lost", "hub_restart", at
 			m.persist(&j)
 		}
-		if !j.Ended.IsZero() && at.Sub(j.Ended) > jobForgetAfter {
-			_ = os.Remove(path)
-			continue
-		}
 		j.finalized = true
 		m.jobs[j.ID] = &j
 	}
+	m.pruneLocked(at)
 	return m, nil
 }
 
@@ -114,11 +112,22 @@ func (m *execJobs) persist(j *execJob) {
 	}
 }
 
+// pruneLocked clears the stored output of jobs past their retention period, and forgets
+// records older than jobForgetAfter. Callers must hold mu.
 func (m *execJobs) pruneLocked(now time.Time) {
 	for id, j := range m.jobs {
-		if !j.Ended.IsZero() && now.Sub(j.Ended) > jobForgetAfter {
+		if j.Ended.IsZero() || j.Status == "running" {
+			continue
+		}
+		age := now.Sub(j.Ended)
+		if age > jobForgetAfter {
 			delete(m.jobs, id)
 			_ = os.Remove(filepath.Join(m.dir, id+".json"))
+			continue
+		}
+		if age > jobRetention && (j.SpillPath != "" || j.Shaped.Stdout != "" || j.Shaped.Stderr != "") {
+			j.SpillPath, j.Shaped = "", executor.ShapedOutput{}
+			m.persist(j)
 		}
 	}
 }
@@ -138,47 +147,33 @@ func newJobID() string {
 }
 
 // start launches the command in the background. The job holds one of the owner token's exec
-// slots until it ends, so it counts against the same concurrency limit as synchronous exec.
+// slots until the process has actually ended, so it counts against the same limit as
+// synchronous exec.
 func (m *execJobs) start(s *Server, p auth.Principal, clientIP, device, command, workdir string) (execJob, error) {
-	remote := s.isRemote(device)
-	if remote && (s.Cluster == nil || !s.Cluster.Online(device)) {
-		return execJob{}, fmt.Errorf("device %s is offline", device)
+	if s.isRemote(device) {
+		return execJob{}, errAsyncRemote
 	}
 	release, ok := s.acquireTokenExec(p)
 	if !ok {
 		return execJob{}, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
-	maxRun := m.localMax
-	if remote {
-		maxRun = m.remoteMax
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), maxRun)
+	ctx, cancel := context.WithTimeout(context.Background(), m.max)
 	j := &execJob{ID: newJobID(), Owner: p.TokenID, Device: device, Summary: jobSummary(command), Status: "running",
-		Remote: remote, ClientIP: clientIP, Started: m.now(), command: command, cancel: cancel}
+		ClientIP: clientIP, Started: m.now(), command: command, cancel: cancel}
 	m.mu.Lock()
 	m.pruneLocked(m.now())
 	m.jobs[j.ID] = j
 	m.persist(j)
 	view := *j
 	m.mu.Unlock()
-	go s.runJob(m, p, j, ctx, cancel, release, workdir, maxRun)
+	go s.runJob(m, p, j, ctx, cancel, release, workdir)
 	return view, nil
 }
 
-func (s *Server) runJob(m *execJobs, p auth.Principal, j *execJob, ctx context.Context, cancel context.CancelFunc, release func(), workdir string, maxRun time.Duration) {
+func (s *Server) runJob(m *execJobs, p auth.Principal, j *execJob, ctx context.Context, cancel context.CancelFunc, release func(), workdir string) {
 	defer release()
 	defer cancel()
-	var res executor.Result
-	if j.Remote {
-		rr, err := s.Cluster.Exec(ctx, j.Device, cluster.ExecPayload{Command: j.command, Workdir: workdir, Timeout: int(maxRun / time.Second)})
-		if err != nil {
-			res = executor.Result{ExitCode: 1, Stderr: err.Error()}
-		} else {
-			res = executor.Result{ExitCode: rr.ExitCode, Stdout: rr.Stdout, Stderr: rr.Stderr, DurationMS: rr.DurationMS}
-		}
-	} else {
-		res = s.Exec.Run(ctx, j.command, workdir)
-	}
+	res := s.Exec.Run(ctx, j.command, workdir)
 	m.finish(s, p, j, res, ctx.Err() == context.DeadlineExceeded)
 }
 
@@ -186,28 +181,30 @@ func (s *Server) runJob(m *execJobs, p auth.Principal, j *execJob, ctx context.C
 // process has ended, even if the client that started the job has long gone.
 func (m *execJobs) finish(s *Server, p auth.Principal, j *execJob, res executor.Result, deadline bool) {
 	shaped, _ := executor.ShapeOutput(res.Stdout, res.Stderr, "raw", executor.DefaultOutputBytes)
+	// The output expires 24 h after the job ended, so it is stored with that end time.
+	m.mu.Lock()
+	created := j.Ended
+	if j.Status == "running" {
+		created = m.now()
+	}
+	m.mu.Unlock()
 	spill := ""
 	if st := s.spillFor(); st != nil {
-		if path, err := st.write(p.TokenID, []byte(res.Stdout+res.Stderr)); err != nil {
+		if path, err := st.writeAt(p.TokenID, []byte(res.Stdout+res.Stderr), created); err != nil {
 			slog.Warn("exec job output not spilled", "job", j.ID, "err", err)
 		} else {
 			spill = path
 		}
 	}
 	m.mu.Lock()
-	j.SpillPath, j.Shaped, j.DurationMS, j.ExitCode = spill, shaped, res.DurationMS, res.ExitCode
 	if j.Status == "running" {
-		j.Ended = m.now()
-		switch {
-		case deadline:
+		j.Ended = created
+		j.Status = "exited"
+		if deadline {
 			j.Status, j.TimedOut, j.Reason = "killed", true, "timeout"
-			if j.Remote {
-				j.Reason = "agent_timeout_cap"
-			}
-		default:
-			j.Status = "exited"
 		}
 	}
+	j.SpillPath, j.Shaped, j.DurationMS, j.ExitCode = spill, shaped, res.DurationMS, res.ExitCode
 	m.persist(j)
 	status, reason, timedOut := j.Status, j.Reason, j.TimedOut
 	m.mu.Unlock()
@@ -234,6 +231,7 @@ func (m *execJobs) finish(s *Server, p auth.Principal, j *execJob, res executor.
 func (m *execJobs) get(owner, id string) (execJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneLocked(m.now())
 	j, ok := m.jobs[id]
 	if !ok || owner == "" || j.Owner != owner {
 		return execJob{}, errJobNotFound
@@ -245,11 +243,12 @@ func (m *execJobs) get(owner, id string) (execJob, error) {
 	return view, nil
 }
 
-// cancel stops a running job. The status becomes killed at once; the output and exit code
-// are filled in when the process has actually been reaped.
+// cancel stops a running job. The status becomes killed at once; the output and exit code are
+// filled in when the process has actually been reaped.
 func (m *execJobs) cancel(owner, id string) (execJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneLocked(m.now())
 	j, ok := m.jobs[id]
 	if !ok || owner == "" || j.Owner != owner {
 		return execJob{}, errJobNotFound
@@ -294,10 +293,7 @@ func (s *Server) jobView(j execJob) map[string]any {
 	out["status"] = j.Status
 	out["reason"] = j.Reason
 	out["started_at"] = j.Started.UTC().Format(time.RFC3339)
-	out["max_runtime_s"] = int(jobLocalMaxRuntime / time.Second)
-	if j.Remote {
-		out["max_runtime_s"] = int(jobRemoteMaxRuntime / time.Second)
-	}
+	out["max_runtime_s"] = int(jobMaxRuntime / time.Second)
 	if !j.Ended.IsZero() {
 		out["ended_at"] = j.Ended.UTC().Format(time.RFC3339)
 	}
@@ -312,6 +308,9 @@ func (b *MCPBackend) StartExec(ctx context.Context, clientIP, device, command, w
 	device = b.server.normalizeDevice(device)
 	if device == "" {
 		device = b.server.LocalName
+	}
+	if b.server.isRemote(device) {
+		return nil, errAsyncRemote
 	}
 	if err := b.authorize(ctx, device, "exec", clientIP); err != nil {
 		return nil, err

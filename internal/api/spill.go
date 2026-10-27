@@ -84,9 +84,14 @@ func newSpillStore(dir string, totalCap int64, ttl time.Duration, now func() tim
 
 // write stores data as a new spill file owned by owner and returns its absolute path.
 func (s *spillStore) write(owner string, data []byte) (string, error) {
+	return s.writeAt(owner, data, s.now())
+}
+
+// writeAt stores data as a spill file created at the given time; that time sets when it expires.
+func (s *spillStore) writeAt(owner string, data []byte, created time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
+	now := created
 	s.pruneLocked(now)
 	size := int64(len(data))
 	if size > s.totalCap {
@@ -120,6 +125,22 @@ func (s *spillStore) write(owner string, data []byte) (string, error) {
 	}
 	s.records[path] = spillRecord{owner: owner, size: size, created: now}
 	return path, nil
+}
+
+// sweep removes expired spill files even when nobody reads them.
+func (s *spillStore) sweep() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
+}
+
+// janitor sweeps expired spill files periodically for the life of the process.
+func (s *spillStore) janitor(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		s.sweep()
+	}
 }
 
 // read returns up to limit bytes of a spill file starting at offset. Only the owning token
@@ -222,6 +243,7 @@ func (s *Server) spillFor() *spillStore {
 			return
 		}
 		s.spill = st
+		go st.janitor(time.Minute)
 	})
 	return s.spill
 }
