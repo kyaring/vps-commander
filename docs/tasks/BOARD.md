@@ -56,7 +56,7 @@
 | BL-20261015-skill | Hub 通过 MCP prompts/resources 下发 docs/client-skill（agent 连上即可读取 skill） | 待定 | backlog | OPC 13:10 要求先记下；排在 SV-06 之后；开卡前先核实 Hub 是否已实现 prompts 和 resources | 2026-10-15 13:10 |
 | T-20261016-01 | MCP 返回层：溢出文件 + 返回形状收敛 + 预算按令牌计算 + 未知会话降级（tools/list 零改动） | Claude | internal/mcp/ internal/api/ internal/executor/ | merged（OPC 16:58 批准，本地 main f21b378；未推送、未部署） | feat/mcp-result-layer-2 @4c74bab（Claude）；报告 docs/reviews/T-20261016-01-review.md | 0 | Hark 06:40 开卡（OPC 06:35 定全部交给 RikkaHub-1） |
 | T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | Claude | internal/mcp/ internal/api/ internal/executor/ | merged（本地 main，OPC 17:43；未推送、未部署，与 03 同批） | feat/mcp-exec-async | 0 | 基线转发时填入 |
-| T-20261027-06 | 远端节点异步 exec（会话进程） | Claude | P2 | changes-requested（9f859db，10-28 审核：P2 30 分钟边界、P3 会话容量） |
+| T-20261027-06 | 远端节点异步 exec（会话进程） | Claude | internal/api/ internal/mcp/mcp.go docs/api.md docs/client-skill/SKILL.md | merged（本地 main a084688，OPC 特别授权 Hark 代审；未推送、未部署）；返工 21e03f0 + 修复 26b1f77 | feat/mcp-exec-async-remote @ 26b1f77 | 2 | 代审 PASS（docs/reviews/T-20261027-06-review-2.md）；Hark 复审待 |
 | T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | blocked（等 T-02 开工后） | feat/mcp-toolset-v2 | 0 | 基线转发时填入 |
 | T-20261016-06 | 删除公开探针页面与 /probe/summary（OPC 10-16 选 1） | GPT | internal/web/ docs/security.md docs/api.md | deployed（fc6708b 合并，21:05 部署 99e93fb5e429；OPC 21:03 豁免） | feat/remove-public-probe | 1 | 审核报告 docs/reviews/T-20261016-06-review.md；被审提交 f6b1075；卡基线 bb37f61 未推送 |
 | T-20261016-04 | 收紧 /probe/summary 公开返回（已取消） | GPT | internal/web/ docs/api.md docs/security.md | cancelled（OPC 10-16 改选 C，由 T-20261016-05 取代） | fix/probe-summary-allowlist | 0 | GPT 前置检查受阻（probe.js 依赖将被删字段） |
@@ -67,3 +67,5 @@
 | T-20261027-04 | Search 限制单文件 10 MiB 并跳过二进制文件 | Claude（全权） | internal/executor/fs.go search_test.go | deployed（main 6c269e0 已推送；Hub 10-27 07:21 部署 bd409c230b44；Agent 待发版） | fix/search-size-cap @ d978ea0（链：6145f15 → d978ea0） | 1 | Hark：通过（附建议） | - | - | 2026-10-27 |
 | T-20261027-03 | 同步文档：executor 加固与原子写入的行为变化 | Claude（全权） | docs/api.md docs/architecture.md docs/mcp-clients.md docs/security.md docs/roadmap.md | deployed（main 6c269e0 已推送；Hub 10-27 07:21 部署 bd409c230b44；Agent 待发版） | docs/hardening-notes @ 8e72dbf（基于卡 05 d53d920） | 2 | Hark：不通过（R2）；已解决 | - | - | 2026-10-27 |
 | T-20261027-05 | Hub 本机分支的文件写入改为原子写入（REST file/write 与 MCP write_file） | Claude（全权） | internal/api/api.go internal/api/mcp_adapter.go internal/api/file_write_atomic_test.go | deployed（main 6c269e0 已推送；Hub 10-27 07:21 部署 bd409c230b44；Agent 待发版） | fix/hub-atomic-file-write @ d53d920（基线 d978ea0） | 0 | - | - | - | 2026-10-27 |
+
+| T-20261028-03 | 审计 `_ =` 忽略错误分类报告（阶段一，只出报告不改代码） | Claude | docs/recovery/AUDIT-IGNORED-ERRORS-1028.md | ready（代 Hark 发卡，OPC 特别授权） | - | 0 | - | - | - | 2026-10-28 |
