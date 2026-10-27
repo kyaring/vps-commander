@@ -19,6 +19,17 @@ import (
 // cannot run longer than this without an agent upgrade.
 const remoteSessionTTL = 30 * time.Minute
 
+// remoteKillMargin is how much earlier than the agent's expiry the Hub kills a remote job, so the
+// final output is read while the agent still holds the session (a finished session is kept until
+// it expires, but an expired one is removed).
+const remoteKillMargin = time.Minute
+
+// remoteSessionIdle is how long the agent keeps a finished session (10 min idle) plus a margin.
+const remoteSessionIdle = 11 * time.Minute
+
+// remoteNodeCapacity is the agent's session limit per node (MaxSessionsPerManager = 8 MiB / 2 MiB).
+const remoteNodeCapacity = 4
+
 // remoteProcessAPI is the part of the cluster manager that remote jobs use. Tests replace it.
 type remoteProcessAPI interface {
 	Online(name string) bool
@@ -47,6 +58,15 @@ func (m *execJobs) startRemote(s *Server, rp remoteProcessAPI, p auth.Principal,
 	if !ok {
 		return execJob{}, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	m.mu.Lock()
+	used := m.remoteOccupancyLocked(device, m.now())
+	m.mu.Unlock()
+	if used >= m.remoteCapacity {
+		release()
+		return execJob{}, fmt.Errorf("node %s has no free session slot (%d in use; a finished session keeps its slot for %s)", device, used, m.remoteIdle)
+	}
 	id := newJobID()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	_, err := rp.StartProcess(ctx, device, cluster.StartProcessPayload{Command: command, Workdir: workdir, SessionID: id, Owner: p.TokenID})
@@ -56,7 +76,7 @@ func (m *execJobs) startRemote(s *Server, rp remoteProcessAPI, p auth.Principal,
 		return execJob{}, err
 	}
 	j := &execJob{ID: id, Owner: p.TokenID, Device: device, Summary: jobSummary(command), Status: "running", Remote: true,
-		MaxRuntimeS: int(remoteSessionTTL / time.Second), ClientIP: clientIP, Started: m.now(), command: command}
+		MaxRuntimeS: int(m.remoteKillAfter / time.Second), ClientIP: clientIP, Started: m.now(), command: command}
 	m.mu.Lock()
 	m.pruneLocked(m.now())
 	m.jobs[j.ID] = j
@@ -72,7 +92,7 @@ func (m *execJobs) startRemote(s *Server, rp remoteProcessAPI, p auth.Principal,
 // token's exec slot when it does.
 func (m *execJobs) monitorRemote(s *Server, rp remoteProcessAPI, p auth.Principal, j *execJob, release func()) {
 	defer release()
-	deadline := j.Started.Add(remoteSessionTTL)
+	deadline := j.Started.Add(m.remoteKillAfter)
 	t := time.NewTicker(m.tick)
 	defer t.Stop()
 	for range t.C {
@@ -84,6 +104,11 @@ func (m *execJobs) monitorRemote(s *Server, rp remoteProcessAPI, p auth.Principa
 			m.settleRemote(s, p, j, executor.Result{}, "node_offline")
 			return
 		case err != nil && strings.Contains(err.Error(), "session not found"):
+			// The agent removed the session. If that happened at its expiry, the agent ended the process.
+			if m.now().Sub(j.Started) >= m.remoteKillAfter {
+				m.settleRemote(s, p, j, executor.Result{}, "")
+				return
+			}
 			m.settleRemote(s, p, j, executor.Result{}, "session_gone")
 			return
 		case err == nil && !out.Running:
@@ -140,7 +165,7 @@ func (m *execJobs) settleRemote(s *Server, p auth.Principal, j *execJob, res exe
 		status, reason = "lost", lostReason
 	case j.killReason != "":
 		status, reason, timedOut = "killed", j.killReason, j.killReason == "timeout"
-	case now.Sub(j.Started) >= remoteSessionTTL-time.Minute:
+	case now.Sub(j.Started) >= m.remoteKillAfter:
 		status, reason = "killed", "agent_session_ttl"
 	}
 	j.Status, j.Reason, j.TimedOut = status, reason, timedOut
@@ -210,4 +235,19 @@ func (m *execJobs) cancelRemote(rp remoteProcessAPI, j *execJob) (execJob, error
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// remoteOccupancyLocked counts the agent session slots a node holds: running remote jobs, and
+// finished ones whose session the agent still keeps. Callers must hold mu.
+func (m *execJobs) remoteOccupancyLocked(device string, now time.Time) int {
+	n := 0
+	for _, j := range m.jobs {
+		if !j.Remote || j.Device != device {
+			continue
+		}
+		if j.Status == "running" || (!j.Ended.IsZero() && now.Sub(j.Ended) < m.remoteIdle) {
+			n++
+		}
+	}
+	return n
 }

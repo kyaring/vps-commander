@@ -24,13 +24,15 @@ type fakeAgent struct {
 	exitCode    int
 	stdout      string
 	forced      int
+	expireAfter time.Duration // the agent removes a session this old (0 = never)
 }
 
 type fakeSession struct {
-	owner   string
-	running bool
-	reads   int
-	code    int
+	owner     string
+	running   bool
+	reads     int
+	code      int
+	startedAt time.Time
 }
 
 func newFakeAgent() *fakeAgent {
@@ -49,7 +51,7 @@ func (f *fakeAgent) StartProcess(ctx context.Context, name string, p cluster.Sta
 	if !f.online {
 		return nil, errors.New("device offline")
 	}
-	f.sessions[p.SessionID] = &fakeSession{owner: p.Owner, running: true}
+	f.sessions[p.SessionID] = &fakeSession{owner: p.Owner, running: true, startedAt: time.Now()}
 	return map[string]any{"session_id": p.SessionID}, nil
 }
 
@@ -60,6 +62,10 @@ func (f *fakeAgent) ReadProcessOutput(ctx context.Context, name, sessionID, owne
 		return cluster.ProcessOutputPayload{}, errors.New("device offline")
 	}
 	s, ok := f.sessions[sessionID]
+	if ok && f.expireAfter > 0 && time.Since(s.startedAt) >= f.expireAfter {
+		delete(f.sessions, sessionID)
+		ok = false
+	}
 	if !ok {
 		return cluster.ProcessOutputPayload{}, errors.New("session not found")
 	}
@@ -92,6 +98,15 @@ func (f *fakeAgent) ForceTerminate(ctx context.Context, name, sessionID, owner s
 	}
 	s.running, s.code = false, -9
 	return nil
+}
+
+// endSession makes one session end, as a process that finally exits would.
+func (f *fakeAgent) endSession(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if s, ok := f.sessions[id]; ok && s.running {
+		s.running, s.code = false, 0
+	}
 }
 
 // endAll makes every session end, as a process that finally exits would.
@@ -141,7 +156,7 @@ func TestRemoteJobRunningThenExited(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := jobMap(t, v)["job_id"].(string)
-	if jobMap(t, v)["status"] != "running" || jobMap(t, v)["max_runtime_s"] != 1800 {
+	if jobMap(t, v)["status"] != "running" || jobMap(t, v)["max_runtime_s"] != 1740 {
 		t.Fatalf("start view = %v", jobMap(t, v))
 	}
 	m := waitJobStatus(t, b, ctx, id, "exited", 10*time.Second)
@@ -306,5 +321,115 @@ func TestRemoteJobInvisibleToOtherTokens(t *testing.T) {
 	_, errUnknown := b.ExecStatus(jobCtx("tok-B"), "job-0000000000000000")
 	if errStatus == nil || errCancel == nil || errStatus.Error() != errUnknown.Error() || errCancel.Error() != errUnknown.Error() {
 		t.Fatalf("other token: status=%v cancel=%v unknown=%v", errStatus, errCancel, errUnknown)
+	}
+}
+
+// The Hub kills a remote job one minute before the agent expires its session, and the final
+// output is still readable afterwards.
+func TestRemoteKillBeforeAgentExpiryKeepsOutput(t *testing.T) {
+	if remoteKillAfterDefault := remoteSessionTTL - remoteKillMargin; remoteKillAfterDefault >= remoteSessionTTL {
+		t.Fatal("kill deadline must come before the agent session expires")
+	}
+	f := newFakeAgent()
+	f.stdout = "partial"
+	s := newRemoteTestServer(t, f)
+	m := s.jobsFor()
+	m.remoteKillAfter, m.remoteTTL = 300*time.Millisecond, 3*time.Second
+	f.expireAfter = 3 * time.Second
+	b := s.NewMCPBackend()
+	ctx := jobCtx("tok-A")
+	v, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := jobMap(t, v)["job_id"].(string)
+	got := waitJobStatus(t, b, ctx, id, "killed", 10*time.Second)
+	if got["reason"] != "timeout" || got["stdout"] != "partial" {
+		t.Fatalf("killed view = %v", got)
+	}
+}
+
+// When the agent removes a session before the Hub's deadline, the job is lost (session_gone).
+func TestRemoteSessionRemovedEarlyIsLost(t *testing.T) {
+	f := newFakeAgent()
+	f.expireAfter = 200 * time.Millisecond
+	s := newRemoteTestServer(t, f)
+	m := s.jobsFor()
+	m.remoteKillAfter = 5 * time.Second
+	b := s.NewMCPBackend()
+	ctx := jobCtx("tok-A")
+	v, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitJobStatus(t, b, ctx, jobMap(t, v)["job_id"].(string), "lost", 10*time.Second)
+	if got["reason"] != "session_gone" {
+		t.Fatalf("lost reason = %v, want session_gone", got["reason"])
+	}
+}
+
+// A node holds at most remoteNodeCapacity sessions; the next start is refused with a reason.
+func TestRemoteNodeCapacityRefusesFifthSession(t *testing.T) {
+	f := newFakeAgent()
+	s := newRemoteTestServer(t, f)
+	b := s.NewMCPBackend()
+	for i := 0; i < remoteNodeCapacity; i++ {
+		if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "node-x", "sleep 600", ""); err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+	}
+	if _, err := b.StartExec(jobCtx("tok-A"), "127.0.0.1", "node-x", "sleep 600", ""); err == nil || !strings.Contains(err.Error(), "no free session slot") {
+		t.Fatalf("fifth start err = %v, want no free session slot", err)
+	}
+}
+
+// A finished session keeps its node slot for the idle window, then the slot is free again.
+func TestRemoteFinishedSessionKeepsSlotUntilIdle(t *testing.T) {
+	f := newFakeAgent()
+	s := newRemoteTestServer(t, f)
+	m := s.jobsFor()
+	m.remoteCapacity, m.remoteIdle = 2, 500*time.Millisecond
+	b := s.NewMCPBackend()
+	ctx := jobCtx("tok-A")
+	v1, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", ""); err != nil {
+		t.Fatal(err)
+	}
+	f.endSession(jobMap(t, v1)["job_id"].(string))
+	waitJobStatus(t, b, ctx, jobMap(t, v1)["job_id"].(string), "exited", 10*time.Second)
+	if _, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", ""); err == nil {
+		t.Fatal("start accepted while the finished session still holds its slot")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", ""); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("slot not released after the idle window")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A refused kill is audited as an exec_cancel with result error.
+func TestRemoteCancelFailureIsAudited(t *testing.T) {
+	f := newFakeAgent()
+	f.forceErr = errors.New("agent refused force_terminate")
+	s := newRemoteTestServer(t, f)
+	b := s.NewMCPBackend()
+	ctx := jobCtx("tok-A")
+	v, err := b.StartExec(ctx, "127.0.0.1", "node-x", "sleep 600", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.CancelExec(ctx, "127.0.0.1", jobMap(t, v)["job_id"].(string)); err == nil {
+		t.Fatal("refused kill returned no error")
+	}
+	if n := countAudit(t, s, "action = 'exec_cancel' AND result = 'error' AND error_msg LIKE '%kill failed%'"); n != 1 {
+		t.Fatalf("cancel-failure audit rows = %d, want 1", n)
 	}
 }

@@ -239,10 +239,10 @@ Example:
 
 限制与行为：
 
-- 最长运行时间：本机 60 分钟；远端 30 分钟。远端的上限来自 agent 的会话寿命（`executor.DefaultSessionTTL`，30 分钟）：agent 到期会杀掉会话，`start_process` 没有 TTL 参数。Hub 同样在 30 分钟时自行结束进程，原因记为 `timeout`；如果 agent 先结束，原因记为 `agent_session_ttl`。以上数字来自代码，尚未在真实节点上实测。
+- 最长运行时间：本机 60 分钟；远端 30 分钟。远端的上限来自 agent 的会话寿命（`executor.DefaultSessionTTL`，30 分钟）：agent 到期会杀掉会话，`start_process` 没有 TTL 参数。Hub 在 29 分钟时（早于 agent 到期 1 分钟）自行结束进程，原因记为 `timeout`，并在会话到期前读取最终输出；如果 agent 先结束进程，原因记为 `agent_session_ttl`；如果会话在 Hub 截止时间之前已被 agent 删除，job 记为 `lost`（`reason=session_gone`）。以上数字来自代码，尚未在真实节点上实测。
 - 远端输出：输出在 agent 端的环形缓冲中保留，每个流最多 2 MiB（`DefaultRingCapacity`）；更多的输出会被丢弃。
-- 远端会话数：每个节点最多 4 个会话（`MaxSessionsPerManager` = 8 MiB / 2 MiB），包括本机其他会话进程。已结束的会话在闲置 10 分钟后才会被 agent 回收，期间仍占用一个会话位；会话位满时 `exec_start` 返回 agent 的错误。
-- 取消的确认：远端取消先下发 `force_terminate`；agent 拒绝时返回 `kill failed, job still running`，job 保持 `running`；已下发但 20 秒内未确认进程结束时返回 `kill sent but the process has not been confirmed ended`，job 保持 `running`，之后由 Hub 监控结算。
+- 远端会话数：agent 每个节点最多 4 个会话（`MaxSessionsPerManager` = 8 MiB / 2 MiB），且包括节点上其他进程会话。Hub 按节点统计自己启动的 job：运行中的 job，加上结束后 11 分钟内的 job（agent 对已结束会话保留 10 分钟闲置期，外加余量）。满 4 个时 `exec_start` 返回 `node <name> has no free session slot`。Hub 无法看到节点上其他进程的会话，因此统计只覆盖 Hub 启动的 job。
+- 取消的确认：远端取消先下发 `force_terminate`；agent 拒绝时返回 `kill failed, job still running`，job 保持 `running`；已下发但 20 秒内未确认进程结束时返回 `kill sent but the process has not been confirmed ended`，job 保持 `running`，之后由 Hub 监控结算。取消失败（两种情况）都会写一条 `exec_cancel` 审计，结果为 `error`。
 - 名额：运行中的 job 占用创建它的令牌的并发 exec 名额，直到进程确认结束或 job 被判定为 `lost`，之后才释放。名额满时启动返回 `token concurrent exec limit reached`。
 - 节点离线：远端 job 标记为 `lost`（`reason=node_offline`），名额释放。进程可能仍在 agent 上运行，直到 agent 的会话到期。Hub 重启：运行中的 job 标记为 `lost`（`reason=hub_restart`），远端进程同样可能继续运行到会话到期。
 - 归属：job 只属于创建它的令牌（按 `TokenID`）。其他令牌查询或取消时，与不存在的 job 返回同一个错误 `job not found`。

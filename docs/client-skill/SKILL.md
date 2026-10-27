@@ -111,7 +111,7 @@ scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 
 1. `exec_start`，`command` 填需要运行的命令，`device` 缺省为本机。
 2. 每隔几秒调用一次 `exec_status`（传入 `job_id`）。
 3. `status=exited` 时读取 `exit_code` 与 `stdout`；完整输出在 `spill_path`，用 `read_file`（`device=@hub-spill`，`path=spill_path`）分页读取。
-4. `status=killed` 时看 `reason`：`timeout` 表示超过上限（本机 60 分钟，远端 30 分钟）；`cancel` 表示已被取消；`agent_session_ttl` 表示远端 agent 先结束了会话。
+4. `status=killed` 时看 `reason`：`timeout` 表示超过上限（本机 60 分钟，远端 29 分钟）；`cancel` 表示已被取消；`agent_session_ttl` 表示远端 agent 先结束了会话。
 5. `status=lost` 表示 Hub 重启（`hub_restart`）、节点离线（`node_offline`）或会话已不存在（`session_gone`），进程状态未知，需要重新运行。
 
-限制：远端的输出每个流最多保留 2 MiB；每个节点最多 4 个会话，已结束的会话要等 10 分钟闲置期过后才会释放，会话满时 `exec_start` 会报错。异步 job 只能被创建它的令牌查询和取消。运行中的 job 占用该令牌的并发 exec 名额，直到进程确认结束；名额满时 `exec_start` 会报错，此时先取消或等待已有 job 结束。取消返回 `kill failed` 或 `not been confirmed` 时，job 仍在运行，可以稍后再次取消或查询。job 结束 24 小时后输出被清空，状态显示 `expired`，需要的输出要在此之前读取。
+限制：远端的输出每个流最多保留 2 MiB；每个节点最多 4 个会话，Hub 按节点统计：结束后的会话要等 11 分钟（agent 的 10 分钟闲置期加余量）才不再计入，满 4 个时 `exec_start` 会报错。异步 job 只能被创建它的令牌查询和取消。运行中的 job 占用该令牌的并发 exec 名额，直到进程确认结束；名额满时 `exec_start` 会报错，此时先取消或等待已有 job 结束。取消返回 `kill failed` 或 `not been confirmed` 时，job 仍在运行，可以稍后再次取消或查询。job 结束 24 小时后输出被清空，状态显示 `expired`，需要的输出要在此之前读取。

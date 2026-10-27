@@ -60,13 +60,18 @@ type execJob struct {
 // execJobs owns every job of this Hub. Records are also written under the spill directory so
 // that a restart can report jobs that were running as lost instead of running.
 type execJobs struct {
-	mu          sync.Mutex
-	dir         string
-	jobs        map[string]*execJob
-	now         func() time.Time
-	max         time.Duration
-	tick        time.Duration // remote monitor interval
-	confirmWait time.Duration // how long cancel waits for the end of a remote process
+	startMu         sync.Mutex // serializes remote starts so the per-node capacity check holds
+	mu              sync.Mutex
+	dir             string
+	jobs            map[string]*execJob
+	now             func() time.Time
+	max             time.Duration
+	tick            time.Duration // remote monitor interval
+	confirmWait     time.Duration // how long cancel waits for the end of a remote process
+	remoteTTL       time.Duration // the agent's absolute session lifetime
+	remoteKillAfter time.Duration // Hub kills a remote job this long after start, before the agent expires the session
+	remoteIdle      time.Duration // how long a finished remote session keeps an agent slot
+	remoteCapacity  int           // remote sessions per node
 }
 
 func newExecJobs(dir string, now func() time.Time) (*execJobs, error) {
@@ -76,7 +81,8 @@ func newExecJobs(dir string, now func() time.Time) (*execJobs, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	m := &execJobs{dir: dir, jobs: make(map[string]*execJob), now: now, max: jobMaxRuntime, tick: time.Second, confirmWait: 20 * time.Second}
+	m := &execJobs{dir: dir, jobs: make(map[string]*execJob), now: now, max: jobMaxRuntime, tick: time.Second, confirmWait: 20 * time.Second,
+		remoteTTL: remoteSessionTTL, remoteKillAfter: remoteSessionTTL - remoteKillMargin, remoteIdle: remoteSessionIdle, remoteCapacity: remoteNodeCapacity}
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -377,6 +383,10 @@ func (b *MCPBackend) CancelExec(ctx context.Context, clientIP, jobID string) (an
 		}
 		view, err := m.cancelRemote(rp, ref)
 		if err != nil {
+			if b.server.Store != nil {
+				cancelCtx := withAuditResult(auth.WithPrincipal(context.Background(), p), "error")
+				_ = b.server.auditMCPContext(cancelCtx, clientIP, ref.Device, "exec_cancel", ref.Summary, 1, 0, "job="+ref.ID+" "+err.Error())
+			}
 			return nil, err
 		}
 		if b.server.Store != nil {
