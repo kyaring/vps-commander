@@ -11,15 +11,15 @@ import (
 	"github.com/wjyhk/vps-commander/internal/auth"
 )
 
-// Recorded on the base commit 30e0abc (identical tool definitions to 6c269e0). This card must
-// not change the tools/list response by a single byte.
+// tools/list recorded after T-20261016-02 (exec_start, exec_status, exec_cancel added).
+// Previous value (T-20261016-01, base 30e0abc): sha256 e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951, 5426 bytes.
 const (
-	toolsListBaselineSHA256 = "e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951"
-	toolsListBaselineBytes  = 5426
+	toolsListBaselineSHA256 = "3abe94ff8d644cd831dc5fe7ef548a2c742609e87df505f789befee0e7d99279"
+	toolsListBaselineBytes  = 6433
 	toolsListMaxBytes       = 10240
 )
 
-func TestToolsListIsByteIdenticalToBaseline(t *testing.T) {
+func TestToolsListMatchesRecordedHash(t *testing.T) {
 	srv := NewServer(&mockBackend{}, nil)
 	r := httptest.NewRequest("POST", "/mcp", nil)
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "panel"})

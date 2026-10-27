@@ -29,7 +29,22 @@ func isCommandExit(ctx context.Context) bool {
 }
 
 // auditResultForCode maps an exit code to the audit result for this context.
+type auditResultKey struct{}
+
+// withAuditResult overrides the audit result of one record (for example "timeout" or "killed").
+func withAuditResult(ctx context.Context, result string) context.Context {
+	return context.WithValue(ctx, auditResultKey{}, result)
+}
+
+func auditResultOverride(ctx context.Context) string {
+	v, _ := ctx.Value(auditResultKey{}).(string)
+	return v
+}
+
 func auditResultForCode(ctx context.Context, code int) string {
+	if r := auditResultOverride(ctx); r != "" {
+		return r
+	}
 	if isCommandExit(ctx) {
 		if code == 0 {
 			return "ok"

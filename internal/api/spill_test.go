@@ -27,11 +27,16 @@ func newSpillTestServer(t *testing.T) (*Server, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.DB.Close() })
+	s := &Server{Store: store, LocalName: "local"}
+	t.Cleanup(func() {
+		drainTestJobs(s)
+		_ = store.FlushAudits()
+		store.DB.Close()
+	})
 	if err := store.SetGlobalSecurityMode("high"); err != nil {
 		t.Fatal(err)
 	}
-	return &Server{Store: store, LocalName: "local"}, dbPath
+	return s, dbPath
 }
 
 func spillFilesIn(t *testing.T, dir string) []string {
@@ -141,7 +146,7 @@ func TestSpillNotWrittenWhenOutputFits(t *testing.T) {
 // 五种 output_mode 的返回字段集合完全一致（表驱动）。
 func TestExecFieldSetIdenticalAcrossModes(t *testing.T) {
 	s, _ := newSpillTestServer(t)
-	want := []string{"device", "duration_ms", "exit_code", "sha256", "spill_device", "spill_path", "stderr", "stdout", "total_bytes", "total_lines", "truncated"}
+	want := []string{"device", "duration_ms", "exit_code", "sha256", "spill_device", "spill_path", "stderr", "stdout", "timed_out", "total_bytes", "total_lines", "truncated"}
 	for _, tc := range []struct {
 		name, mode, out string
 	}{
@@ -316,7 +321,7 @@ func TestMCPReadFileServesSpillAcrossDeviceWhitelist(t *testing.T) {
 		t.Fatalf("exec failed: %#v", resp)
 	}
 	structured, ok := res.StructuredContent.(map[string]any)
-	if !ok || len(structured) != 11 {
+	if !ok || len(structured) != 12 {
 		t.Fatalf("structuredContent = %#v", res.StructuredContent)
 	}
 	var textObj map[string]any
