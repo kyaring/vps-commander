@@ -118,11 +118,16 @@ func (b *MCPBackend) ExecCommandWithOptions(ctx context.Context, clientIP, devic
 		res = b.server.Exec.Run(execCtx, command, workdir)
 	}
 
+	timedOut := execCtx.Err() == context.DeadlineExceeded
 	if b.server.Store != nil {
-		_ = b.server.auditMCPContext(withCommandExit(ctx), clientIP, device, "exec", command, res.ExitCode, res.DurationMS, execAuditMessage(res))
+		auditCtx, msg := withCommandExit(ctx), execAuditMessage(res)
+		if timedOut {
+			auditCtx, msg = withAuditResult(auditCtx, "timeout"), "timeout; "+msg
+		}
+		_ = b.server.auditMCPContext(auditCtx, clientIP, device, "exec", command, res.ExitCode, res.DurationMS, msg)
 	}
 
-	shaped, err := b.server.execResponse(p.QuotaID(), device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	shaped, err := b.server.execResponseTimed(p.TokenID, device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts, timedOut)
 	if err != nil {
 		return nil, err
 	}

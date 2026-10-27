@@ -119,8 +119,8 @@ func TestMCPInitializeAndListTools(t *testing.T) {
 		t.Fatalf("expected map result")
 	}
 	tools, ok := resMap["tools"].([]any)
-	if !ok || len(tools) != 12 {
-		t.Fatalf("expected 11 tools, got %d", len(tools))
+	if !ok || len(tools) != 15 {
+		t.Fatalf("expected 15 tools (12 + exec_start, exec_status, exec_cancel), got %d", len(tools))
 	}
 	foundWriteFile := false
 	for _, raw := range tools {

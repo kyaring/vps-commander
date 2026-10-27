@@ -123,6 +123,13 @@ func structuredContentFor(tool string, res any, isErr bool) any {
 	return nil
 }
 
+// AsyncExecBackend is implemented by backends that run exec as background jobs.
+type AsyncExecBackend interface {
+	StartExec(ctx context.Context, clientIP, device, command, workdir string) (any, error)
+	ExecStatus(ctx context.Context, jobID string) (any, error)
+	CancelExec(ctx context.Context, clientIP, jobID string) (any, error)
+}
+
 // Backend interface for invoking actions
 type ActionBackend interface {
 	ListDevices(ctx context.Context) (any, error)
@@ -1218,6 +1225,9 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				Name: "call_agent_mcp", Description: "通过 Hub 调度指定 Agent 上已挂载的 MCP 工具",
 				InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标 Agent 节点名称"}, "server": {Type: "string", Description: "MCP 服务 ID"}, "tool": {Type: "string", Description: "MCP 工具名称"}, "arguments": {Type: "object", Description: "MCP 工具参数 JSON 对象"}}, Required: []string{"device", "server", "tool"}},
 			},
+			{Name: "exec_start", Description: "异步启动本机命令并返回 job_id（用于预计超过 30 秒的命令）。最长 60 分钟；远端节点暂不支持", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标节点（缺省为本机）"}, "command": {Type: "string", Description: "需要执行的 Shell 命令"}, "workdir": {Type: "string", Description: "可选的工作目录绝对路径"}}, Required: []string{"command"}}},
+			{Name: "exec_status", Description: "查询异步命令状态（running/exited/killed/lost/expired），返回退出码与输出摘要；完整输出见 spill_path", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"job_id": {Type: "string", Description: "exec_start 返回的 job_id"}}, Required: []string{"job_id"}}},
+			{Name: "exec_cancel", Description: "取消运行中的异步命令，状态记为 killed", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"job_id": {Type: "string", Description: "exec_start 返回的 job_id"}}, Required: []string{"job_id"}}},
 		}
 		if p, ok := auth.PrincipalFromContext(ctx); ok {
 			filtered := make([]Tool, 0, len(tools))
@@ -1298,6 +1308,8 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 
 func mcpToolScope(name string) string {
 	switch name {
+	case "exec_start", "exec_status", "exec_cancel":
+		return "exec"
 	case "list_devices":
 		return "devices:read"
 	case "exec_command":
@@ -1330,7 +1342,9 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 		return fmt.Errorf("scope denied: %s", scope)
 	}
 	spillRead := name == "read_file" && device == SpillDeviceName
-	if device != "" && name != "memo_set" && name != "memo_get" && !spillRead && !p.AllowsDevice(device) {
+	// Job status and cancel are scoped by the owning token, not by device; the device was checked at start.
+	jobCtl := name == "exec_status" || name == "exec_cancel"
+	if device != "" && name != "memo_set" && name != "memo_get" && !spillRead && !jobCtl && !p.AllowsDevice(device) {
 		return fmt.Errorf("device denied: %s", device)
 	}
 	return nil
@@ -1477,6 +1491,9 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 			return toolErrorFrom(err), true
 		}
 		return res, false
+
+	case "exec_start", "exec_status", "exec_cancel":
+		return s.callAsyncExec(ctx, clientIP, params)
 
 	case "read_multiple_files":
 		var a struct {
@@ -1871,4 +1888,41 @@ func (s *Server) AuditSessionMemo(ctx context.Context, clientIP, action, key str
 	// Suppress the generic MCP error audit for memo tools: the dedicated row
 	// already contains only key, byte count and safe status metadata.
 	MarkAuditRecorded(ctx)
+}
+
+// callAsyncExec dispatches exec_start, exec_status and exec_cancel to the backend.
+func (s *Server) callAsyncExec(ctx context.Context, clientIP string, params CallToolParams) (any, bool) {
+	backend, ok := s.Backend.(AsyncExecBackend)
+	if !ok {
+		return map[string]string{"error": "async exec is not available"}, true
+	}
+	var args struct {
+		Device  string `json:"device"`
+		Command string `json:"command"`
+		Workdir string `json:"workdir"`
+		JobID   string `json:"job_id"`
+	}
+	_ = json.Unmarshal(params.Arguments, &args)
+	var res any
+	var err error
+	switch params.Name {
+	case "exec_start":
+		if args.Command == "" {
+			return map[string]string{"error": "command is required"}, true
+		}
+		res, err = backend.StartExec(ctx, clientIP, args.Device, args.Command, args.Workdir)
+	default:
+		if args.JobID == "" {
+			return map[string]string{"error": "job_id is required"}, true
+		}
+		if params.Name == "exec_status" {
+			res, err = backend.ExecStatus(ctx, args.JobID)
+		} else {
+			res, err = backend.CancelExec(ctx, clientIP, args.JobID)
+		}
+	}
+	if err != nil {
+		return toolErrorFrom(err), true
+	}
+	return res, false
 }

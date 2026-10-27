@@ -71,6 +71,8 @@ type Server struct {
 	healthIntegrityCached bool
 	spillOnce             sync.Once
 	spill                 *spillStore
+	jobsOnce              sync.Once
+	jobs                  *execJobs
 }
 
 const (
@@ -1221,11 +1223,16 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res = s.Exec.Run(ctx, req.Command, req.Workdir)
 	}
-	if err := s.audit(r.WithContext(withCommandExit(r.Context())), req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, execAuditMessage(res)); err != nil {
+	timedOut := ctx.Err() == context.DeadlineExceeded
+	auditCtx, auditMsg := withCommandExit(r.Context()), execAuditMessage(res)
+	if timedOut {
+		auditCtx, auditMsg = withAuditResult(auditCtx, "timeout"), "timeout; "+auditMsg
+	}
+	if err := s.audit(r.WithContext(auditCtx), req.Device, "exec", req.Command, res.ExitCode, res.DurationMS, auditMsg); err != nil {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
-	shaped, err := s.execResponse(principalOwner(r.Context()), req.Device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	shaped, err := s.execResponseTimed(principalOwner(r.Context()), req.Device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts, timedOut)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

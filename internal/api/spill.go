@@ -84,9 +84,14 @@ func newSpillStore(dir string, totalCap int64, ttl time.Duration, now func() tim
 
 // write stores data as a new spill file owned by owner and returns its absolute path.
 func (s *spillStore) write(owner string, data []byte) (string, error) {
+	return s.writeAt(owner, data, s.now())
+}
+
+// writeAt stores data as a spill file created at the given time; that time sets when it expires.
+func (s *spillStore) writeAt(owner string, data []byte, created time.Time) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := s.now()
+	now := created
 	s.pruneLocked(now)
 	size := int64(len(data))
 	if size > s.totalCap {
@@ -120,6 +125,22 @@ func (s *spillStore) write(owner string, data []byte) (string, error) {
 	}
 	s.records[path] = spillRecord{owner: owner, size: size, created: now}
 	return path, nil
+}
+
+// sweep removes expired spill files even when nobody reads them.
+func (s *spillStore) sweep() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(s.now())
+}
+
+// janitor sweeps expired spill files periodically for the life of the process.
+func (s *spillStore) janitor(every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		s.sweep()
+	}
 }
 
 // read returns up to limit bytes of a spill file starting at offset. Only the owning token
@@ -222,17 +243,20 @@ func (s *Server) spillFor() *spillStore {
 			return
 		}
 		s.spill = st
+		go st.janitor(time.Minute)
 	})
 	return s.spill
 }
 
-// principalOwner returns the quota identity of the authenticated caller, or "" when absent.
+// principalOwner returns the TokenID of the authenticated caller, or "" when absent. Spill
+// files belong to the token, not to the quota group, so two tokens sharing a quota cannot
+// read each other's output.
 func principalOwner(ctx context.Context) string {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return ""
 	}
-	return p.QuotaID()
+	return p.TokenID
 }
 
 // execOutputFields is the one response shape for exec in every output mode. The same keys are
@@ -258,6 +282,7 @@ func execOutputFields(device string, exitCode int, shaped executor.ShapedOutput,
 		"sha256":       shaped.SHA256,
 		"spill_path":   spillPath,
 		"spill_device": spillDevice,
+		"timed_out":    false,
 	}
 }
 
@@ -265,6 +290,11 @@ func execOutputFields(device string, exitCode int, shaped executor.ShapedOutput,
 // full stdout+stderr byte stream is stored as a spill file owned by owner. If the spill cannot
 // be written, the result is still returned with an empty spill_path and the failure is logged.
 func (s *Server) execResponse(owner, device string, exitCode int, stdout, stderr string, durationMS int64, opts executor.OutputOptions) (map[string]any, error) {
+	return s.execResponseTimed(owner, device, exitCode, stdout, stderr, durationMS, opts, false)
+}
+
+// execResponseTimed is execResponse for a synchronous call that may have hit its deadline.
+func (s *Server) execResponseTimed(owner, device string, exitCode int, stdout, stderr string, durationMS int64, opts executor.OutputOptions, timedOut bool) (map[string]any, error) {
 	shaped, err := executor.ShapeOutput(stdout, stderr, opts.Mode, opts.MaxBytes)
 	if err != nil {
 		return nil, err
@@ -280,7 +310,9 @@ func (s *Server) execResponse(owner, device string, exitCode int, stdout, stderr
 			}
 		}
 	}
-	return execOutputFields(device, exitCode, shaped, durationMS, spillPath, opts.Mode), nil
+	fields := execOutputFields(device, exitCode, shaped, durationMS, spillPath, opts.Mode)
+	fields["timed_out"] = timedOut
+	return fields, nil
 }
 
 // readSpillPage serves one page of a spill file for the caller identified by owner.
@@ -330,7 +362,7 @@ func (s *Server) serveSpillRead(w http.ResponseWriter, r *http.Request, path str
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	chunk, err := s.readSpillPage(p.QuotaID(), path, offset, limit)
+	chunk, err := s.readSpillPage(p.TokenID, path, offset, limit)
 	if errors.Is(err, errSpillNotFound) {
 		http.Error(w, errSpillNotFound.Error(), http.StatusNotFound)
 		return
@@ -338,6 +370,9 @@ func (s *Server) serveSpillRead(w http.ResponseWriter, r *http.Request, path str
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if s.Store != nil {
+		_ = s.auditMCPContext(r.Context(), auth.ClientIP(r), mcp.SpillDeviceName, "file_read", path, 0, 0, "")
 	}
 	jsonOut(w, model.FileReadResponse{
 		Device:    mcp.SpillDeviceName,

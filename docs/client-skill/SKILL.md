@@ -102,3 +102,16 @@ DevTask 未恢复，恢复后随代码补回。
 scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status done --summary '实现完成；gofmt、vet、build、全量测试和 check-task 通过。' --employee SWS-E002-gpt --project vps-commander --ref commit-abc123
 scripts/notify-agent-completion.sh task-reported --task-id T-20261014-10 --type 开发 --status blocked --summary '受阻：等待 Hark 确认 API 的 severity 授权规则；需要 Hark 处理后才能继续。' --employee SWS-E002-gpt --project vps-commander --ref T-20261014-10
 ```
+
+
+## 长任务：用异步 exec（start + status）
+
+预计超过 30 秒的命令用 `exec_start` 启动（仅限本机，远端节点暂不支持异步），拿到 `job_id` 后用 `exec_status` 轮询，直到 `status` 不是 `running`：
+
+1. `exec_start`，`command` 填需要运行的命令，`device` 缺省为本机。
+2. 每隔几秒调用一次 `exec_status`（传入 `job_id`）。
+3. `status=exited` 时读取 `exit_code` 与 `stdout`；完整输出在 `spill_path`，用 `read_file`（`device=@hub-spill`，`path=spill_path`）分页读取。
+4. `status=killed` 时看 `reason`：`timeout` 表示超过 60 分钟上限；`cancel` 表示已被取消。
+5. `status=lost` 表示 Hub 重启，进程状态未知，需要重新运行。
+
+远端节点的长命令暂时只能用同步 `exec_command`（超时 300 秒）。不要用异步方式运行几秒就能结束的命令。异步 job 只能被创建它的令牌查询和取消。运行中的 job 占用该令牌的并发 exec 名额；名额满时 `exec_start` 会报错，此时先取消或等待已有 job 结束。job 结束 24 小时后输出被清空，状态显示 `expired`，需要的输出要在此之前读取。
