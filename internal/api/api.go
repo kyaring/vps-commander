@@ -69,6 +69,8 @@ type Server struct {
 	healthIntegrityOK     bool
 	healthIntegrityDetail string
 	healthIntegrityCached bool
+	spillOnce             sync.Once
+	spill                 *spillStore
 }
 
 const (
@@ -1223,7 +1225,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "audit write failed", 500)
 		return
 	}
-	shaped, err := execOutputResponse(req.Device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
+	shaped, err := s.execResponse(principalOwner(r.Context()), req.Device, res.ExitCode, res.Stdout, res.Stderr, res.DurationMS, opts)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1519,6 +1521,10 @@ func (s *Server) fileRead(w http.ResponseWriter, r *http.Request) {
 	if req.Device == "" {
 		req.Device = s.LocalName
 	}
+	if req.Device == mcp.SpillDeviceName {
+		s.serveSpillRead(w, r, req.Path, req.Offset, req.Limit)
+		return
+	}
 	if !s.requireSecurity(w, r, req.Device, "read", req.Path) {
 		return
 	}
@@ -1741,13 +1747,12 @@ func (s *Server) outputDedupLookup(device, workdir, command string, opts executo
 		delete(s.execOutputCache, key)
 		return nil, false
 	}
-	return map[string]any{
-		"unchanged":    true,
-		"hash":         record.Hash,
-		"first_seen":   record.FirstSeen.Format(time.RFC3339Nano),
-		"cached_bytes": record.CachedBytes,
-		"exit_code":    record.ExitCode,
-	}, true
+	out := execOutputFields(device, record.ExitCode, executor.ShapedOutput{TotalBytes: record.CachedBytes, SHA256: record.Hash}, 0, "", "raw")
+	out["unchanged"] = true
+	out["hash"] = record.Hash
+	out["first_seen"] = record.FirstSeen.Format(time.RFC3339Nano)
+	out["cached_bytes"] = record.CachedBytes
+	return out, true
 }
 
 func (s *Server) outputDedupRemember(device, workdir, command string, opts executor.OutputOptions, hash string, cachedBytes, exitCode int) {
@@ -1767,24 +1772,6 @@ func (s *Server) outputDedupRemember(device, workdir, command string, opts execu
 		}
 	}
 	s.execOutputCache[key] = executor.OutputDedupRecord{Hash: hash, FirstSeen: now, CachedBytes: cachedBytes, ExitCode: exitCode, WindowSeconds: opts.DedupWindowSeconds}
-}
-
-func execOutputResponse(device string, exitCode int, stdout, stderr string, durationMS int64, opts executor.OutputOptions) (map[string]any, error) {
-	shaped, err := executor.ShapeOutput(stdout, stderr, opts.Mode, opts.MaxBytes)
-	if err != nil {
-		return nil, err
-	}
-	if opts.Mode == "count" {
-		return map[string]any{"total_bytes": shaped.TotalBytes, "total_lines": shaped.TotalLines, "exit_code": exitCode}, nil
-	}
-	if opts.Mode == "none" {
-		return map[string]any{"exit_code": exitCode, "truncated": shaped.Truncated, "total_bytes": shaped.TotalBytes, "total_lines": shaped.TotalLines, "sha256": shaped.SHA256}, nil
-	}
-	return map[string]any{
-		"device": device, "exit_code": exitCode, "stdout": shaped.Stdout, "stderr": shaped.Stderr,
-		"duration_ms": durationMS, "truncated": shaped.Truncated, "total_bytes": shaped.TotalBytes,
-		"total_lines": shaped.TotalLines, "sha256": shaped.SHA256,
-	}, nil
 }
 
 func validateExecOutputOptions(mode string, maxBytes, dedupWindow int) (executor.OutputOptions, error) {

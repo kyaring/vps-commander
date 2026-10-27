@@ -134,15 +134,16 @@ func TestStreamableHTTPDeleteEndsSession(t *testing.T) {
 	if code := del("owner", sid); code != http.StatusNoContent {
 		t.Fatalf("delete by owner = %d, want 204", code)
 	}
-	if code := del("owner", sid); code != http.StatusNotFound {
-		t.Fatalf("second delete = %d, want 404", code)
+	if code := del("owner", sid); code != http.StatusNoContent {
+		t.Fatalf("second delete = %d, want 204 (idempotent: nothing left to end)", code)
 	}
 	w = httptest.NewRecorder()
 	req := execPrincipalRequest(http.MethodPost, "/mcp", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`, "owner")
 	req.Header.Set("Mcp-Session-Id", sid)
 	srv.HandleStreamableHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("request on deleted session = %d, want 404", w.Code)
+	// Card D: an unknown or ended session id is served in a new session owned by the caller.
+	if newID := w.Header().Get("Mcp-Session-Id"); w.Code != http.StatusOK || newID == "" || newID == sid {
+		t.Fatalf("request on deleted session = %d, new id %q; want 200 with a new session id", w.Code, newID)
 	}
 	w = httptest.NewRecorder()
 	srv.HandleStreamableHTTP(w, execPrincipalRequest(http.MethodGet, "/mcp", "", "owner"))
