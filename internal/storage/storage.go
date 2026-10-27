@@ -112,7 +112,10 @@ func (s *Store) init() error {
 	if err := s.migrateOfflineStates(); err != nil {
 		return err
 	}
-	return s.migrateNotificationV1()
+	if err := s.migrateNotificationV1(); err != nil {
+		return err
+	}
+	return s.migrateDevTask()
 }
 
 type MCPService struct {
