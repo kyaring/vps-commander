@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -182,9 +183,8 @@ func (s *Server) devtaskSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Store.SetDevTaskAllowedModels(in.AllowedModels); err != nil {
-			msg := err.Error()
-			if strings.Contains(msg, "must not be empty") || strings.Contains(msg, "duplicate model") {
-				http.Error(w, msg, http.StatusBadRequest)
+			if errors.Is(err, storage.ErrDevTaskModelEmpty) || errors.Is(err, storage.ErrDevTaskModelDuplicate) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			http.Error(w, "write model whitelist failed", http.StatusInternalServerError)

@@ -176,3 +176,17 @@ func TestTokenCreateAcceptsDevTaskScopes(t *testing.T) {
 		t.Fatalf("unknown scope: status %d, want 400", rec.Code)
 	}
 }
+
+func TestDevTaskSettingsWriteDBErrorReturns500(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
+	s, _ := newSpillTestServer(t)
+	admin := devtaskCtx(map[string]bool{"admin": true})
+	// Keep reads working, force writes to fail (SQLite query_only).
+	if _, err := s.Store.DB.Exec(`PRAGMA query_only = ON`); err != nil {
+		t.Fatal(err)
+	}
+	rec := devtaskDo(t, s, admin, http.MethodPut, "/api/v1/devtask-settings", `{"allowed_models":["global:deepseek-v4.1-flash"]}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("query_only PUT settings: status %d body=%s, want 500", rec.Code, rec.Body.String())
+	}
+}
