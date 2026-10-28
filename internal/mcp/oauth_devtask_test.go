@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -35,5 +36,19 @@ func TestOAuthDefaultScopesExcludeDevTask(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("devtask:submit should be a supported (requestable) scope")
+	}
+}
+
+// TestOAuthAuthorizeRejectsDevTaskRunScope hits the authorize endpoint (not only parseOAuthScopes).
+func TestOAuthAuthorizeRejectsDevTaskRunScope(t *testing.T) {
+	srv, _, clientID, _, redirect, verifierChallenge := oauthFlowFixture(t)
+	challenge := strings.SplitN(verifierChallenge, "|", 2)[1]
+	q := authorizeDefaultsQuery(clientID, redirect, challenge)
+	q.Set("resource", "https://hub.example.test/mcp")
+	q.Set("scope", "exec devtask:run")
+	bad := authorizeDefaultsRequest(t, srv, q)
+	if bad.Code != http.StatusFound || !strings.Contains(bad.Header().Get("Location"), "error=invalid_scope") {
+		t.Fatalf("devtask:run via authorize should be invalid_scope: status=%d loc=%s body=%s",
+			bad.Code, bad.Header().Get("Location"), bad.Body.String())
 	}
 }
