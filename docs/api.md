@@ -1,8 +1,6 @@
 # REST API
 
-适用版本：v1.1.30。机器可读描述：`GET /openapi.json`（OpenAPI 3.1，可导入 GPT Actions）。
-
-所有 `/api/v1/*` 与 `/metrics` 需要 `Authorization: Bearer <TOKEN>`；POST 请求使用 `Content-Type: application/json`。`device` 省略时默认 Hub 本机（别名 `local`），建议始终显式指定。
+> **版本说明（2026-10-28）**：本文默认描述**本地 `main` 分支**上的接口与 MCP 相关行为。生产 Hub（约 2026-10-27 部署）可能尚未包含「Unreleased」能力（例如本机/远端异步 `exec_start`/`exec_status`/`exec_cancel`）。部署差异见根目录 `CHANGELOG.md` 与 `docs/roadmap.md`。机器可读描述：`GET /openapi.json`（OpenAPI 3.1）。
 
 ---
 

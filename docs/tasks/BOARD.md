@@ -1,3 +1,10 @@
+
+| T-20261028-04 | DevTask D2：auth/admin/scope | Grok（OPC 授权） | internal/auth/ internal/api/ internal/mcp/ | in_review（待指派审核） | feat/devtask-d2-auth-api @ 958b375 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-05 | DevTask D3：REST + runner 租约 | Grok（OPC 授权） | internal/api/ internal/storage/ | in_review（待指派审核） | feat/devtask-d3-rest-lease @ 54c97f1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-06 | DevTask D4：MCP dev_task_* 工具 | Grok（OPC 授权） | internal/mcp/ | in_review（待指派审核） | feat/devtask-d4-mcp @ 6a7f8b5 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-07 | DevTask D5：cmd/devtask-runner | Grok（OPC 授权） | cmd/devtask-runner/ internal/devtask/ | in_review（待指派审核） | feat/devtask-d5-runner @ c3e19b1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-08 | DevTask D6：E2E + docs/devtask.md | Grok（OPC 授权） | internal/devtask/ docs/ | in_review（待指派审核） | feat/devtask-d6-e2e-docs @ 8264a13 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-09 | DevTask B：面板 + 通知事件 | Grok（OPC 授权） | internal/web/ internal/api/ internal/notify/ internal/storage/ | in_review（待指派审核） | feat/devtask-b-panel-notify @ 8548b79 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
 # 任务看板
 
 状态：draft → ready → in_dev → in_review → changes_requested → approved → merged → deployed → verified / rolled_back / cancelled
@@ -7,7 +14,7 @@
 
 | ID | 标题 | 开发者 | 改动范围 | 状态 | 分支 / commit | 轮次 | 审核结论 | 发布版本 | DevTask ID | 更新时间 |
 |----|------|--------|----------|------|---------------|------|----------|----------|------------|----------|
-| T-20261013-01 | 恢复开发环境（工具、代理、仓库） | GPT | 主机环境（非仓库） | in_review | - | 1 | 待复核：缺交付报告 | - | - | 2026-10-13 21:50 |
+| T-20261013-01 | 恢复开发环境（工具、代理、仓库） | GPT | 主机环境（非仓库） | cancelled（过时；2026-10-28 收口，环境已可用） | - | 1 | 待复核：缺交付报告 | - | - | 2026-10-13 21:50 |
 | T-20261013-02 | 恢复开发流程文档（docs/process、AGENTS 规则块、客户端 skill） | GPT | docs/process/ docs/client-skill/ AGENTS.md | merged | main @ c1f18cf（已推送） | 2 | PASS | - | - | 2026-10-13 23:32 |
 | T-20261013-03 | 新机构建与本机部署脚本 | GPT | scripts/release-build.sh scripts/test_release_build.sh deploy/deploy-hub-local.sh deploy/test_deploy_hub_local.sh deploy/README.md | done | main @ 5ae5126 | 1 | PASS（可复现构建、生产 dry-run 已核） | - | - | 2026-10-14 00:00 |
 | T-20261013-04 | 通知脚本修复（User-Agent、可诊断错误） | GPT | scripts/emit-notification-event.py scripts/notify-agent-completion.sh scripts/test_emit_notification_event.py scripts/test_notify_agent_completion.sh | merged | main @ 3aa87f7（已推送） | 1 | PASS（公网 400 已验证） | - | - | 2026-10-13 23:12 |
@@ -52,12 +59,12 @@
 | T-20261015-02 | 请求日志标注调用方 + audits 列表瘦身（负载考察衍生） | GPT | cmd/hub/ internal/auth/ internal/api/ internal/store/ internal/web/ docs/ | merged（6c4f83c，OPC 11:17 批准；未部署） | feat/obs-actor-audits @ bcbda0d（基线 5f2a70f；R1 分叉点 753191c） | 2 | R1 PASS（RikkaHub-1 07:27）：5 条必改全落实、5 项反向验证全检出，报告 docs/reviews/T-20261015-02-review.md 复审一节；待裁定 = R1 卡基线过期 | — | — | 2026-10-15 07:27 |
 | T-20261015-02-R1 | 返工：mcp_tool 改到鉴权之后由 MCP 处理器回填 + 补用例 | GPT | cmd/hub/ internal/auth/ internal/api/ internal/mcp/ internal/web/ docs/ | merged（6c4f83c，OPC 11:17 批准；未部署） | feat/obs-actor-audits @ bcbda0d | 1 | R1 PASS（RikkaHub-1 07:27，报告复审一节）；卡基线 5157a9d 过期 → 待裁定 |
 | T-20261015-03 | 修测试偶发竞争：session memo 测试替换全局 slog | GPT | internal/api/ internal/storage/ | merged（6c4f83c，OPC 11:17 批准；未部署） | fix/test-memo-slog-race @ 0512bc4（基线 3cf4ed6，分叉点口径） | 1 | reviewed-pass（RikkaHub-1）；报告 docs/reviews/T-20261015-03-review.md；被审提交 0512bc4 | - | - | 2026-10-15 11:05 |
-| T-20261015-04 | 遗留小项打包：测试日志 buffer 回归保护 + 哨兵自检 | GPT | internal/api/ | ready | test/leftovers-1015 | 0 | Hark 11:40 开卡（来源：T-03 审核建议 1、2） |
+| T-20261015-04 | 遗留小项打包：测试日志 buffer 回归保护 + 哨兵自检 | GPT | internal/api/ | in_review（代码已交付，待指派审核） | test/leftovers-1015 @ 3d70e73 | 0 | Hark 11:40 开卡；2026-10-28 状态收口：实现已在分支 |
 | BL-20261015-skill | Hub 通过 MCP prompts/resources 下发 docs/client-skill（agent 连上即可读取 skill） | 待定 | backlog | OPC 13:10 要求先记下；排在 SV-06 之后；开卡前先核实 Hub 是否已实现 prompts 和 resources | 2026-10-15 13:10 |
 | T-20261016-01 | MCP 返回层：溢出文件 + 返回形状收敛 + 预算按令牌计算 + 未知会话降级（tools/list 零改动） | Claude | internal/mcp/ internal/api/ internal/executor/ | merged（OPC 16:58 批准，本地 main f21b378；未推送、未部署） | feat/mcp-result-layer-2 @4c74bab（Claude）；报告 docs/reviews/T-20261016-01-review.md | 0 | Hark 06:40 开卡（OPC 06:35 定全部交给 RikkaHub-1） |
 | T-20261016-02 | exec 异步化 start + status（与 03 同批部署） | Claude | internal/mcp/ internal/api/ internal/executor/ | merged（本地 main，OPC 17:43；未推送、未部署，与 03 同批） | feat/mcp-exec-async | 0 | 基线转发时填入 |
 | T-20261027-06 | 远端节点异步 exec（会话进程） | Claude | internal/api/ internal/mcp/mcp.go docs/api.md docs/client-skill/SKILL.md | merged（本地 main a084688，OPC 特别授权 Hark 代审；未推送、未部署）；返工 21e03f0 + 修复 26b1f77 | feat/mcp-exec-async-remote @ 26b1f77 | 2 | 代审 PASS（docs/reviews/T-20261027-06-review-2.md）；Hark 复审待 |
-| T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | blocked（等 T-02 开工后） | feat/mcp-toolset-v2 | 0 | 基线转发时填入 |
+| T-20261016-03 | 工具集变更：outputSchema + annotations + 废弃 memo（与 02 同批部署） | RikkaHub-1 | internal/mcp/ internal/api/ | ready（T-02 已合入本地 main，可开工；待指派） | feat/mcp-toolset-v2 | 0 | 2026-10-28：T-02 阻塞已解除 |
 | T-20261016-06 | 删除公开探针页面与 /probe/summary（OPC 10-16 选 1） | GPT | internal/web/ docs/security.md docs/api.md | deployed（fc6708b 合并，21:05 部署 99e93fb5e429；OPC 21:03 豁免） | feat/remove-public-probe | 1 | 审核报告 docs/reviews/T-20261016-06-review.md；被审提交 f6b1075；卡基线 bb37f61 未推送 |
 | T-20261016-04 | 收紧 /probe/summary 公开返回（已取消） | GPT | internal/web/ docs/api.md docs/security.md | cancelled（OPC 10-16 改选 C，由 T-20261016-05 取代） | fix/probe-summary-allowlist | 0 | GPT 前置检查受阻（probe.js 依赖将被删字段） |
 | T-20261016-05 | 文档化公开探针接口暴露范围（已作废） | GPT | docs/security.md docs/api.md docs/roadmap.md | cancelled（OPC 10-16 改选 1，由 T-20261016-06 取代；分支 docs/probe-exposure 不合并） | docs/probe-exposure | 1 | 审核 FAIL（返工，remote_ip 漏写）已作废，GPT 无需返工；基线 e59a84e |
@@ -68,4 +75,4 @@
 | T-20261027-03 | 同步文档：executor 加固与原子写入的行为变化 | Claude（全权） | docs/api.md docs/architecture.md docs/mcp-clients.md docs/security.md docs/roadmap.md | deployed（main 6c269e0 已推送；Hub 10-27 07:21 部署 bd409c230b44；Agent 待发版） | docs/hardening-notes @ 8e72dbf（基于卡 05 d53d920） | 2 | Hark：不通过（R2）；已解决 | - | - | 2026-10-27 |
 | T-20261027-05 | Hub 本机分支的文件写入改为原子写入（REST file/write 与 MCP write_file） | Claude（全权） | internal/api/api.go internal/api/mcp_adapter.go internal/api/file_write_atomic_test.go | deployed（main 6c269e0 已推送；Hub 10-27 07:21 部署 bd409c230b44；Agent 待发版） | fix/hub-atomic-file-write @ d53d920（基线 d978ea0） | 0 | - | - | - | 2026-10-27 |
 
-| T-20261028-03 | 审计 `_ =` 忽略错误分类报告（阶段一，只出报告不改代码） | Claude | docs/recovery/AUDIT-IGNORED-ERRORS-1028.md | ready（代 Hark 发卡，OPC 特别授权） | - | 0 | - | - | - | 2026-10-28 |
+| T-20261028-03 | 审计 `_ =` 忽略错误分类报告（阶段一，只出报告不改代码） | Claude | docs/recovery/AUDIT-IGNORED-ERRORS-1028.md | in_review（报告已交付，待合入/审核） | audit/ignored-errors-1028 @ e4cc6db | 0 | 阶段二改行为待 OPC | - | - | 2026-10-28 |

@@ -1,5 +1,7 @@
 # 架构与协议
 
+> **2026-10-28**：`cmd/devtask-runner` 与 `internal/devtask` 在 DevTask feature 分支上开发，**尚未合入 main**。通知子系统已不止 Webhook（含通道/outbox/Telegram 等，见 CHANGELOG v1.1.35）。
+
 适用版本：v1.1.30。
 
 ## 1. 定位

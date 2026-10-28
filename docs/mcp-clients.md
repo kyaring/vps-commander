@@ -1,5 +1,7 @@
 # 客户端接入（MCP / REST / stdio）
 
+> **版本说明（2026-10-28）**：工具与异步 exec 行为以本地 `main` 为准；生产部署可能尚未包含 Unreleased 项（见 `CHANGELOG.md`）。
+
 适用版本：v1.1.30。示例域名为 `hub.example.com`，`<TOKEN>` 为命名令牌占位符。
 
 先在面板“接入与令牌”中创建命名令牌（见 [security.md](security.md)）。面板的“AI 接入向导”可以直接生成下面各种配置并测试连通。

@@ -4,7 +4,7 @@
 |----|------|
 | 主仓库 | wjy5010u:/root/work/vps-commander（主线 main，GitHub kyaring/vps-commander） |
 | 语言 | Go |
-| 开发者 | GPT（经 MCP，主做）；workbuddy-2（只接测试类任务）；DeepSeek flash（DevTask 未恢复，暂停） |
+| 开发者 | Grok（OPC 授权推进 DevTask，可自写卡开发；审核另指派）；GPT（经 MCP）；workbuddy-2（测试类）；DeepSeek flash（DevTask 恢复中，待审合并） |
 | 审核 | Hark |
 | 指定模型 | 仅 global:deepseek-v4.1-flash |
 | 当前阶段 | 恢复期：每次合并后推送 GitHub main；不构建、不打 tag、不发 release，除非 OPC 指定（覆盖 DEV-PROCESS 铁律 4 的“不 push”）。合并与推送由 OPC 批准后执行，开发者不自行推送。 |
@@ -25,7 +25,7 @@ git diff --check
 deploy/、scripts/、.github/、data/、bin/、go.mod、go.sum、docs/process/、docs/tasks/BOARD.md
 
 ## DevTask
-未恢复（恢复规划阶段 3），恢复前不派 flash 任务；恢复后 flash 只接远端模型 API（无内置 key，可能走外网），端点与 key 可配置、key 只经保密注入。
+恢复开发中（2026-10-28）：D1 已合本地 main；D2–D6 与面板/通知（B）在 feature 分支待审核合并（见 BOARD T-20261028-04～09）。默认 `DEVTASK_ENABLED` 关闭。flash/runner 只接远端模型 API（无内置 key），端点与 key 仅经环境注入，不得入库。
 
 ## 构建与发布
 新机构建/部署脚本由 T-20261013-03 重建；在此之前不部署。

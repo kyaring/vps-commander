@@ -5,7 +5,9 @@ description: 通过 VPS-Commander Hub 管理分布式 Linux 节点（查设备�
 
 # VPS-Commander 客户端 skill v1.2-recovery
 
-适用 Hub 版本：891904a（v1.1.35）及以后。Hub：`https://vcs.king.nyc.mn`。
+> **版本说明（2026-10-28）**：本 skill 随仓库 `main` 维护。其中「长任务 / 异步 exec（`exec_start`/`exec_status`/`exec_cancel`，含远端）」描述的是**本地 main** 行为；生产 Hub 若未部署对应版本，则仅有同步 `exec_command`。差异见仓库 `CHANGELOG.md`（Unreleased）与 `docs/roadmap.md`。
+
+适用 Hub 版本：以实际部署为准。Hub 示例域名勿写入真实密钥。
 本文件是 vps-commander 仓库 `docs/client-skill/SKILL.md` 的副本；接口、工具或规则变化时随代码一起更新。
 
 ## 1. 接入

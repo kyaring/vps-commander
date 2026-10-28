@@ -71,4 +71,7 @@ python3 internal/web/testdata/audit-layout.test.py
 
 ## 6. 文档同步规则
 
+未合入发布的行为写入 CHANGELOG「Unreleased」或 roadmap，并在 api/skill 等文首标注；避免读者误以为生产已具备。
+
+
 新增或修改功能时同步检查：`README.md`、`docs/architecture.md`、`docs/security.md`、`docs/mcp-clients.md`、`docs/api.md`、`docs/deploy/*`、`docs/operations.md`、`openapi.json`（影响 HTTP 契约时）。示例一律使用 `hub.example.com`、`node-01` 和 `<TOKEN>` 之类占位符。
