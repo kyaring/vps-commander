@@ -1,5 +1,5 @@
 
-| T-20261028-04 | DevTask D2：auth/admin/scope | Grok（OPC 授权；提交作者为 GPT，待核对） | internal/auth/ internal/api/ internal/mcp/ internal/storage/ | changes-requested（代审：devtask:run 经 admin 隐含泄露给 legacy/env 主体） | feat/devtask-d2-auth-api @ 958b375 | 1 | 代审 CHANGES REQUESTED（docs/reviews/T-20261028-04-review.md） | - | - | 2026-10-28 |
+| T-20261028-04 | DevTask D2：auth/admin/scope | Grok（OPC 授权；提交作者为 GPT，待核对） | internal/auth/ internal/api/ internal/mcp/ internal/storage/ | changes-requested（第二轮：panel/system 仍隐含 devtask:run） | feat/devtask-d2-auth-api @ 4e7626a | 2 | 代审第二轮 CHANGES REQUESTED（docs/reviews/T-20261028-04-review-2.md） | - | - | 2026-10-28 |
 | T-20261028-05 | DevTask D3：REST + runner 租约 | Grok（OPC 授权） | internal/api/ internal/storage/ | in_review（待指派审核） | feat/devtask-d3-rest-lease @ 54c97f1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
 | T-20261028-06 | DevTask D4：MCP dev_task_* 工具 | Grok（OPC 授权） | internal/mcp/ | in_review（待指派审核） | feat/devtask-d4-mcp @ 6a7f8b5 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
 | T-20261028-07 | DevTask D5：cmd/devtask-runner | Grok（OPC 授权） | cmd/devtask-runner/ internal/devtask/ | in_review（待指派审核） | feat/devtask-d5-runner @ c3e19b1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
