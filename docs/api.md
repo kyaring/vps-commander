@@ -258,7 +258,7 @@ MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；to
 ## DevTask 权限与管理接口（D2，开关 DEVTASK_ENABLED 默认关闭）
 
 - 新增 scope：`devtask:submit`（派发、返工）、`devtask:read`（查询）、`devtask:cancel`（取消）、`devtask:run`（仅 runner 自己的命名令牌）。它们不属于 legacy key 的固定 scope 集合。
-- admin 隐含 `devtask:submit`、`devtask:read`、`devtask:cancel`，**不**隐含 `devtask:run`（run 仅能由命名令牌显式授予，供 runner 使用）。admin 令牌仍不能在 OAuth consent 中被选用。legacy / env 引导主体虽带 admin，同样不能获得 `devtask:run`。
+- admin 隐含 `devtask:submit`、`devtask:read`、`devtask:cancel`，**不**隐含 `devtask:run`。`panel` / `system` 主体对其它 scope 仍为全开，但对 `devtask:run` 同样必须显式授予（默认 false）。run 仅能由命名令牌显式授予，供 runner 使用。admin 令牌仍不能在 OAuth consent 中被选用。legacy / env 引导主体虽带 admin，同样不能获得 `devtask:run`。
 - OAuth：可授予 `devtask:submit`、`devtask:read`、`devtask:cancel`；请求 `devtask:run` 返回 `invalid_scope`；未指定 scope 时的默认集合不含任何 devtask scope。
 - `DEVTASK_ENABLED` 只在值为 `on`、`true` 或 `1`（不区分大小写）时开启；关闭时下列接口返回 404。
 

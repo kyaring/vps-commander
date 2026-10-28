@@ -41,12 +41,16 @@ func (p Principal) AuditName() string {
 }
 
 func (p Principal) HasScope(scope string) bool {
+	// devtask:run is never implied by panel, system, or admin — only an explicit scope on
+	// a named token (the runner) may satisfy it.
+	if scope == "devtask:run" {
+		return p.Scopes[scope]
+	}
 	if p.Type == "panel" || p.Type == "system" || p.Scopes[scope] {
 		return true
 	}
-	// admin implies submit/read/cancel only. devtask:run is never implied: it must be
-	// granted explicitly on a named token (runner). Legacy/env principals carry admin
-	// but must not obtain run through this path.
+	// admin implies submit/read/cancel only. Legacy/env principals carry admin but
+	// still cannot obtain run (handled above).
 	if !p.Scopes["admin"] {
 		return false
 	}

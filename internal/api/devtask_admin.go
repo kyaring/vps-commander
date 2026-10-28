@@ -182,7 +182,12 @@ func (s *Server) devtaskSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.Store.SetDevTaskAllowedModels(in.AllowedModels); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			msg := err.Error()
+			if strings.Contains(msg, "must not be empty") || strings.Contains(msg, "duplicate model") {
+				http.Error(w, msg, http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "write model whitelist failed", http.StatusInternalServerError)
 			return
 		}
 		_ = s.audit(r, "", "devtask_settings_update", "", 0, 0, fmt.Sprintf("old=%s new=%s", marshalStrings(old), marshalStrings(in.AllowedModels)))

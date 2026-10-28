@@ -87,3 +87,23 @@ func copyScopes(in map[string]bool) map[string]bool {
 	}
 	return out
 }
+
+func TestDevTaskRunNotImpliedForPanelAndSystem(t *testing.T) {
+	for _, typ := range []string{"panel", "system"} {
+		p := Principal{Type: typ, ID: typ, Scopes: map[string]bool{}}
+		if p.HasScope("devtask:run") {
+			t.Fatalf("%s HasScope(devtask:run) = true, want false", typ)
+		}
+		// Other scopes unchanged: panel/system still pass through the type early-return.
+		for _, sc := range []string{"devtask:submit", "devtask:read", "devtask:cancel", "exec", "admin", "files:read"} {
+			if !p.HasScope(sc) {
+				t.Fatalf("%s HasScope(%s) = false, want true (unchanged)", typ, sc)
+			}
+		}
+	}
+	// Explicit run on a non-panel principal still works.
+	named := Principal{Type: "api_token", Scopes: map[string]bool{"devtask:run": true}}
+	if !named.HasScope("devtask:run") {
+		t.Fatal("explicit run on named token must remain true")
+	}
+}
