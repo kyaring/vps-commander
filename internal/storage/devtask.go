@@ -28,8 +28,6 @@ const DevTaskDefaultModel = "global:deepseek-v4.1-flash"
 var (
 	// ErrDevTaskIllegalTransition is returned for any status change not in devTaskTransitions.
 	ErrDevTaskIllegalTransition = errors.New("illegal devtask status transition")
-	ErrDevTaskModelEmpty        = errors.New("model name must not be empty")
-	ErrDevTaskModelDuplicate    = errors.New("duplicate model")
 	// ErrDevTaskNotFound is returned when the task id does not exist.
 	ErrDevTaskNotFound = errors.New("devtask not found")
 )
@@ -204,10 +202,10 @@ func (s *Store) SetDevTaskAllowedModels(models []string) error {
 	seen := make(map[string]bool, len(models))
 	for _, m := range models {
 		if m == "" {
-			return ErrDevTaskModelEmpty
+			return errors.New("model name must not be empty")
 		}
 		if seen[m] {
-			return fmt.Errorf("%w: %q", ErrDevTaskModelDuplicate, m)
+			return fmt.Errorf("duplicate model %q", m)
 		}
 		seen[m] = true
 	}
