@@ -1,3 +1,10 @@
+## 2026-10-28 Grok 交接留档（正本见 HANDOFF.md）
+
+- OPC 授权 Grok 自写卡推进 DevTask；审核另指派。完成 D2–D6+B 分支（见 HANDOFF 表），未审未合未部署。
+- main 文档：roadmap cc11e87；BOARD/CHANGELOG/api-skill 等收口 8a11f61；重建 HANDOFF 正本。
+- 清理已合并/作废 worktree ~20 个；保留 DevTask 与 T-15-04、T-28-03 worktree。
+- 主瓶颈：审核与发布决策。详细分支/提交以 docs/recovery/HANDOFF.md 为准。
+
 ## 2026-10-16 全量扫描与主审规划（Claude-1，main 基线 46291d1，只读）
 
 ## 2026-10-27 17:10 从正本移出
