@@ -43,7 +43,12 @@ var authorizePage = template.Must(template.New("oauth-authorize").Funcs(template
 <p class="muted">访问令牌绑定到本次 OAuth 客户端和资源，并且不会获得所选命名令牌以外的权限。</p>
 <button type="submit" name="decision" value="approve">批准授权</button><button class="danger" type="submit" name="decision" value="deny">拒绝</button></form></main><script nonce="{{.Nonce}}">document.querySelector('form').addEventListener('submit',function(event){const submitter=event.submitter;if(submitter){const decision=document.createElement('input');decision.type='hidden';decision.name='decision';decision.value=submitter.value;this.appendChild(decision)}this.querySelectorAll('button[type=submit]').forEach(function(button){button.disabled=true});if(submitter)submitter.textContent=submitter.value==='approve'?'正在提交…':'正在拒绝…'});</script></body></html>`))
 
-var oauthSupportedScopes = []string{"devices:read", "files:read", "files:write", "exec", "process", "mcp:call"}
+// oauthDefaultScopes is granted when a client asks for no scope. DevTask scopes are never in the default.
+var oauthDefaultScopes = []string{"devices:read", "files:read", "files:write", "exec", "process", "mcp:call"}
+
+// oauthSupportedScopes lists every scope a client may request. devtask:run is deliberately absent:
+// it is only for the runner's own named token and is refused explicitly in parseOAuthScopes.
+var oauthSupportedScopes = []string{"devices:read", "files:read", "files:write", "exec", "process", "mcp:call", "devtask:submit", "devtask:read", "devtask:cancel"}
 
 var oauthScopes = func() map[string]bool {
 	out := make(map[string]bool, len(oauthSupportedScopes))
@@ -124,6 +129,9 @@ func parseOAuthScopes(raw string) ([]string, error) {
 	for _, v := range fields {
 		if v == "admin" {
 			return nil, errors.New("admin scope is forbidden")
+		}
+		if v == "devtask:run" {
+			return nil, errors.New("devtask:run cannot be granted to OAuth clients")
 		}
 		if !oauthScopes[v] {
 			continue
@@ -275,7 +283,7 @@ func (s *Server) beginOAuthAuthorization(w http.ResponseWriter, r *http.Request)
 	defaultedScope := strings.TrimSpace(q.Get("scope")) == ""
 	var requested []string
 	if defaultedScope {
-		requested = append([]string(nil), oauthSupportedScopes...)
+		requested = append([]string(nil), oauthDefaultScopes...)
 	} else {
 		requested, err = parseOAuthScopes(q.Get("scope"))
 		if err != nil {

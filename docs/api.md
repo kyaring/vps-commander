@@ -252,3 +252,17 @@ Example:
 同步 exec 超时时，返回 `timed_out=true`，审计结果记为 `timeout`。
 
 MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；tools/list 响应为 6455 字节（此前 6427 字节），sha256 `50d4dafbdf0001b31207b150235180858b6e7777437e0f7684dbf448a5cd6342`（此前 `221832ceb72739dbf1b39fafdab3fb901519534121d09b51b5588ec61c0435a2`）。
+
+## DevTask 权限与管理接口（D2，开关 DEVTASK_ENABLED 默认关闭）
+
+- 新增 scope：`devtask:submit`（派发、返工）、`devtask:read`（查询）、`devtask:cancel`（取消）、`devtask:run`（仅 runner 自己的命名令牌）。它们不属于 legacy key 的固定 scope 集合。
+- admin 隐含 `devtask:submit`、`devtask:read`、`devtask:cancel`，**不**隐含 `devtask:run`。`panel` / `system` 主体对其它 scope 仍为全开，但对 `devtask:run` 同样必须显式授予（默认 false）。run 仅能由命名令牌显式授予，供 runner 使用。admin 令牌仍不能在 OAuth consent 中被选用。legacy / env 引导主体虽带 admin，同样不能获得 `devtask:run`。
+- OAuth：可授予 `devtask:submit`、`devtask:read`、`devtask:cancel`；请求 `devtask:run` 返回 `invalid_scope`；未指定 scope 时的默认集合不含任何 devtask scope。
+- `DEVTASK_ENABLED` 只在值为 `on`、`true` 或 `1`（不区分大小写）时开启；关闭时下列接口返回 404。
+
+| 接口 | 方法 | 权限 | 说明 |
+|---|---|---|---|
+| `/api/v1/devtask-projects` | GET | admin | 列出项目，每项含 `model_ok`（默认模型是否仍在白名单内） |
+| `/api/v1/devtask-projects` | POST | admin | 新增或修改项目；默认模型必须在白名单内；`repo_path` 必须是绝对路径；`max_rounds`、`max_steps`、`timeout_s` 至少为 1；写审计（`devtask_project_upsert`，含旧值与新值） |
+| `/api/v1/devtask-settings` | GET | admin | 返回 `allowed_models` 与 `enabled` |
+| `/api/v1/devtask-settings` | PUT | admin | 整体替换模型白名单；空名与重复名返回 400；写审计（`devtask_settings_update`，含旧白名单与新白名单） |

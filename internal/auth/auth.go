@@ -41,7 +41,25 @@ func (p Principal) AuditName() string {
 }
 
 func (p Principal) HasScope(scope string) bool {
-	return p.Type == "panel" || p.Type == "system" || p.Scopes[scope]
+	// devtask:run is never implied by panel, system, or admin — only an explicit scope on
+	// a named token (the runner) may satisfy it.
+	if scope == "devtask:run" {
+		return p.Scopes[scope]
+	}
+	if p.Type == "panel" || p.Type == "system" || p.Scopes[scope] {
+		return true
+	}
+	// admin implies submit/read/cancel only. Legacy/env principals carry admin but
+	// still cannot obtain run (handled above).
+	if !p.Scopes["admin"] {
+		return false
+	}
+	switch scope {
+	case "devtask:submit", "devtask:read", "devtask:cancel":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p Principal) AllowsDevice(device string) bool {
