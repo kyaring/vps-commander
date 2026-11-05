@@ -81,9 +81,10 @@ type JSONRPCError struct {
 
 // Tool Definition Structures
 type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	InputSchema InputSchema `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	InputSchema InputSchema      `json:"inputSchema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
 }
 
 type InputSchema struct {
@@ -1130,6 +1131,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 		if json.Unmarshal(req.Params, &initParams) == nil && initParams.ProtocolVersion == "2025-03-26" {
 			protocolVersion = initParams.ProtocolVersion
 		}
+		p, authed := auth.PrincipalFromContext(ctx)
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -1142,6 +1144,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				"capabilities": map[string]any{
 					"tools": map[string]bool{"listChanged": false},
 				},
+				"instructions": serverInstructions(p, authed),
 			},
 		}
 
@@ -1246,6 +1249,10 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 				}
 			}
 			tools = filtered
+		}
+		for i := range tools {
+			a := annotationsFor(tools[i].Name)
+			tools[i].Annotations = &a
 		}
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
