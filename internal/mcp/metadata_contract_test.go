@@ -46,17 +46,9 @@ func listedTools(t *testing.T) []contractTool {
 	return out.Result.Tools
 }
 
-// knownShortDescriptions records the existing gap: these tools have descriptions shorter than 20
-// characters. Fixing them touches internal/mcp/mcp.go and is tracked as a follow-up card.
-// The list may only shrink: a new tool can never be added to it, and an entry whose description
-// reaches 20 characters must be removed (the test fails until it is).
-var knownShortDescriptions = map[string]bool{
-	"read_multiple_files": true,
-	"create_directory":    true,
-	"move_file":           true,
-	"list_processes":      true,
-	"write_file":          true,
-}
+// knownShortDescriptions records tools with descriptions shorter than 20 characters.
+// T-20261101-11 补齐了过短的工具描述，当前无豁免，所有工具描述均达到 20 字符要求。
+var knownShortDescriptions = map[string]bool{}
 
 // Adding a tool without a name, a usable description, annotations or parameter descriptions fails here.
 func TestToolMetadataComplete(t *testing.T) {

@@ -1197,10 +1197,10 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 					Required: []string{"path"},
 				},
 			},
-			{Name: "read_multiple_files", Description: "一次读取多个文件", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "paths": {Type: "array", Description: "文件路径数组"}, "limit": {Type: "integer", Description: "单文件最大字节数"}}, Required: []string{"paths"}}},
-			{Name: "create_directory", Description: "创建目录", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "path": {Type: "string", Description: "目录路径"}}, Required: []string{"path"}}},
-			{Name: "move_file", Description: "移动或重命名文件", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "source": {Type: "string", Description: "源路径"}, "destination": {Type: "string", Description: "目标路径"}}, Required: []string{"source", "destination"}}},
-			{Name: "list_processes", Description: "列出受控节点当前进程", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}}}},
+			{Name: "read_multiple_files", Description: "一次读取目标设备上的多个文件，每个文件独立返回内容或错误，单文件默认限读256KiB且超出截断", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "paths": {Type: "array", Description: "文件路径数组"}, "limit": {Type: "integer", Description: "单文件最大字节数"}}, Required: []string{"paths"}}},
+			{Name: "create_directory", Description: "在目标设备上递归创建目录，自动创建缺失的父目录，目录已存在时直接返回成功不报错", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "path": {Type: "string", Description: "目录路径"}}, Required: []string{"path"}}},
+			{Name: "move_file", Description: "在目标设备上移动或重命名文件，若目标文件已存在将被覆盖，源文件与目标文件必须在同一设备", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "source": {Type: "string", Description: "源路径"}, "destination": {Type: "string", Description: "目标路径"}}, Required: []string{"source", "destination"}}},
+			{Name: "list_processes", Description: "只读列出目标设备上的当前进程，返回包含PID、命令行与内存占用（以KB为单位）的进程列表", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}}}},
 			{Name: "diagnostic_command", Description: "执行严格白名单的只读系统诊断，不接受任意 Shell", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"device": {Type: "string", Description: "目标设备"}, "action": {Type: "string", Description: "docker_ps|docker_logs|docker_inspect|systemctl_status|journalctl|ss_listen|df|free|uptime"}, "target": {Type: "string", Description: "容器名或 systemd unit（按 action 使用）"}, "lines": {Type: "integer", Description: "docker_logs 最大行数，1-500"}}, Required: []string{"action"}}},
 			{
 				Name:        "edit_block",
@@ -1209,7 +1209,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			},
 			{
 				Name:        "write_file",
-				Description: "向指定受控节点创建或覆写文件",
+				Description: "在目标设备上创建或原子整体覆写文件，覆写会丢失原内容，修改已有文件建议优先使用edit_block",
 				InputSchema: InputSchema{
 					Type: "object",
 					Properties: map[string]PropertyDef{
