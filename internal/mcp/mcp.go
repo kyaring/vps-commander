@@ -1275,6 +1275,14 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 
 		clientIP := auth.ClientIP(r)
 		state := &auditState{}
+		// Refuse malformed arguments before any tool runs: a wrong type must never fall back to a default
+		// (for example a numeric device name silently becoming the Hub's own node).
+		if err := validateToolArgs(params.Arguments); err != nil {
+			if sink, ok := s.Backend.(AuditSink); ok {
+				sink.AuditMCP(ctx, clientIP, "", params.Name, "", "error", err.Error())
+			}
+			return JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &JSONRPCError{Code: -32602, Message: err.Error()}}
+		}
 		ctx = context.WithValue(ctx, auditStateContextKey{}, state)
 		res, isErr := s.callTool(ctx, clientIP, params)
 		resJSON, _ := json.MarshalIndent(res, "", "  ")
