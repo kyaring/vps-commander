@@ -235,3 +235,161 @@ func TestOAuthRateLimitAuditIncludesViaClient(t *testing.T) {
 		t.Fatalf("actor=%q oauth_client_id=%q", actor, oauthClient)
 	}
 }
+
+func TestDefaultZeroUsesGlobal(t *testing.T) {
+	limiter := NewTokenLimiter(2)
+	now := time.Unix(1000, 0)
+
+	// Token with limit 0 (or unset) should use global default 2
+	limiter.SetTokenLimit("tok-default", 0)
+
+	if got := limiter.MaxConcurrentExecForToken("tok-default"); got != 2 {
+		t.Fatalf("MaxConcurrentExecForToken = %d, want 2", got)
+	}
+
+	rel1, ok1 := limiter.AcquireExec("tok-default", now)
+	if !ok1 {
+		t.Fatal("first acquire should succeed")
+	}
+	defer rel1()
+
+	rel2, ok2 := limiter.AcquireExec("tok-default", now)
+	if !ok2 {
+		t.Fatal("second acquire should succeed")
+	}
+	defer rel2()
+
+	_, ok3 := limiter.AcquireExec("tok-default", now)
+	if ok3 {
+		t.Fatal("third acquire should fail when limit is default 2")
+	}
+}
+
+func TestPerTokenLimitApplied(t *testing.T) {
+	limiter := NewTokenLimiter(2)
+	now := time.Unix(1000, 0)
+
+	// Token A: limit 1
+	limiter.SetTokenLimit("tok-a", 1)
+	if got := limiter.MaxConcurrentExecForToken("tok-a"); got != 1 {
+		t.Fatalf("tok-a limit = %d, want 1", got)
+	}
+	relA1, okA1 := limiter.AcquireExec("tok-a", now)
+	if !okA1 {
+		t.Fatal("tok-a first acquire should succeed")
+	}
+	defer relA1()
+	_, okA2 := limiter.AcquireExec("tok-a", now)
+	if okA2 {
+		t.Fatal("tok-a second concurrent acquire should fail when limit is 1")
+	}
+
+	// Token B: limit 4
+	limiter.SetTokenLimit("tok-b", 4)
+	if got := limiter.MaxConcurrentExecForToken("tok-b"); got != 4 {
+		t.Fatalf("tok-b limit = %d, want 4", got)
+	}
+	var releases []func()
+	for i := 0; i < 4; i++ {
+		rel, ok := limiter.AcquireExec("tok-b", now)
+		if !ok {
+			t.Fatalf("tok-b acquire #%d failed", i+1)
+		}
+		releases = append(releases, rel)
+	}
+	defer func() {
+		for _, r := range releases {
+			r()
+		}
+	}()
+	_, okB5 := limiter.AcquireExec("tok-b", now)
+	if okB5 {
+		t.Fatal("tok-b fifth acquire should fail when limit is 4")
+	}
+}
+
+func TestLimitChangeTakesEffectWithoutRestart(t *testing.T) {
+	limiter := NewTokenLimiter(2)
+	now := time.Unix(1000, 0)
+
+	// Start with limit 1
+	limiter.SetTokenLimit("tok-resize", 1)
+	rel1, ok1 := limiter.AcquireExec("tok-resize", now)
+	if !ok1 {
+		t.Fatal("first acquire should succeed")
+	}
+	defer rel1()
+
+	_, ok2 := limiter.AcquireExec("tok-resize", now)
+	if ok2 {
+		t.Fatal("second acquire should fail when limit is 1")
+	}
+
+	// Dynamically change limit to 3 without restart
+	limiter.SetTokenLimit("tok-resize", 3)
+	if got := limiter.MaxConcurrentExecForToken("tok-resize"); got != 3 {
+		t.Fatalf("updated limit = %d, want 3", got)
+	}
+
+	rel2, ok2After := limiter.AcquireExec("tok-resize", now)
+	if !ok2After {
+		t.Fatal("second acquire should succeed after limit raised to 3")
+	}
+	defer rel2()
+
+	rel3, ok3After := limiter.AcquireExec("tok-resize", now)
+	if !ok3After {
+		t.Fatal("third acquire should succeed after limit raised to 3")
+	}
+	defer rel3()
+
+	_, ok4 := limiter.AcquireExec("tok-resize", now)
+	if ok4 {
+		t.Fatal("fourth acquire should fail when limit is 3")
+	}
+}
+
+func TestOtherTokensUnaffected(t *testing.T) {
+	limiter := NewTokenLimiter(2)
+	now := time.Unix(1000, 0)
+
+	// Token A limit 1, Token B default (0 -> 2)
+	limiter.SetTokenLimit("tok-isolated-a", 1)
+	limiter.SetTokenLimit("tok-isolated-b", 0)
+
+	relA, okA := limiter.AcquireExec("tok-isolated-a", now)
+	if !okA {
+		t.Fatal("tok-isolated-a acquire failed")
+	}
+	defer relA()
+
+	// Token A is full (1/1). Token B should be completely unaffected.
+	relB1, okB1 := limiter.AcquireExec("tok-isolated-b", now)
+	if !okB1 {
+		t.Fatal("tok-isolated-b first acquire failed")
+	}
+	defer relB1()
+
+	relB2, okB2 := limiter.AcquireExec("tok-isolated-b", now)
+	if !okB2 {
+		t.Fatal("tok-isolated-b second acquire failed")
+	}
+	defer relB2()
+
+	_, okB3 := limiter.AcquireExec("tok-isolated-b", now)
+	if okB3 {
+		t.Fatal("tok-isolated-b third acquire should fail")
+	}
+
+	// Update Token A to 5
+	limiter.SetTokenLimit("tok-isolated-a", 5)
+
+	// Token B should still be limited to 2
+	if got := limiter.MaxConcurrentExecForToken("tok-isolated-b"); got != 2 {
+		t.Fatalf("tok-isolated-b limit = %d, want 2", got)
+	}
+	_, okB3Again := limiter.AcquireExec("tok-isolated-b", now)
+	if okB3Again {
+		t.Fatal("tok-isolated-b should still be limited to 2")
+	}
+}

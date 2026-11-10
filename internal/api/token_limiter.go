@@ -30,11 +30,23 @@ type tokenLimitState struct {
 	tokens                float64
 	lastRefill            time.Time
 	lastSeen              time.Time
-	execSlots             chan struct{}
+	inFlight              int
+	customExecLimit       int
+	hasCustomLimit        bool
 	rateAuditCount        int
 	rateAuditLast         time.Time
 	concurrencyAuditCount int
 	concurrencyAuditLast  time.Time
+}
+
+func (s *tokenLimitState) effectiveExecLimit(globalDefault int) int {
+	if s.hasCustomLimit && s.customExecLimit > 0 {
+		return s.customExecLimit
+	}
+	if globalDefault > 0 {
+		return globalDefault
+	}
+	return 2
 }
 
 // TokenLimiter applies independent token buckets and exec semaphores per API token.
@@ -61,7 +73,7 @@ func (l *TokenLimiter) stateLocked(tokenID string, rateRPS int, now time.Time) *
 	}
 	if l.lastCleanup.IsZero() || now.Sub(l.lastCleanup) >= tokenLimiterCleanupPeriod {
 		for id, state := range l.states {
-			if len(state.execSlots) == 0 && now.Sub(state.lastSeen) >= tokenLimiterStateTTL {
+			if state.inFlight == 0 && now.Sub(state.lastSeen) >= tokenLimiterStateTTL {
 				delete(l.states, id)
 			}
 		}
@@ -70,7 +82,7 @@ func (l *TokenLimiter) stateLocked(tokenID string, rateRPS int, now time.Time) *
 	state := l.states[tokenID]
 	if state == nil {
 		capacity := float64(rateRPS)
-		state = &tokenLimitState{tokens: capacity, lastRefill: now, lastSeen: now, execSlots: make(chan struct{}, l.maxConcurrentExec)}
+		state = &tokenLimitState{tokens: capacity, lastRefill: now, lastSeen: now}
 		l.states[tokenID] = state
 	}
 	state.lastSeen = now
@@ -110,20 +122,65 @@ func (l *TokenLimiter) AcquireExec(tokenID string, now time.Time) (func(), bool)
 		return func() {}, true
 	}
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	state := l.stateLocked(tokenID, defaultTokenRateRPS, now)
-	slots := state.execSlots
-	l.mu.Unlock()
-	select {
-	case slots <- struct{}{}:
-		return func() { <-slots }, true
-	default:
-		return nil, false
+	limit := state.effectiveExecLimit(l.maxConcurrentExec)
+	if state.inFlight >= limit {
+		return func() {}, false
 	}
+	state.inFlight++
+	released := false
+	return func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if !released {
+			released = true
+			state.inFlight--
+			if state.inFlight < 0 {
+				state.inFlight = 0
+			}
+		}
+	}, true
+}
+
+func (l *TokenLimiter) SetTokenLimit(tokenID string, limit int) {
+	if l == nil || tokenID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.stateLocked(tokenID, defaultTokenRateRPS, time.Now())
+	state.customExecLimit = limit
+	state.hasCustomLimit = true
+}
+
+func (l *TokenLimiter) HasConfiguredLimit(tokenID string) bool {
+	if l == nil || tokenID == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.states[tokenID]
+	return state != nil && state.hasCustomLimit
 }
 
 func (l *TokenLimiter) MaxConcurrentExec() int {
 	if l == nil {
 		return 2
+	}
+	return l.maxConcurrentExec
+}
+
+func (l *TokenLimiter) MaxConcurrentExecForToken(tokenID string) int {
+	if l == nil {
+		return 2
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if tokenID != "" {
+		if state := l.states[tokenID]; state != nil {
+			return state.effectiveExecLimit(l.maxConcurrentExec)
+		}
 	}
 	return l.maxConcurrentExec
 }
@@ -138,7 +195,7 @@ func (l *TokenLimiter) ExecInUse(tokenID string) int {
 	if state == nil {
 		return 0
 	}
-	return len(state.execSlots)
+	return state.inFlight
 }
 
 func (l *TokenLimiter) concurrencyAuditDecision(tokenID string, now time.Time) (bool, int, int, int) {
@@ -149,8 +206,8 @@ func (l *TokenLimiter) concurrencyAuditDecision(tokenID string, now time.Time) (
 	defer l.mu.Unlock()
 	state := l.stateLocked(tokenID, defaultTokenRateRPS, now)
 	state.concurrencyAuditCount++
-	limit := cap(state.execSlots)
-	inUse := len(state.execSlots)
+	limit := state.effectiveExecLimit(l.maxConcurrentExec)
+	inUse := state.inFlight
 	if state.concurrencyAuditLast.IsZero() || now.Sub(state.concurrencyAuditLast) >= 10*time.Second {
 		count := state.concurrencyAuditCount
 		state.concurrencyAuditCount = 0
@@ -218,10 +275,24 @@ func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) ensureTokenConcurrencyLimit(tokenID string) {
+	if s == nil || s.TokenLimiter == nil || s.Store == nil || tokenID == "" {
+		return
+	}
+	if s.TokenLimiter.HasConfiguredLimit(tokenID) {
+		return
+	}
+	tok, err := s.Store.GetAPITokenByID(tokenID)
+	if err == nil {
+		s.TokenLimiter.SetTokenLimit(tokenID, tok.ConcurrentExecLimit)
+	}
+}
+
 func (s *Server) acquireTokenExec(p auth.Principal) (func(), bool) {
 	if s.TokenLimiter == nil || p.Type != "api_token" || p.QuotaID() == "" {
 		return func() {}, true
 	}
+	s.ensureTokenConcurrencyLimit(p.QuotaID())
 	return s.TokenLimiter.AcquireExec(p.QuotaID(), time.Now())
 }
 
@@ -329,6 +400,7 @@ func (s *Server) auditConcurrencyLimitedEntry(clientIP, device, command, transpo
 	if s.Store == nil {
 		return
 	}
+	s.ensureTokenConcurrencyLimit(p.QuotaID())
 	count := 1
 	limit := 2
 	inUse := 2
@@ -356,6 +428,7 @@ func (s *Server) auditConcurrencyLimitedEntry(clientIP, device, command, transpo
 }
 
 func (s *Server) rejectTokenExecLimit(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	s.ensureTokenConcurrencyLimit(p.QuotaID())
 	s.auditConcurrencyLimited(r, p)
 	w.Header().Set("Retry-After", "1")
 	w.Header().Set("Content-Type", "application/json")
@@ -363,7 +436,7 @@ func (s *Server) rejectTokenExecLimit(w http.ResponseWriter, r *http.Request, p 
 	limit := 2
 	inUse := 2
 	if s.TokenLimiter != nil {
-		limit = s.TokenLimiter.MaxConcurrentExec()
+		limit = s.TokenLimiter.MaxConcurrentExecForToken(p.QuotaID())
 		inUse = s.TokenLimiter.ExecInUse(p.QuotaID())
 	}
 	resp := map[string]any{

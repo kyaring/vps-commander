@@ -103,7 +103,7 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | 接口 | 方法 | 说明 |
 | :--- | :--- | :--- |
 | `/api/v1/tokens` | GET / POST | 列出 / 创建命名令牌（创建时返回完整密钥，仅此一次） |
-| `/api/v1/tokens/{id}` | PATCH | 修改名称、备注、scope、设备白名单、限速、会话数 |
+| `/api/v1/tokens/{id}` | PATCH | 修改名称、备注、scope、设备白名单、限速、会话数、并发上限 |
 | `/api/v1/tokens/{id}/rotate` | POST | 轮换密钥 |
 | `/api/v1/tokens/{id}/revoke` | POST | 吊销 |
 | `/api/v1/tokens/{id}/exec-inflight` | GET | 查询该令牌当前在途异步 exec（需 admin 或令牌本人） |
@@ -120,6 +120,14 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | `/api/v1/notifications/webhook/delete` | DELETE | 删除 Webhook |
 | `/api/v1/notifications/webhook/test` | POST | 测试 Webhook |
 | `/metrics` | GET | Prometheus 指标 |
+
+### 命名令牌并发上限（concurrent_exec_limit）
+
+`POST /api/v1/tokens` 与 `PATCH /api/v1/tokens/{id}` 支持配置每个令牌专属的并发 exec 上限字段 `concurrent_exec_limit`：
+- 取值：非负整数（`>= 0`）。
+- 含义：默认 `0`，表示使用全局默认并发上限（2）；大于 0 时表示该令牌生效的专属并发上限。
+- 生效：修改后立即在内存中生效，无需重启 Hub 服务；其它令牌不受影响。
+- `GET /api/v1/tokens` 列表响应中返回该字段。
 
 ### HTTP 请求日志字段
 
