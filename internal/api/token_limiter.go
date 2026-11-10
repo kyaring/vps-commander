@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"regexp"
@@ -207,7 +208,6 @@ func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 				"error":          "rate_limited",
 				"limiter":        "rate",
 				"limit":          limit,
-				"in_use":         0,
 				"retry_after_ms": retryAfterMS,
 			}
 			body, _ := json.Marshal(resp)
@@ -261,7 +261,9 @@ func (s *Server) auditRateLimitedEntry(clientIP, device, command, transport, met
 	if device != "" {
 		targetType, target = "device", device
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+	if err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"}); err != nil {
+		slog.Error("rate limit audit write failed", "error", err, "actor", p.AuditName(), "device", device)
+	}
 }
 
 func rateLimitIntent(r *http.Request) (device, action, command, method string) {
@@ -348,7 +350,9 @@ func (s *Server) auditConcurrencyLimitedEntry(clientIP, device, command, transpo
 	if device != "" {
 		targetType, target = "device", device
 	}
-	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+	if err := s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "concurrency_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"}); err != nil {
+		slog.Error("concurrency limit audit write failed", "error", err, "actor", p.AuditName(), "device", device)
+	}
 }
 
 func (s *Server) rejectTokenExecLimit(w http.ResponseWriter, r *http.Request, p auth.Principal) {

@@ -161,14 +161,25 @@ OAuth 端点只有在配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后启用；未�
 
 ### 429 结构化响应体
 
-当请求因速率限制或并发限制被拒绝（HTTP 429）时，响应体格式统一为 JSON，并包含 `Retry-After` 响应头（秒，向上取整）：
+当请求因速率限制或并发限制被拒绝（HTTP 429）时，响应体格式统一为 JSON，并包含 `Retry-After` 响应头（秒，向上取整）。
 
+速率限制（`limiter: "rate"`）示例：
 ```json
 {
   "error": "rate_limited",
   "limiter": "rate",
-  "limit": 60,
-  "in_use": 0,
+  "limit": 10,
+  "retry_after_ms": 250
+}
+```
+
+并发限制（`limiter: "concurrency"`）示例：
+```json
+{
+  "error": "rate_limited",
+  "limiter": "concurrency",
+  "limit": 2,
+  "in_use": 2,
   "retry_after_ms": 1000
 }
 ```
@@ -176,9 +187,15 @@ OAuth 端点只有在配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后启用；未�
 字段说明：
 - `error`: 固定为 `"rate_limited"`
 - `limiter`: `"rate"`（速率限制）或 `"concurrency"`（并发 exec 限制）
-- `limit`: 配置的速率限制（每分钟）或并发限制数
-- `in_use`: 当前正在使用的并发 exec 数量（并发限制时为当前在途数，速率限制时为 0）
-- `retry_after_ms`: 建议重试间隔（毫秒）
+- `limit`: 配置的速率 RPS 或并发限制数
+- `in_use`: 当前正在使用的并发 exec 数量（仅在 `limiter="concurrency"` 时出现；速率限制因无并发槽位概念，不包含该字段）
+- `retry_after_ms`: 建议重试间隔（毫秒）。在速率限制下为恢复到可用状态的精确计算毫秒；在并发限制下为建议客户端退避重试的估计值（默认 1000ms），因为在途进程的具体完成时间在拒绝时刻无法确定。
+
+并发拒绝审计：
+当触发并发限制拒绝时，系统记录一条审计日志：
+- `action`: `"concurrency_limited"`（使用独立动作名，不复用速率限制的 `"rate_limited"`）
+- `result`: `"denied"`
+- `error_msg`: 包含 `"concurrency_limit"`，并记录 limit 与 in_use，支持 10 秒窗口聚合节流。若审计持久化失败，将自动执行降级记录并在日志中输出错误信息。
 
 ### 查询在途 exec：`GET /api/v1/tokens/{id}/exec-inflight`
 

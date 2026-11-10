@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -45,7 +47,7 @@ func TestConcurrencyDenialAudited(t *testing.T) {
 	}
 
 	var result, errorMsg string
-	if err := store.DB.QueryRow("SELECT result, error_msg FROM audit_logs WHERE actor_id=? AND action='rate_limited' ORDER BY id DESC LIMIT 1", "tok-concur").Scan(&result, &errorMsg); err != nil {
+	if err := store.DB.QueryRow("SELECT result, error_msg FROM audit_logs WHERE actor_id=? AND action='concurrency_limited' ORDER BY id DESC LIMIT 1", "tok-concur").Scan(&result, &errorMsg); err != nil {
 		t.Fatalf("audit log query failed: %v", err)
 	}
 	if result != "denied" {
@@ -82,7 +84,7 @@ func TestConcurrencyDenialAuditThrottled(t *testing.T) {
 	}
 
 	var count int
-	if err := store.DB.QueryRow("SELECT count(*) FROM audit_logs WHERE actor_id='tok-throttle' AND error_msg LIKE '%concurrency_limit%'").Scan(&count); err != nil {
+	if err := store.DB.QueryRow("SELECT count(*) FROM audit_logs WHERE actor_id='tok-throttle' AND action='concurrency_limited' AND error_msg LIKE '%concurrency_limit%'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 1 {
@@ -99,7 +101,7 @@ func TestConcurrencyDenialAuditThrottled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.DB.QueryRow("SELECT count(*) FROM audit_logs WHERE actor_id='tok-throttle' AND error_msg LIKE '%concurrency_limit%'").Scan(&count); err != nil {
+	if err := store.DB.QueryRow("SELECT count(*) FROM audit_logs WHERE actor_id='tok-throttle' AND action='concurrency_limited' AND error_msg LIKE '%concurrency_limit%'").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
@@ -153,6 +155,9 @@ func TestRateLimitBodyStructured(t *testing.T) {
 	}
 	if body["retry_after_ms"] == nil {
 		t.Fatal("body.retry_after_ms is missing")
+	}
+	if _, hasInUse := body["in_use"]; hasInUse {
+		t.Fatalf("rate limit 429 body should not contain in_use, got: %v", body["in_use"])
 	}
 }
 
@@ -347,5 +352,38 @@ func TestDecisionsUnchanged(t *testing.T) {
 	}
 	if wait2 <= 0 {
 		t.Fatalf("wait duration = %v, want > 0", wait2)
+	}
+}
+
+func TestConcurrencyAuditWriteFailureLogged(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "concurrency-fail.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	limiter := NewTokenLimiter(1)
+	server := &Server{Store: store, TokenLimiter: limiter}
+	p := auth.Principal{Type: "api_token", ID: "tok-fail", Name: "tok-fail", TokenID: "tok-fail"}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	// Close store and DB to cause write failure
+	_ = store.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/exec", nil)
+	req = req.WithContext(auth.WithPrincipal(context.Background(), p))
+
+	server.auditConcurrencyLimited(req, p)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "concurrency limit audit write failed") {
+		t.Fatalf("expected log output to record failure, got: %q", logOutput)
+	}
+	if store.AuditFallbackCount() == 0 {
+		t.Fatal("expected audit fallback count to be incremented")
 	}
 }
