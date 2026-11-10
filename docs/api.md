@@ -106,6 +106,7 @@ curl "$HUB/api/v1/session/memo?key=checked_sha" -H "Authorization: Bearer $TOKEN
 | `/api/v1/tokens/{id}` | PATCH | 修改名称、备注、scope、设备白名单、限速、会话数 |
 | `/api/v1/tokens/{id}/rotate` | POST | 轮换密钥 |
 | `/api/v1/tokens/{id}/revoke` | POST | 吊销 |
+| `/api/v1/tokens/{id}/exec-inflight` | GET | 查询该令牌当前在途异步 exec（需 admin 或令牌本人） |
 | `/api/v1/audits` | GET | 审计查询：`actor`、`device`、`action`、`result`、`transport`、`from`、`to`，游标分页，每页最多 500 条；列表中的长文本字段会截断并标记 `truncated: true` |
 | `/api/v1/audits/{id}` | GET | 获取单条审计记录的完整详情（需要 `admin`） |
 | `/api/v1/audits/export.csv` | GET | 按同样条件导出 CSV（有行数上限，超出时末尾带截断标记；字段保持完整） |
@@ -155,8 +156,51 @@ OAuth 端点只有在配置合法的 `VPS_COMMANDER_PUBLIC_URL` 后启用；未�
 | `404` | 路径不存在（注意结尾斜杠）、MCP 会话已失效；文件读取时目标节点离线也返回 404 |
 | `409` | 目标节点离线（`device offline`） |
 | `405` | 方法不对 |
-| `429` | 超过令牌限速、会话数或 exec 并发；见 `Retry-After` |
+| `429` | 超过令牌限速、会话数或 exec 并发；见 `Retry-After` 与结构化响应体 |
 | `503` | 服务内部组件不可用，或 SSE 会话发送队列超时 |
+
+### 429 结构化响应体
+
+当请求因速率限制或并发限制被拒绝（HTTP 429）时，响应体格式统一为 JSON，并包含 `Retry-After` 响应头（秒，向上取整）：
+
+```json
+{
+  "error": "rate_limited",
+  "limiter": "rate",
+  "limit": 60,
+  "in_use": 0,
+  "retry_after_ms": 1000
+}
+```
+
+字段说明：
+- `error`: 固定为 `"rate_limited"`
+- `limiter`: `"rate"`（速率限制）或 `"concurrency"`（并发 exec 限制）
+- `limit`: 配置的速率限制（每分钟）或并发限制数
+- `in_use`: 当前正在使用的并发 exec 数量（并发限制时为当前在途数，速率限制时为 0）
+- `retry_after_ms`: 建议重试间隔（毫秒）
+
+### 查询在途 exec：`GET /api/v1/tokens/{id}/exec-inflight`
+
+查询指定令牌当前正在执行中的异步 exec 任务。
+
+- 权限：需要 `admin` 权限，或者调用方自身为令牌本人（`id` 匹配当前令牌 ID）。其他调用方返回 `403`。
+- 仅读取 Hub 内存状态，不查询数据库，不产生审计日志。
+- 响应为 JSON 数组，每项包含：
+  - `job_id`: 任务 ID
+  - `started_at`: 启动时间（RFC3339 格式）
+  - `command_summary`: 命令摘要（截断至前 80 字符，不含参数全文）
+
+示例响应：
+```json
+[
+  {
+    "job_id": "job-abc123",
+    "started_at": "2026-11-11T05:00:00Z",
+    "command_summary": "go test -race ./..."
+  }
+]
+```
 
 ## 5. 指标
 

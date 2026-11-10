@@ -26,12 +26,14 @@ const (
 )
 
 type tokenLimitState struct {
-	tokens         float64
-	lastRefill     time.Time
-	lastSeen       time.Time
-	execSlots      chan struct{}
-	rateAuditCount int
-	rateAuditLast  time.Time
+	tokens                float64
+	lastRefill            time.Time
+	lastSeen              time.Time
+	execSlots             chan struct{}
+	rateAuditCount        int
+	rateAuditLast         time.Time
+	concurrencyAuditCount int
+	concurrencyAuditLast  time.Time
 }
 
 // TokenLimiter applies independent token buckets and exec semaphores per API token.
@@ -118,6 +120,45 @@ func (l *TokenLimiter) AcquireExec(tokenID string, now time.Time) (func(), bool)
 	}
 }
 
+func (l *TokenLimiter) MaxConcurrentExec() int {
+	if l == nil {
+		return 2
+	}
+	return l.maxConcurrentExec
+}
+
+func (l *TokenLimiter) ExecInUse(tokenID string) int {
+	if l == nil || tokenID == "" {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.states[tokenID]
+	if state == nil {
+		return 0
+	}
+	return len(state.execSlots)
+}
+
+func (l *TokenLimiter) concurrencyAuditDecision(tokenID string, now time.Time) (bool, int, int, int) {
+	if l == nil || tokenID == "" {
+		return true, 1, 2, 2
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.stateLocked(tokenID, defaultTokenRateRPS, now)
+	state.concurrencyAuditCount++
+	limit := cap(state.execSlots)
+	inUse := len(state.execSlots)
+	if state.concurrencyAuditLast.IsZero() || now.Sub(state.concurrencyAuditLast) >= 10*time.Second {
+		count := state.concurrencyAuditCount
+		state.concurrencyAuditCount = 0
+		state.concurrencyAuditLast = now
+		return true, count, limit, inUse
+	}
+	return false, state.concurrencyAuditCount, limit, inUse
+}
+
 // rateLimitAuditDecision throttles audit writes to one per token per ten seconds.
 // The returned count includes all denials since the previous emitted audit row.
 func (l *TokenLimiter) rateLimitAuditDecision(tokenID string, now time.Time) (bool, int) {
@@ -154,7 +195,23 @@ func (s *Server) TokenRateLimitMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Retry-After", fmt.Sprint(seconds))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
+			limit := p.RateRPS
+			if limit <= 0 {
+				limit = defaultTokenRateRPS
+			}
+			retryAfterMS := retryAfter.Milliseconds()
+			if retryAfterMS < 0 {
+				retryAfterMS = 0
+			}
+			resp := map[string]any{
+				"error":          "rate_limited",
+				"limiter":        "rate",
+				"limit":          limit,
+				"in_use":         0,
+				"retry_after_ms": retryAfterMS,
+			}
+			body, _ := json.Marshal(resp)
+			_, _ = w.Write(body)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -248,10 +305,70 @@ func rateLimitIntent(r *http.Request) (device, action, command, method string) {
 	return device, params.Name, command, method
 }
 
+func (s *Server) auditConcurrencyLimited(r *http.Request, p auth.Principal) {
+	if s.Store == nil {
+		return
+	}
+	transport := "rest"
+	switch r.URL.Path {
+	case "/mcp":
+		transport = "mcp-http"
+	case "/mcp/sse", "/mcp/message":
+		transport = "mcp-sse"
+	}
+	device, _, command, method := rateLimitIntent(r)
+	if command == "" {
+		command = "exec"
+	}
+	s.auditConcurrencyLimitedEntry(auth.ClientIP(r), device, command, transport, method, p)
+}
+
+func (s *Server) auditConcurrencyLimitedEntry(clientIP, device, command, transport, method string, p auth.Principal) {
+	if s.Store == nil {
+		return
+	}
+	count := 1
+	limit := 2
+	inUse := 2
+	if s.TokenLimiter != nil {
+		shouldLog, n, lim, inu := s.TokenLimiter.concurrencyAuditDecision(p.QuotaID(), time.Now())
+		if !shouldLog {
+			return
+		}
+		count = n
+		limit = lim
+		inUse = inu
+	}
+	command = auditutil.Truncate(auditutil.Redact(command))
+	message := fmt.Sprintf("concurrency_limit (%d rejected since previous audit; 10s throttle; limit=%d in_use=%d)", count, limit, inUse)
+	if method != "" {
+		message += "; jsonrpc_method=" + method
+	}
+	targetType, target := "token", p.Name
+	if device != "" {
+		targetType, target = "device", device
+	}
+	_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: clientIP, Device: device, Action: "rate_limited", Command: command, ErrorMsg: message, ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient, Transport: transport, TargetType: targetType, Target: target, Result: "denied"})
+}
+
 func (s *Server) rejectTokenExecLimit(w http.ResponseWriter, r *http.Request, p auth.Principal) {
-	s.auditRateLimited(r, p)
+	s.auditConcurrencyLimited(r, p)
 	w.Header().Set("Retry-After", "1")
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)
-	_, _ = w.Write([]byte(`{"error":"rate_limited","detail":"token concurrent exec limit reached"}`))
+	limit := 2
+	inUse := 2
+	if s.TokenLimiter != nil {
+		limit = s.TokenLimiter.MaxConcurrentExec()
+		inUse = s.TokenLimiter.ExecInUse(p.QuotaID())
+	}
+	resp := map[string]any{
+		"error":          "rate_limited",
+		"limiter":        "concurrency",
+		"limit":          limit,
+		"in_use":         inUse,
+		"retry_after_ms": 1000,
+	}
+	body, _ := json.Marshal(resp)
+	_, _ = w.Write(body)
 }

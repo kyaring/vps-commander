@@ -1010,21 +1010,27 @@ func (s *Server) Routes() http.Handler {
 		}
 		s.TokenListJSON(w, r)
 	})))
-	mux.Handle("/api/v1/tokens/", s.requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch {
-			s.TokenPatchJSON(w, r)
+	mux.Handle("/api/v1/tokens/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/exec-inflight") {
+			s.TokenExecInflightJSON(w, r)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/rotate") {
-			s.TokenRotateJSON(w, r)
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/revoke") {
-			s.TokenRevokeJSON(w, r)
-			return
-		}
-		s.TokenDeleteJSON(w, r)
-	})))
+		s.requireScope("admin", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPatch {
+				s.TokenPatchJSON(w, r)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/rotate") {
+				s.TokenRotateJSON(w, r)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/revoke") {
+				s.TokenRevokeJSON(w, r)
+				return
+			}
+			s.TokenDeleteJSON(w, r)
+		})).ServeHTTP(w, r)
+	}))
 	mux.HandleFunc("/agent/ws", s.agentWS)
 	mux.HandleFunc("/openapi.json", s.openapi)
 	return s.sessionBudgetMiddleware(mux)
@@ -1032,6 +1038,29 @@ func (s *Server) Routes() http.Handler {
 func jsonOut(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *Server) TokenExecInflightJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/tokens/"), "/exec-inflight")
+	id = strings.Trim(id, "/")
+	if id == "" {
+		http.Error(w, "token id required", http.StatusBadRequest)
+		return
+	}
+	p := principal(r)
+	isAdmin := p.HasScope("admin")
+	isSelf := p.Type == "api_token" && (p.ID == id || p.TokenID == id || p.QuotaID() == id)
+	if !isAdmin && !isSelf {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	m := s.jobsFor()
+	jobs := m.inflight(id)
+	jsonOut(w, jobs)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

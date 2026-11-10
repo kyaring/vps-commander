@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/wjyhk/vps-commander/internal/auditutil"
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/executor"
 	"github.com/wjyhk/vps-commander/internal/mcp"
@@ -168,6 +170,7 @@ func (m *execJobs) start(s *Server, p auth.Principal, clientIP, device, command,
 	}
 	release, ok := s.acquireTokenExec(p)
 	if !ok {
+		s.auditConcurrencyLimitedEntry(clientIP, device, "exec_start: "+command, "rest", "", p)
 		return execJob{}, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.max)
@@ -290,6 +293,9 @@ func (m *execJobs) cancel(owner, id string) (execJob, error) {
 // jobsFor returns the Hub's job manager, creating it on first use. It returns nil when the Hub
 // has no data directory (in-memory database), in which case async exec is unavailable.
 func (s *Server) jobsFor() *execJobs {
+	if s.jobs != nil {
+		return s.jobs
+	}
 	s.jobsOnce.Do(func() {
 		st := s.spillFor()
 		if st == nil {
@@ -402,4 +408,49 @@ func (b *MCPBackend) CancelExec(ctx context.Context, clientIP, jobID string) (an
 		_ = b.server.auditMCPContext(ctx, clientIP, j.Device, "exec_cancel", j.Summary, 0, 0, "job="+j.ID)
 	}
 	return b.server.jobView(j), nil
+}
+
+// InflightExecJob represents one running asynchronous execution for a token.
+type InflightExecJob struct {
+	JobID          string    `json:"job_id"`
+	StartedAt      time.Time `json:"started_at"`
+	CommandSummary string    `json:"command_summary"`
+	Summary        string    `json:"summary,omitempty"`
+}
+
+func inflightCommandSummary(command string) string {
+	redacted := auditutil.Redact(command)
+	runes := []rune(redacted)
+	if len(runes) > 80 {
+		return string(runes[:80])
+	}
+	return string(runes)
+}
+
+func (m *execJobs) inflight(owner string) []InflightExecJob {
+	if m == nil {
+		return []InflightExecJob{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]InflightExecJob, 0)
+	for _, j := range m.jobs {
+		if j.Owner == owner && j.Status == "running" {
+			raw := j.command
+			if raw == "" {
+				raw = j.Summary
+			}
+			summary := inflightCommandSummary(raw)
+			out = append(out, InflightExecJob{
+				JobID:          j.ID,
+				StartedAt:      j.Started,
+				CommandSummary: summary,
+				Summary:        summary,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartedAt.Before(out[j].StartedAt)
+	})
+	return out
 }
