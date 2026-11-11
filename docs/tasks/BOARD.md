@@ -1,10 +1,10 @@
 
-| T-20261028-04 | DevTask D2：auth/admin/scope | Grok（SWS-Grok；提交作者为 GPT，待核对） | internal/auth/ internal/api/ internal/mcp/ internal/storage/ | approved（代审 PASS，第四轮；合并顺序待 OPC 定） | feat/devtask-d2-auth-api @ 146427c | 4 | 代审 PASS（docs/reviews/T-20261028-04-review-4.md） | - | - | 2026-10-28 |
-| T-20261028-05 | DevTask D3：REST + runner 租约 | Grok（OPC 授权） | internal/api/ internal/storage/ | in_review（待指派审核） | feat/devtask-d3-rest-lease @ 54c97f1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
-| T-20261028-06 | DevTask D4：MCP dev_task_* 工具 | Grok（OPC 授权） | internal/mcp/ | in_review（待指派审核） | feat/devtask-d4-mcp @ 6a7f8b5 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
-| T-20261028-07 | DevTask D5：cmd/devtask-runner | Grok（OPC 授权） | cmd/devtask-runner/ internal/devtask/ | in_review（待指派审核） | feat/devtask-d5-runner @ c3e19b1 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
-| T-20261028-08 | DevTask D6：E2E + docs/devtask.md | Grok（OPC 授权） | internal/devtask/ docs/ | in_review（待指派审核） | feat/devtask-d6-e2e-docs @ 8264a13 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
-| T-20261028-09 | DevTask B：面板 + 通知事件 | Grok（OPC 授权） | internal/web/ internal/api/ internal/notify/ internal/storage/ | in_review（待指派审核） | feat/devtask-b-panel-notify @ 8548b79 | 0 | 未 push、未部署 | - | - | 2026-10-28 |
+| T-20261028-04 | DevTask D2：auth/admin/scope | GPT（OPC 授权） | internal/auth/ internal/api/ internal/mcp/ internal/storage/ | approved（代审 PASS，第四轮；合并顺序待 OPC 定） | feat/devtask-d2-auth-api @ 146427c | 4 | 代审 PASS（docs/reviews/T-20261028-04-review-4.md） | - | - | 2026-10-28 |
+| T-20261028-05 | DevTask D3：REST + runner 租约 | Grok（OPC 授权） | internal/api/ internal/storage/ | in_review（CHANGES REQUESTED，返工卡 T-20261111-08） | feat/devtask-d3-rest-lease @ 54c97f1 | 0 | CHANGES REQUESTED（返工 T-20261111-08）。原因：① HeartbeatDevTask 越权续租无测试覆盖（反向验证未变红，实测）；② internal/api/devtask.go 四处审计写入错误被 _ = 丢弃（:122/:208/:231/:254）。已通过项：范围、gofmt、vet、build、-race 一轮（EXIT=0）、11 个必测用例齐全、Claim 事务与条件更新、lease_requeues 幂等迁移、runner 路由 requireScope("devtask:run")、空白名单 fail-closed | - | - | 2026-10-28 |
+| T-20261028-06 | DevTask D4：MCP dev_task_* 工具 | Grok（OPC 授权） | internal/mcp/ | in_review（待指派审核） | feat/devtask-d4-mcp @ 6a7f8b5 | 0 | 待审核（阻塞于 T-20261111-09（规格裁定）与 T-20261111-08（D3 返工）；变基前需先合入二者；重复分支说明：feat/devtask-d4-mcp-tools 与 feat/devtask-d3-rest-lease 同为提交 54c97f1，非独立实现，建议由 OPC 决定是否删除） | - | - | 2026-10-28 |
+| T-20261028-07 | DevTask D5：cmd/devtask-runner | Grok（OPC 授权） | cmd/devtask-runner/ internal/devtask/ | in_review（待指派审核） | feat/devtask-d5-runner @ c3e19b1 | 0 | 待审核（阻塞于 T-20261111-09（规格裁定）与 T-20261111-08（D3 返工）；变基前需先合入二者） | - | - | 2026-10-28 |
+| T-20261028-08 | DevTask D6：E2E + docs/devtask.md | Grok（OPC 授权） | internal/devtask/ docs/ | in_review（待指派审核） | feat/devtask-d6-e2e-docs @ 8264a13 | 0 | 待审核（阻塞于 T-20261111-09（规格裁定）与 T-20261111-08（D3 返工）；变基前需先合入二者） | - | - | 2026-10-28 |
+| T-20261028-09 | DevTask B：面板 + 通知事件 | Grok（OPC 授权） | internal/web/ internal/api/ internal/notify/ internal/storage/ | in_review（待指派审核） | feat/devtask-b-panel-notify @ 8548b79 | 0 | 待审核（阻塞于 T-20261111-09（规格裁定）与 T-20261111-08（D3 返工）；变基前需先合入二者） | - | - | 2026-10-28 |
 # 任务看板
 
 状态：draft → ready → in_dev → in_review → changes_requested → approved → merged → deployed → verified / rolled_back / cancelled
