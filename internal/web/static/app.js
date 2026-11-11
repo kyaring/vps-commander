@@ -158,8 +158,20 @@ function setTokenTemplate(template, confirmAdmin=true){
 $("#tokenTemplate").addEventListener("change",()=>setTokenTemplate($("#tokenTemplate").value));
 document.querySelectorAll("[data-token-scope]").forEach(x=>x.addEventListener("change",()=>{if($("#tokenTemplate").value!=="custom")$("#tokenTemplate").value="custom"}));
 $("[data-token-scope=admin]").addEventListener("change",event=>{if(event.target.checked&&!confirm("admin 是高危权限，允许管理令牌、安全策略、MCP 和通知。确认启用？")){event.target.checked=false;} });
+function ensureTokenConcurrentLimitInput(){
+  if($("#tokenConcurrentLimit"))return;
+  const sessions=$("#tokenSessions");if(!sessions)return;
+  const label=sessions.closest("label");if(!label)return;
+  const newLabel=document.createElement("label");
+  newLabel.innerHTML='并发上限（0 = 使用全局默认 2）<input id="tokenConcurrentLimit" type="number" min="0" max="1000" value="0">';
+  label.insertAdjacentElement("afterend",newLabel);
+}
+ensureTokenConcurrentLimitInput();
 function resetTokenForm(){
-  tokenEditingId=""; $("#tokenName").value=""; $("#tokenNote").value=""; $("#tokenRate").value="10"; $("#tokenSessions").value="10"; $("#tokenTemplate").value="read"; setTokenScopes(tokenTemplates.read); $("#tokenCreate").textContent="创建命名令牌"; $("#tokenCancelEdit").hidden=true; $("#tokenFormStatus").textContent="";
+  ensureTokenConcurrentLimitInput();
+  tokenEditingId=""; $("#tokenName").value=""; $("#tokenNote").value=""; $("#tokenRate").value="10"; $("#tokenSessions").value="10";
+  if($("#tokenConcurrentLimit")) $("#tokenConcurrentLimit").value="0";
+  $("#tokenTemplate").value="read"; setTokenScopes(tokenTemplates.read); $("#tokenCreate").textContent="创建命名令牌"; $("#tokenCancelEdit").hidden=true; $("#tokenFormStatus").textContent="";
   $("#tokenDevices").querySelectorAll("input").forEach(x=>x.checked=false);
 }
 function renderTokenDevices(devices=null){
@@ -227,7 +239,10 @@ async function loadTokens(){
 async function editToken(id){
   const x=auditTokens.find(t=>t.id===id);if(!x)return;
   if(!clearCreatedSecret())return;
-  tokenEditingId=id;$("#tokenName").value=x.name||"";$("#tokenNote").value=x.note||"";$("#tokenRate").value=x.rate_rps||10;$("#tokenSessions").value=x.max_sessions||10;$("#tokenTemplate").value="custom";setTokenScopes(x.scopes||[]);
+  ensureTokenConcurrentLimitInput();
+  tokenEditingId=id;$("#tokenName").value=x.name||"";$("#tokenNote").value=x.note||"";$("#tokenRate").value=x.rate_rps||10;$("#tokenSessions").value=x.max_sessions||10;
+  if($("#tokenConcurrentLimit")) $("#tokenConcurrentLimit").value=x.concurrent_exec_limit!==undefined?x.concurrent_exec_limit:0;
+  $("#tokenTemplate").value="custom";setTokenScopes(x.scopes||[]);
   renderTokenDevices(x.devices||[]);$("#tokenCreate").textContent="保存令牌修改";$("#tokenCancelEdit").hidden=false;$("#tokenFormStatus").textContent=`正在编辑：${x.name}`;$("#tokenManagerCard").scrollIntoView({behavior:"smooth",block:"start"});
 }
 async function revokeToken(id){if(!confirm("确认吊销该令牌？"))return;await api("/tokens/revoke?id="+encodeURIComponent(id),{method:"POST"});await loadTokens()}
@@ -246,10 +261,14 @@ $("#tokenCreate").onclick=async()=>{
   if(!scopes.length){$("#tokenFormStatus").textContent="至少选择一个权限。";return}
   if(scopes.includes("admin")&&!confirm("即将创建或更新包含 admin 的高权限令牌。它可以管理令牌、安全策略、MCP 和通知。确定继续？"))return;
   const rate=Math.max(1,Math.min(10000,Number($("#tokenRate").value)||10)),sessions=Math.max(1,Math.min(1000,Number($("#tokenSessions").value)||10));
-  const body={name,note:$("#tokenNote").value.trim(),scopes,devices,rate_rps:rate,max_sessions:sessions};
+  const concurrentLimit=Math.max(0,Math.min(1000,Number($("#tokenConcurrentLimit")?$("#tokenConcurrentLimit").value:0)||0));
+  const body={name,note:$("#tokenNote").value.trim(),scopes,devices,rate_rps:rate,max_sessions:sessions,concurrent_exec_limit:concurrentLimit};
   try{
-    const editingId=tokenEditingId;let newToken=null;
-    if(editingId){await api("/tokens/update?id="+encodeURIComponent(editingId),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});$("#tokenFormStatus").textContent="令牌配置已更新。";}
+    const editingId=tokenEditingId;let newToken=null;let retLimit=null;
+    if(editingId){
+      const res=await api("/tokens/update?id="+encodeURIComponent(editingId),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      retLimit=(res&&res.token&&res.token.concurrent_exec_limit!==undefined)?res.token.concurrent_exec_limit:(res&&res.concurrent_exec_limit!==undefined?res.concurrent_exec_limit:concurrentLimit);
+    }
     else {
       if(!clearCreatedSecret())return;
       newToken=await api("/tokens/create",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -257,6 +276,9 @@ $("#tokenCreate").onclick=async()=>{
       $("#wizardSecret").value=newToken.token;$("#wizardNewTokenName").value=name;
     }
     resetTokenForm();await loadTokens();
+    if(editingId){
+      $("#tokenFormStatus").textContent="令牌配置已更新（并发上限: "+retLimit+"）。";
+    }
     if(newToken){$("#wizardToken").value=newToken.id;$("#wizardSecret").value=newToken.token;wizardSecretTokenID=newToken.id;wizardGenerate();}
   }catch(e){$("#tokenFormStatus").textContent="保存失败："+e.message}
 };

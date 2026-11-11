@@ -317,3 +317,69 @@ func TestPanelNotificationV1RoutesRequirePanelAuthAndReachRunner(t *testing.T) {
 		t.Fatalf("authenticated status=%d body=%s", authed.Code, authed.Body.String())
 	}
 }
+
+func TestPanelTokenEditIncludesConcurrentExecLimit(t *testing.T) {
+	appBytes, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := string(appBytes)
+
+	// 1. Verify explanation text
+	if !strings.Contains(app, "0 = 使用全局默认 2") {
+		t.Errorf("app.js must contain explanation '0 = 使用全局默认 2'")
+	}
+	// 2. Verify tokenConcurrentLimit field in form
+	if !strings.Contains(app, "tokenConcurrentLimit") {
+		t.Errorf("app.js must provide input with id 'tokenConcurrentLimit'")
+	}
+	// 3. Verify save sends concurrent_exec_limit
+	saveStart := strings.Index(app, `$("#tokenCreate").onclick`)
+	if saveStart < 0 {
+		t.Fatal("app.js missing #tokenCreate.onclick")
+	}
+	saveEnd := strings.Index(app[saveStart:], "function currentAuditFilters()")
+	if saveEnd < 0 {
+		saveEnd = len(app) - saveStart
+	}
+	saveFn := app[saveStart : saveStart+saveEnd]
+	bodyIdx := strings.Index(saveFn, "const body={")
+	if bodyIdx < 0 {
+		t.Fatal("app.js missing const body={ in #tokenCreate.onclick")
+	}
+	bodyEnd := strings.Index(saveFn[bodyIdx:], "};")
+	bodyStr := saveFn[bodyIdx : bodyIdx+bodyEnd]
+	if !strings.Contains(bodyStr, "concurrent_exec_limit") {
+		t.Errorf("app.js save handler body must include concurrent_exec_limit: %s", bodyStr)
+	}
+	// 4. Verify save handler displays return value and does not wipe it via resetTokenForm()
+	if !strings.Contains(saveFn, "res.concurrent_exec_limit") && !strings.Contains(saveFn, "token.concurrent_exec_limit") && !strings.Contains(saveFn, "retLimit") {
+		t.Errorf("app.js save handler must display return value of concurrent_exec_limit")
+	}
+	resetIdx := strings.Index(saveFn, "resetTokenForm()")
+	statusIdx := strings.Index(saveFn, `$("#tokenFormStatus").textContent="令牌配置已更新`)
+	if resetIdx < 0 || statusIdx < 0 {
+		t.Fatal("app.js missing resetTokenForm or success status assignment in save handler")
+	}
+	if resetIdx > statusIdx {
+		t.Errorf("resetTokenForm() at index %d was called after setting tokenFormStatus at index %d, wiping out status message", resetIdx, statusIdx)
+	}
+
+	// 5. Verify panel proxy route forwards concurrent_exec_limit
+	runner := &tokenPatchTestRunner{}
+	p := New("test-password", "admin", runner)
+	p.sessions["valid-session"] = time.Now().Add(time.Hour)
+	req := httptest.NewRequest(http.MethodPatch, "/panel/api/tokens/update?id=token-123", strings.NewReader(`{"scopes":["devices:read","exec"],"devices":["node-a"],"rate_rps":10,"concurrent_exec_limit":5}`))
+	req.AddCookie(&http.Cookie{Name: "vpc_session", Value: "valid-session"})
+	rec := httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if runner.method != http.MethodPatch || runner.path != "/api/v1/tokens/token-123" {
+		t.Fatalf("proxy method/path=%s %s", runner.method, runner.path)
+	}
+	if !strings.Contains(runner.body, `"concurrent_exec_limit":5`) {
+		t.Fatalf("body did not preserve concurrent_exec_limit: %s", runner.body)
+	}
+}
