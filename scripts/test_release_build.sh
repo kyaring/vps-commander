@@ -23,14 +23,47 @@ sh scripts/release-build.sh --out "$OUT2" > "$TMP/build-two.log"
 HASH1=$(sha256sum "$OUT1/vps-commander-hub" | awk '{print $1}')
 HASH2=$(sha256sum "$OUT2/vps-commander-hub" | awk '{print $1}')
 [ "$HASH1" = "$HASH2" ] || { echo "reproducibility failed: $HASH1 != $HASH2" >&2; exit 1; }
+
+AGENT_AMD64_1=$(sha256sum "$OUT1/vps-commander-agent-linux-amd64" | awk '{print $1}')
+AGENT_AMD64_2=$(sha256sum "$OUT2/vps-commander-agent-linux-amd64" | awk '{print $1}')
+[ "$AGENT_AMD64_1" = "$AGENT_AMD64_2" ] || { echo "agent-amd64 reproducibility failed: $AGENT_AMD64_1 != $AGENT_AMD64_2" >&2; exit 1; }
+
+AGENT_ARM64_1=$(sha256sum "$OUT1/vps-commander-agent-linux-arm64" | awk '{print $1}')
+AGENT_ARM64_2=$(sha256sum "$OUT2/vps-commander-agent-linux-arm64" | awk '{print $1}')
+[ "$AGENT_ARM64_1" = "$AGENT_ARM64_2" ] || { echo "agent-arm64 reproducibility failed: $AGENT_ARM64_1 != $AGENT_ARM64_2" >&2; exit 1; }
+
+AGENT_ARMV7_1=$(sha256sum "$OUT1/vps-commander-agent-linux-armv7" | awk '{print $1}')
+AGENT_ARMV7_2=$(sha256sum "$OUT2/vps-commander-agent-linux-armv7" | awk '{print $1}')
+[ "$AGENT_ARMV7_1" = "$AGENT_ARMV7_2" ] || { echo "agent-armv7 reproducibility failed: $AGENT_ARMV7_1 != $AGENT_ARMV7_2" >&2; exit 1; }
+
 test -s "$OUT1/vps-commander-hub"
 test -s "$OUT1/vps-commander-hub.sha256"
+test -s "$OUT1/vps-commander-agent-linux-amd64"
+test -s "$OUT1/vps-commander-agent-linux-arm64"
+test -s "$OUT1/vps-commander-agent-linux-armv7"
+test -s "$OUT1/vps-commander-agent-linux-amd64.sha256"
+test -s "$OUT1/vps-commander-agent-linux-arm64.sha256"
+test -s "$OUT1/vps-commander-agent-linux-armv7.sha256"
+test -s "$OUT1/checksums.txt"
 test -s "$OUT1/build-info.txt"
+
 grep -q "^$HASH1  $OUT1/vps-commander-hub$" "$OUT1/vps-commander-hub.sha256"
+grep -q "^$AGENT_AMD64_1  $OUT1/vps-commander-agent-linux-amd64$" "$OUT1/vps-commander-agent-linux-amd64.sha256"
+grep -q "^$AGENT_ARM64_1  $OUT1/vps-commander-agent-linux-arm64$" "$OUT1/vps-commander-agent-linux-arm64.sha256"
+grep -q "^$AGENT_ARMV7_1  $OUT1/vps-commander-agent-linux-armv7$" "$OUT1/vps-commander-agent-linux-armv7.sha256"
+
+grep -q "^$HASH1  vps-commander-hub$" "$OUT1/checksums.txt"
+grep -q "^$AGENT_AMD64_1  vps-commander-agent-linux-amd64$" "$OUT1/checksums.txt"
+grep -q "^$AGENT_ARM64_1  vps-commander-agent-linux-arm64$" "$OUT1/checksums.txt"
+grep -q "^$AGENT_ARMV7_1  vps-commander-agent-linux-armv7$" "$OUT1/checksums.txt"
+
 grep -q "^commit=[0-9a-f]\{40\}$" "$OUT1/build-info.txt"
 grep -q '^go_version=.*go1.24.4' "$OUT1/build-info.txt"
 grep -q '^built_at_utc=.*Z$' "$OUT1/build-info.txt"
 grep -q "^sha256=$HASH1$" "$OUT1/build-info.txt"
+grep -q "^agent_linux_amd64_sha256=$AGENT_AMD64_1$" "$OUT1/build-info.txt"
+grep -q "^agent_linux_arm64_sha256=$AGENT_ARM64_1$" "$OUT1/build-info.txt"
+grep -q "^agent_linux_armv7_sha256=$AGENT_ARMV7_1$" "$OUT1/build-info.txt"
 # An untracked file makes the worktree dirty and must be rejected before output.
 touch "$REPO/dirty-untracked-file"
 if sh scripts/release-build.sh --out "$TMP/dirty-out" > "$TMP/dirty.log" 2>&1; then
