@@ -55,10 +55,12 @@ v1.1.36-B（A 验收并经用户确认后再开始）：面板页面、通知事
 - `devtask:run`：只给 runner 自己的命名 token
 - 不加进 legacy key 的固定 scope 集合（legacy 正在退役）
 - GPT 的 OAuth token 可授 submit/read/cancel；consent 页和服务端都拒绝给 OAuth 客户端授予 `devtask:run`
-- admin 隐含全部 devtask scope，但 admin token 仍不能在 OAuth consent 中被选用（沿用 v1.1.31 规则）
+- admin 隐含 devtask:submit / devtask:read / devtask:cancel，但不隐含 devtask:run（devtask:run 只给 runner 自己的命名令牌）；admin token 仍不能在 OAuth consent 中被选用（沿用 v1.1.31 规则）
+- 裁定（2026-11-11，OPC）：第 55 行与第 58 行冲突时以第 55 行为准；实现见 internal/auth/auth.go:44-46。
 
 2. 模型白名单
 - 新增设置 `devtask.allowed_models`，存 `hub_settings`，只有管理员能改（面板或 admin API），每次修改写审计（旧值、新值、操作人）
+- 白名单语义：`devtask.allowed_models` 为空或未设置时拒绝一切模型（fail-closed），不是「不限制」；生产环境必须显式配置；修改白名单只允许管理员，每次修改写审计（旧值、新值、操作人）。
 - 初始只有：`global:deepseek-v4.1-flash`；以后增加模型只改白名单
 - GPT、OAuth token、runner 都改不了白名单
 - `dev_projects.default_model` 由管理员指定，必须在白名单内；白名单移除某模型时，引用它的项目标记为需修正并拒绝新任务
