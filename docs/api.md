@@ -353,3 +353,17 @@ MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；to
 | `/api/v1/devtasks/{id}/heartbeat` | POST | devtask:run | 续租 |
 | `/api/v1/devtasks/{id}/events` | POST | devtask:run | 批量追加事件 |
 | `/api/v1/devtasks/{id}/complete` | POST | devtask:run | 完成：status=needs_review\|failed\|blocked_model |
+
+### DevTask MCP 工具（D4）
+
+开关同 D2（`DEVTASK_ENABLED` 默认关闭）。关闭时下列工具不出现在 `tools/list`，调用返回 `devtask disabled`，因此默认的 tools/list 哈希不变。开启后按 scope 过滤：
+
+| 工具 | scope | 说明 |
+|---|---|---|
+| `dev_task_dispatch` | devtask:submit | 派发。只能选已登记项目；model 缺省用项目默认且必须在白名单内；`forbidden_paths` 与项目禁止路径取并集；返回 task_id、branch、model；审计 `devtask_dispatch` |
+| `dev_task_revise` | devtask:submit | needs_review 或 failed 开新一轮；`note` 写入事件，不进审计正文 |
+| `dev_task_status` | devtask:read | 状态、轮次、模型、结果摘要、错误码 |
+| `dev_task_list` | devtask:read | 按 project、status 分页 |
+| `dev_task_diff` | devtask:read | 返回 runner 上报的 diff_stat，按字节 offset/limit 分页 |
+| `dev_task_logs` | devtask:read | 事件分页，不进 audit_logs |
+| `dev_task_cancel` | devtask:cancel | 取消未结束任务；审计 `devtask_cancel` |

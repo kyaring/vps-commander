@@ -634,11 +634,14 @@ func (m *Manager) emit(e Event) {
 var builtinTemplatePlaceholderRE = regexp.MustCompile(`\{\{\s*([a-z][a-z0-9_]*)\s*\}\}`)
 
 var builtinNotificationTemplateIDs = map[string]string{
-	"node_offline":       "builtin-node-offline",
-	"node_recovery":      "builtin-node-recovery",
-	"resource_threshold": "builtin-resource-threshold",
-	"resource_recovery":  "builtin-resource-recovery",
-	"scheduled_report":   "builtin-scheduled-report",
+	"node_offline":          "builtin-node-offline",
+	"node_recovery":         "builtin-node-recovery",
+	"resource_threshold":    "builtin-resource-threshold",
+	"resource_recovery":     "builtin-resource-recovery",
+	"scheduled_report":      "builtin-scheduled-report",
+	"devtask.needs_review":  "devtask-needs-review",
+	"devtask.failed":        "devtask-failed",
+	"devtask.blocked_model": "devtask-blocked-model",
 }
 
 func (m *Manager) recordBuiltInNotification(e Event, shadow bool) bool {

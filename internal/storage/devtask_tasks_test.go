@@ -222,3 +222,8 @@ func TestDevTaskHeartbeatRejectsNonRunning(t *testing.T) {
 		t.Fatalf("heartbeat on done task expected ErrDevTaskConflict, got %v", err)
 	}
 }
+
+// CloseAuditForTest is kept in test code for backward compatibility with tests.
+func (s *Store) CloseAuditForTest() {
+	s.CloseAuditWriter()
+}

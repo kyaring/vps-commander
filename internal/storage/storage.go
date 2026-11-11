@@ -707,6 +707,21 @@ func (s *Store) FlushAudits() error {
 	}
 }
 
+// CloseAuditWriter stops the background audit worker and switches audit logging to synchronous writes.
+// Unlike Close(), it leaves the database connection open.
+func (s *Store) CloseAuditWriter() {
+	s.auditMu.Lock()
+	s.auditClosed = true
+	stop, done := s.auditStop, s.auditDone
+	if stop != nil {
+		close(stop)
+	}
+	s.auditMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
 // Close stops the audit writer with a bounded wait. If it cannot stop in time,
 // the DB remains open so the writer is not raced by database closure.
 func (s *Store) Close() error {

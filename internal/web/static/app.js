@@ -666,12 +666,12 @@ document.addEventListener("visibilitychange", () => {
 });
 
 
-const validPanelTabs=["devices","console","access","security","logs"];
+const validPanelTabs=["devices","console","access","security","devtask","logs"];
 let currentPanelTab="";
 const loadedPanelTabs=new Set();
 async function activatePanelTab(tab, force=false){
   if(!validPanelTabs.includes(tab))tab="devices";
-  if(currentPanelTab!==tab||force){currentPanelTab=tab;document.querySelectorAll("[data-tab]").forEach(b=>{const active=b.dataset.tab===tab;b.classList.toggle("active",active);b.setAttribute("aria-selected",String(active));b.tabIndex=active?0:-1});document.querySelectorAll("[data-tab-panel]").forEach(p=>{const active=p.dataset.tabPanel===tab;p.classList.toggle("active",active);p.hidden=!active});}
+  if(currentPanelTab!==tab||force){currentPanelTab=tab;if(tab==="devtask")loadDevTaskPanel();document.querySelectorAll("[data-tab]").forEach(b=>{const active=b.dataset.tab===tab;b.classList.toggle("active",active);b.setAttribute("aria-selected",String(active));b.tabIndex=active?0:-1});document.querySelectorAll("[data-tab-panel]").forEach(p=>{const active=p.dataset.tabPanel===tab;p.classList.toggle("active",active);p.hidden=!active});}
   if(location.hash!=="#"+tab)history.replaceState(null,"",location.pathname+location.search+"#"+tab);
   if(!force&&loadedPanelTabs.has(tab)){startDevicePolling();return}
   try{
@@ -813,4 +813,42 @@ document.addEventListener("click",async event=>{
 $("#notifyChannelType")?.addEventListener("change",()=>{const type=$("#notifyChannelType").value;const endpoint=$("#notifyChannelEndpoint"),label=$("#notifyChannelEndpointLabel"),secrets=$("#notifyChannelSecrets");
   if(type==="wecom_bot"){label.firstChild.textContent="企业微信 webhook_url（密码字段）";endpoint.type="password";endpoint.placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…（编辑时留空保留）";secrets.placeholder='{}（可留空；URL 会单独加密保存）';$("#notifyChannelConfig").placeholder='{"mentioned_list":["@all"]}';}
   else {label.firstChild.textContent="Webhook URL";endpoint.type=type==="webhook"?"url":"text";endpoint.placeholder=type==="webhook"?"https://…（编辑时留空保留原地址）":"该类型不使用 Webhook URL";secrets.placeholder=type==="telegram_bot"?'{"bot_token":"…"}':type==="webhook"?'{"headers":{"Authorization":"Bearer …"}}':'{"app_secret":"…"}';$("#notifyChannelConfig").placeholder="{}";}
+});
+
+async function loadDevTaskPanel(){
+  const status=document.getElementById("devtaskStatus");
+  const list=document.getElementById("devtaskList");
+  const detail=document.getElementById("devtaskDetail");
+  if(!status||!list)return;
+  status.textContent="加载中…";
+  try{
+    const r=await fetch("/api/v1/devtasks?limit=50",{credentials:"same-origin"});
+    if(r.status===404){status.textContent="DevTask 未启用（设置 DEVTASK_ENABLED=on 后重启 Hub）";list.innerHTML="";return;}
+    if(!r.ok){status.textContent="加载失败："+r.status;return;}
+    const data=await r.json();
+    const tasks=data.tasks||[];
+    status.textContent="共 "+tasks.length+" 条任务";
+    list.innerHTML=tasks.map(t=>`<tr data-id="${t.id}"><td>${t.id}</td><td>${t.project||""}</td><td>${t.title||""}</td><td>${t.status||""}</td><td>${t.model||""}</td><td>${t.round||""}</td><td>${t.finished_at||t.started_at||t.created_at||""}</td></tr>`).join("")||"<tr><td colspan=7>暂无任务</td></tr>";
+    list.querySelectorAll("tr[data-id]").forEach(tr=>tr.addEventListener("click",async()=>{
+      const id=tr.getAttribute("data-id");
+      const rr=await fetch("/api/v1/devtasks/"+id,{credentials:"same-origin"});
+      const body=await rr.json();
+      detail.hidden=false;detail.textContent=JSON.stringify(body,null,2);
+    }));
+  }catch(e){status.textContent="错误："+e;}
+  try{
+    const s=await fetch("/api/v1/devtask-settings",{credentials:"same-origin"});
+    if(s.ok){const d=await s.json();document.getElementById("devModels").value=(d.allowed_models||[]).join("\n");}
+  }catch(_){}
+}
+document.getElementById("devtaskRefresh")?.addEventListener("click",()=>loadDevTaskPanel());
+document.getElementById("devProjSave")?.addEventListener("click",async()=>{
+  const body={name:document.getElementById("devProjName").value.trim(),repo_path:document.getElementById("devProjPath").value.trim(),base_ref:"main",default_model:document.getElementById("devProjModel").value.trim()||"global:deepseek-v4.1-flash",allowed_cmds:["go test"],default_accept_cmds:["go test"],forbidden_paths:[],max_rounds:+document.getElementById("devProjRounds").value||3,max_steps:+document.getElementById("devProjSteps").value||50,timeout_s:+document.getElementById("devProjTimeout").value||1800,enabled:true};
+  const r=await fetch("/api/v1/devtask-projects",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  document.getElementById("devAdminStatus").textContent=r.ok?"项目已保存":"保存失败 "+r.status+" "+await r.text();
+});
+document.getElementById("devModelsSave")?.addEventListener("click",async()=>{
+  const models=document.getElementById("devModels").value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  const r=await fetch("/api/v1/devtask-settings",{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({allowed_models:models})});
+  document.getElementById("devAdminStatus").textContent=r.ok?"白名单已保存":"保存失败 "+r.status;
 });

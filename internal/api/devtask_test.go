@@ -168,7 +168,7 @@ func TestDevTaskAuditFailureIsVisible(t *testing.T) {
 	if _, err := s.Store.DB.Exec("CREATE TRIGGER test_fail_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'simulated audit failure'); END;"); err != nil {
 		t.Fatal(err)
 	}
-	s.Store.CloseAuditForTest()
+	s.Store.CloseAuditWriter()
 
 	cancel := devtaskCtx(map[string]bool{"devtask:cancel": true})
 	cancelRec := devtaskDo(t, s, cancel, http.MethodPost, "/api/v1/devtasks/"+id+"/cancel", `{}`)
@@ -187,5 +187,99 @@ func TestDevTaskAuditFailureIsVisible(t *testing.T) {
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "devtask_cancel audit write failed") {
 		t.Fatalf("expected audit write failure log, got:\n%s", logOutput)
+	}
+}
+
+func TestDevTaskNotificationNoBodyLeak(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
+	s, _ := newSpillTestServer(t)
+	seedDevProject(t, s)
+
+	secretSpec := "SUPER_SECRET_SPEC_CONTENT_998877"
+	secretResult := "SUPER_SECRET_RESULT_CONTENT_665544"
+
+	submit := devtaskCtx(map[string]bool{"devtask:submit": true})
+	dispatchBody := `{"project":"demo","title":"leak-test","spec_md":"` + secretSpec + `"}`
+	rec := devtaskDo(t, s, submit, http.MethodPost, "/api/v1/devtasks", dispatchBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dispatch: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	taskID := out.TaskID
+
+	runner := devtaskCtx(map[string]bool{"devtask:run": true})
+	claimRec := devtaskDo(t, s, runner, http.MethodPost, "/api/v1/devtasks/claim", `{}`)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim failed: %d %s", claimRec.Code, claimRec.Body.String())
+	}
+
+	completeBody := `{"status":"needs_review","commit_sha":"c123","result_md":"` + secretResult + `","test_summary":"passed 3 tests"}`
+	completeRec := devtaskDo(t, s, runner, http.MethodPost, "/api/v1/devtasks/"+taskID+"/complete", completeBody)
+	if completeRec.Code != http.StatusOK {
+		t.Fatalf("complete failed: %d %s", completeRec.Code, completeRec.Body.String())
+	}
+
+	var dataJSON string
+	err := s.Store.DB.QueryRow("SELECT data_json FROM notification_events WHERE id LIKE 'evt_devtask_%' ORDER BY created_at DESC LIMIT 1").Scan(&dataJSON)
+	if err != nil {
+		t.Fatalf("query notification event data_json: %v", err)
+	}
+
+	if strings.Contains(dataJSON, secretSpec) {
+		t.Fatalf("notification payload leaked spec_md: %s", dataJSON)
+	}
+	if strings.Contains(dataJSON, secretResult) {
+		t.Fatalf("notification payload leaked result_md: %s", dataJSON)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(dataJSON), &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["task_id"] != taskID {
+		t.Fatalf("payload task_id = %v, want %s", payload["task_id"], taskID)
+	}
+	if payload["title"] != "leak-test" {
+		t.Fatalf("payload title = %v, want leak-test", payload["title"])
+	}
+	if payload["status"] != "needs_review" {
+		t.Fatalf("payload status = %v, want needs_review", payload["status"])
+	}
+}
+
+func TestDevTaskPanelRoutesRequireGate(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "")
+	s, _ := newSpillTestServer(t)
+	admin := devtaskCtx(map[string]bool{"admin": true, "devtask:submit": true, "devtask:read": true, "devtask:run": true, "devtask:cancel": true})
+
+	routes := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/v1/devtasks", ""},
+		{http.MethodPost, "/api/v1/devtasks", `{"project":"demo","title":"t","spec_md":"g"}`},
+		{http.MethodPost, "/api/v1/devtasks/claim", `{}`},
+		{http.MethodGet, "/api/v1/devtasks/dt_dummy", ""},
+		{http.MethodGet, "/api/v1/devtasks/dt_dummy/events", ""},
+		{http.MethodPost, "/api/v1/devtasks/dt_dummy/revise", `{}`},
+		{http.MethodPost, "/api/v1/devtasks/dt_dummy/cancel", `{}`},
+		{http.MethodPost, "/api/v1/devtasks/dt_dummy/done", `{}`},
+		{http.MethodPost, "/api/v1/devtasks/dt_dummy/heartbeat", `{}`},
+		{http.MethodPost, "/api/v1/devtasks/dt_dummy/complete", `{}`},
+		{http.MethodGet, "/api/v1/devtask-projects", ""},
+		{http.MethodPost, "/api/v1/devtask-projects", `{"name":"p","repo_path":"/tmp","base_ref":"main"}`},
+		{http.MethodGet, "/api/v1/devtask-settings", ""},
+		{http.MethodPut, "/api/v1/devtask-settings", `{"allowed_models":["m"]}`},
+	}
+
+	for _, r := range routes {
+		rec := devtaskDo(t, s, admin, r.method, r.path, r.body)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("route %s %s with DEVTASK_ENABLED='' returned status %d, want 404 Not Found", r.method, r.path, rec.Code)
+		}
 	}
 }
