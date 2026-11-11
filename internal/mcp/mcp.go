@@ -1254,6 +1254,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			a := annotationsFor(tools[i].Name)
 			tools[i].Annotations = &a
 		}
+		tools = appendDevTaskTools(ctx, tools)
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -1337,6 +1338,12 @@ func mcpToolScope(name string) string {
 		return "files:write"
 	case "call_agent_mcp":
 		return "mcp:call"
+	case "dev_task_dispatch", "dev_task_revise":
+		return "devtask:submit"
+	case "dev_task_status", "dev_task_list", "dev_task_diff", "dev_task_logs":
+		return "devtask:read"
+	case "dev_task_cancel":
+		return "devtask:cancel"
 	default:
 		return ""
 	}
@@ -1350,6 +1357,19 @@ func (s *Server) authorizeTool(ctx context.Context, name, device string) error {
 	p, ok := auth.PrincipalFromContext(ctx)
 	if !ok {
 		return fmt.Errorf("unauthorized")
+	}
+	if isDevTaskTool(name) {
+		if !devtaskEnabled() {
+			return fmt.Errorf("devtask disabled")
+		}
+		scope := mcpToolScope(name)
+		if scope == "" {
+			return fmt.Errorf("unknown tool: %s", name)
+		}
+		if !p.HasScope(scope) {
+			return fmt.Errorf("scope denied: %s", scope)
+		}
+		return nil
 	}
 	if scope := mcpToolScope(name); scope == "" && name != "memo_set" && name != "memo_get" {
 		return fmt.Errorf("unknown tool: %s", name)
@@ -1373,7 +1393,7 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 	if v, ok := rawDevice["device"].(string); ok {
 		device = v
 	}
-	if device == "" && params.Name != "list_devices" && params.Name != "memo_set" && params.Name != "memo_get" {
+	if device == "" && params.Name != "list_devices" && params.Name != "memo_set" && params.Name != "memo_get" && !isDevTaskTool(params.Name) {
 		device = "local"
 	}
 	if err := s.authorizeTool(ctx, params.Name, device); err != nil {
@@ -1509,6 +1529,9 @@ func (s *Server) callTool(ctx context.Context, clientIP string, params CallToolP
 
 	case "exec_start", "exec_status", "exec_cancel":
 		return s.callAsyncExec(ctx, clientIP, params)
+
+	case "dev_task_dispatch", "dev_task_status", "dev_task_list", "dev_task_diff", "dev_task_logs", "dev_task_revise", "dev_task_cancel":
+		return s.callDevTaskTool(ctx, params)
 
 	case "read_multiple_files":
 		var a struct {

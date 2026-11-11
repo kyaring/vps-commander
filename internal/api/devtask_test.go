@@ -168,7 +168,7 @@ func TestDevTaskAuditFailureIsVisible(t *testing.T) {
 	if _, err := s.Store.DB.Exec("CREATE TRIGGER test_fail_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'simulated audit failure'); END;"); err != nil {
 		t.Fatal(err)
 	}
-	s.Store.CloseAuditForTest()
+	s.Store.CloseAuditWriter()
 
 	cancel := devtaskCtx(map[string]bool{"devtask:cancel": true})
 	cancelRec := devtaskDo(t, s, cancel, http.MethodPost, "/api/v1/devtasks/"+id+"/cancel", `{}`)
