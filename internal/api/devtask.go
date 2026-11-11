@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/storage"
@@ -389,7 +390,49 @@ func (s *Server) devtaskComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "complete failed", http.StatusInternalServerError)
 		return
 	}
+	s.emitDevTaskNotification(id, in)
 	jsonOut(w, map[string]any{"ok": true, "id": id, "status": in.Status})
+}
+
+func (s *Server) emitDevTaskNotification(taskID string, result storage.CompleteDevTaskResult) {
+	if s.Store == nil {
+		return
+	}
+	var eventType, templateID string
+	switch result.Status {
+	case storage.DevTaskNeedsReview:
+		eventType, templateID = "devtask.needs_review", "devtask-needs-review"
+	case storage.DevTaskFailed:
+		eventType, templateID = "devtask.failed", "devtask-failed"
+	case storage.DevTaskBlockedModel:
+		eventType, templateID = "devtask.blocked_model", "devtask-blocked-model"
+	default:
+		return
+	}
+	task, err := s.Store.GetDevTask(taskID)
+	if err != nil {
+		return
+	}
+	// Never include spec_md or result_md in notification payload
+	summary := result.TestSummary
+	if summary == "" {
+		summary = result.ErrorDetail
+	}
+	if summary == "" {
+		summary = result.Status
+	}
+	data, _ := json.Marshal(map[string]any{
+		"task_id": task.ID, "project": task.Project, "title": task.Title,
+		"status": result.Status, "model": task.Model, "round": task.Round,
+		"summary": summary,
+	})
+	msg := fmt.Sprintf("%s %s (%s)", eventType, task.Title, task.ID)
+	evt := storage.NotificationEvent{
+		ID: "evt_devtask_" + task.ID + "_" + result.Status, TemplateID: templateID, TemplateFormat: "text",
+		EventType: eventType, Severity: "P3", Source: "devtask", Message: msg,
+		DataJSON: string(data), CreatedAt: time.Now().Unix(),
+	}
+	_, _, _, _ = s.Store.AcceptNotificationEvent(evt)
 }
 
 func devtaskIDFromActionPath(path, action string) string {

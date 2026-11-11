@@ -84,3 +84,19 @@ Restart=on-failure
 - **admin 与 runner 权限隔离**：admin 不隐含 `devtask:run`；该权限仅供 runner 命名令牌持有，OAuth 不可申请或下发。
 - **空白名单 fail-closed**：模型白名单为空时拒绝一切模型派发，不可回退至默认模型。
 - **模型凭据方案 B1 安全边界**：环境变量 `MODEL_API_KEY` 仅由 runner 在本地读取并直接与模型网关交互，Hub 不代理模型密钥也不落库；安全边界已复核接受，见 `docs/devtask-spec-amendment-1028.md`。
+
+## v1.1.36-B（面板与通知）
+
+### 通知事件
+
+| 事件类型 | 模板 ID | 触发 |
+|----------|---------|------|
+| `devtask.needs_review` | `devtask-needs-review` | runner complete → needs_review |
+| `devtask.failed` | `devtask-failed` | complete → failed |
+| `devtask.blocked_model` | `devtask-blocked-model` | complete → blocked_model |
+
+在通知任务中订阅上述 `event_type` 并绑定通道即可投递。通知 payload 仅含任务元数据（ID、标题、状态、模型、轮次、执行摘要），不含任务卡与结果全文。
+
+### 面板
+
+「开发任务」分区：任务列表与详情；admin 可登记项目与编辑模型白名单。未开启 `DEVTASK_ENABLED` 时显示提示。
