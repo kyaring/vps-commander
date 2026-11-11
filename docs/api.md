@@ -335,3 +335,21 @@ MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；to
 | `/api/v1/devtask-projects` | POST | admin | 新增或修改项目；默认模型必须在白名单内；`repo_path` 必须是绝对路径；`max_rounds`、`max_steps`、`timeout_s` 至少为 1；写审计（`devtask_project_upsert`，含旧值与新值） |
 | `/api/v1/devtask-settings` | GET | admin | 返回 `allowed_models` 与 `enabled` |
 | `/api/v1/devtask-settings` | PUT | admin | 整体替换模型白名单；空名与重复名返回 400；写审计（`devtask_settings_update`，含旧白名单与新白名单） |
+
+### DevTask 用户与 runner 接口（D3）
+
+开关同 D2（`DEVTASK_ENABLED`）。
+
+| 接口 | 方法 | scope | 说明 |
+|---|---|---|---|
+| `/api/v1/devtasks` | POST | devtask:submit | 派发任务；model 缺省用项目默认，须在白名单内；审计 `devtask_dispatch` |
+| `/api/v1/devtasks` | GET | devtask:read | 列表；query: project、status、limit、offset |
+| `/api/v1/devtasks/{id}` | GET | devtask:read | 详情 |
+| `/api/v1/devtasks/{id}/events` | GET | devtask:read | 事件流；query: after_seq、limit |
+| `/api/v1/devtasks/{id}/revise` | POST | devtask:submit | needs_review/failed → queued，round+1 |
+| `/api/v1/devtasks/{id}/cancel` | POST | devtask:cancel | 取消 |
+| `/api/v1/devtasks/{id}/done` | POST | devtask:submit | needs_review → done |
+| `/api/v1/devtasks/claim` | POST | devtask:run | runner 领取任务；无任务返回 204 |
+| `/api/v1/devtasks/{id}/heartbeat` | POST | devtask:run | 续租 |
+| `/api/v1/devtasks/{id}/events` | POST | devtask:run | 批量追加事件 |
+| `/api/v1/devtasks/{id}/complete` | POST | devtask:run | 完成：status=needs_review\|failed\|blocked_model |
