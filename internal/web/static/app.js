@@ -264,11 +264,10 @@ $("#tokenCreate").onclick=async()=>{
   const concurrentLimit=Math.max(0,Math.min(1000,Number($("#tokenConcurrentLimit")?$("#tokenConcurrentLimit").value:0)||0));
   const body={name,note:$("#tokenNote").value.trim(),scopes,devices,rate_rps:rate,max_sessions:sessions,concurrent_exec_limit:concurrentLimit};
   try{
-    const editingId=tokenEditingId;let newToken=null;
+    const editingId=tokenEditingId;let newToken=null;let retLimit=null;
     if(editingId){
       const res=await api("/tokens/update?id="+encodeURIComponent(editingId),{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      const retLimit=(res&&res.token&&res.token.concurrent_exec_limit!==undefined)?res.token.concurrent_exec_limit:(res&&res.concurrent_exec_limit!==undefined?res.concurrent_exec_limit:concurrentLimit);
-      $("#tokenFormStatus").textContent="令牌配置已更新（并发上限: "+retLimit+"）。";
+      retLimit=(res&&res.token&&res.token.concurrent_exec_limit!==undefined)?res.token.concurrent_exec_limit:(res&&res.concurrent_exec_limit!==undefined?res.concurrent_exec_limit:concurrentLimit);
     }
     else {
       if(!clearCreatedSecret())return;
@@ -277,6 +276,9 @@ $("#tokenCreate").onclick=async()=>{
       $("#wizardSecret").value=newToken.token;$("#wizardNewTokenName").value=name;
     }
     resetTokenForm();await loadTokens();
+    if(editingId){
+      $("#tokenFormStatus").textContent="令牌配置已更新（并发上限: "+retLimit+"）。";
+    }
     if(newToken){$("#wizardToken").value=newToken.id;$("#wizardSecret").value=newToken.token;wizardSecretTokenID=newToken.id;wizardGenerate();}
   }catch(e){$("#tokenFormStatus").textContent="保存失败："+e.message}
 };

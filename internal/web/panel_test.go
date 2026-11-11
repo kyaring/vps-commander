@@ -352,9 +352,17 @@ func TestPanelTokenEditIncludesConcurrentExecLimit(t *testing.T) {
 	if !strings.Contains(bodyStr, "concurrent_exec_limit") {
 		t.Errorf("app.js save handler body must include concurrent_exec_limit: %s", bodyStr)
 	}
-	// 4. Verify save handler displays return value
+	// 4. Verify save handler displays return value and does not wipe it via resetTokenForm()
 	if !strings.Contains(saveFn, "res.concurrent_exec_limit") && !strings.Contains(saveFn, "token.concurrent_exec_limit") && !strings.Contains(saveFn, "retLimit") {
 		t.Errorf("app.js save handler must display return value of concurrent_exec_limit")
+	}
+	resetIdx := strings.Index(saveFn, "resetTokenForm()")
+	statusIdx := strings.Index(saveFn, `$("#tokenFormStatus").textContent="令牌配置已更新`)
+	if resetIdx < 0 || statusIdx < 0 {
+		t.Fatal("app.js missing resetTokenForm or success status assignment in save handler")
+	}
+	if resetIdx > statusIdx {
+		t.Errorf("resetTokenForm() at index %d was called after setting tokenFormStatus at index %d, wiping out status message", resetIdx, statusIdx)
 	}
 
 	// 5. Verify panel proxy route forwards concurrent_exec_limit
