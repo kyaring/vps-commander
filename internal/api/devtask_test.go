@@ -1,10 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/wjyhk/vps-commander/internal/auth"
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
@@ -95,5 +100,92 @@ func TestDevTaskRunnerRoutesRequireRunScope(t *testing.T) {
 	}
 	if rec := devtaskDo(t, s, runner, http.MethodPost, "/api/v1/devtasks/"+id+"/complete", `{"status":"needs_review","commit_sha":"abc","result_md":"done"}`); rec.Code != http.StatusOK {
 		t.Fatalf("complete: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDevTaskHeartbeatAPIRejectsOtherRunner(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
+	s, _ := newSpillTestServer(t)
+	seedDevProject(t, s)
+
+	submit := devtaskCtx(map[string]bool{"devtask:submit": true})
+	rec := devtaskDo(t, s, submit, http.MethodPost, "/api/v1/devtasks", `{"project":"demo","title":"test heartbeat other runner","spec_md":"# goal"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dispatch: %d", rec.Code)
+	}
+	var out struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	id := out.TaskID
+
+	runnerA := auth.WithPrincipal(context.Background(), auth.Principal{
+		Type: "api_token", ID: "tok-runner-A", Name: "runner-A", TokenID: "tok-runner-A",
+		Scopes: map[string]bool{"devtask:run": true},
+	})
+	runnerB := auth.WithPrincipal(context.Background(), auth.Principal{
+		Type: "api_token", ID: "tok-runner-B", Name: "runner-B", TokenID: "tok-runner-B",
+		Scopes: map[string]bool{"devtask:run": true},
+	})
+
+	claimRec := devtaskDo(t, s, runnerA, http.MethodPost, "/api/v1/devtasks/claim", `{}`)
+	if claimRec.Code != http.StatusOK {
+		t.Fatalf("claim failed: %d %s", claimRec.Code, claimRec.Body.String())
+	}
+
+	hbB := devtaskDo(t, s, runnerB, http.MethodPost, "/api/v1/devtasks/"+id+"/heartbeat", `{"lease_sec":60}`)
+	if hbB.Code != http.StatusConflict {
+		t.Fatalf("runner B heartbeat status = %d, want 409 Conflict; body=%s", hbB.Code, hbB.Body.String())
+	}
+
+	hbA := devtaskDo(t, s, runnerA, http.MethodPost, "/api/v1/devtasks/"+id+"/heartbeat", `{"lease_sec":60}`)
+	if hbA.Code != http.StatusOK {
+		t.Fatalf("runner A heartbeat status = %d, want 200 OK; body=%s", hbA.Code, hbA.Body.String())
+	}
+}
+
+func TestDevTaskAuditFailureIsVisible(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
+	s, _ := newSpillTestServer(t)
+	seedDevProject(t, s)
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	submit := devtaskCtx(map[string]bool{"devtask:submit": true})
+	rec := devtaskDo(t, s, submit, http.MethodPost, "/api/v1/devtasks", `{"project":"demo","title":"audit-fail","spec_md":"# goal"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dispatch: %d", rec.Code)
+	}
+	var out struct {
+		TaskID string `json:"task_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	id := out.TaskID
+
+	if _, err := s.Store.DB.Exec("CREATE TRIGGER test_fail_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(FAIL, 'simulated audit failure'); END;"); err != nil {
+		t.Fatal(err)
+	}
+	s.Store.CloseAuditForTest()
+
+	cancel := devtaskCtx(map[string]bool{"devtask:cancel": true})
+	cancelRec := devtaskDo(t, s, cancel, http.MethodPost, "/api/v1/devtasks/"+id+"/cancel", `{}`)
+	if cancelRec.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, want 200 despite audit failure; body=%s", cancelRec.Code, cancelRec.Body.String())
+	}
+
+	task, err := s.Store.GetDevTask(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != storage.DevTaskCancelled {
+		t.Fatalf("task status = %q, want %q", task.Status, storage.DevTaskCancelled)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "devtask_cancel audit write failed") {
+		t.Fatalf("expected audit write failure log, got:\n%s", logOutput)
 	}
 }

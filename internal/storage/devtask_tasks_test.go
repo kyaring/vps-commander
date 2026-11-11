@@ -162,3 +162,63 @@ func TestDevTaskEventsAppendAndList(t *testing.T) {
 		t.Fatalf("after=%+v", after)
 	}
 }
+
+func TestDevTaskHeartbeatRequiresClaimOwner(t *testing.T) {
+	s, _ := openDevTaskStore(t)
+	seedProject(t, s)
+	_ = s.CreateDevTask(sampleTask("dt_hb_owner"))
+	taskA, err := s.ClaimDevTask("runner-A", 60)
+	if err != nil {
+		t.Fatalf("claim runner-A failed: %v", err)
+	}
+	origLeaseUntil := taskA.LeaseUntil
+
+	err = s.HeartbeatDevTask("dt_hb_owner", "runner-B", 120)
+	if !errors.Is(err, ErrDevTaskConflict) {
+		t.Fatalf("runner-B heartbeat expected ErrDevTaskConflict, got %v", err)
+	}
+
+	afterB, err := s.GetDevTask("dt_hb_owner")
+	if err != nil {
+		t.Fatalf("get dev task failed: %v", err)
+	}
+	if afterB.ClaimedBy != "runner-A" {
+		t.Fatalf("claimed_by = %q, want runner-A", afterB.ClaimedBy)
+	}
+	if afterB.LeaseUntil != origLeaseUntil {
+		t.Fatalf("lease_until modified by runner-B: got %d, want %d", afterB.LeaseUntil, origLeaseUntil)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if err := s.HeartbeatDevTask("dt_hb_owner", "runner-A", 120); err != nil {
+		t.Fatalf("runner-A heartbeat failed: %v", err)
+	}
+	afterA, err := s.GetDevTask("dt_hb_owner")
+	if err != nil {
+		t.Fatalf("get dev task failed: %v", err)
+	}
+	if afterA.LeaseUntil <= origLeaseUntil {
+		t.Fatalf("lease_until did not advance: got %d, orig %d", afterA.LeaseUntil, origLeaseUntil)
+	}
+}
+
+func TestDevTaskHeartbeatRejectsNonRunning(t *testing.T) {
+	s, _ := openDevTaskStore(t)
+	seedProject(t, s)
+
+	qTask := sampleTask("dt_hb_queued")
+	qTask.ClaimedBy = DevTaskRunning
+	qTask.Status = DevTaskQueued
+	_ = s.CreateDevTask(qTask)
+	if err := s.HeartbeatDevTask("dt_hb_queued", DevTaskRunning, 60); !errors.Is(err, ErrDevTaskConflict) {
+		t.Fatalf("heartbeat on queued task expected ErrDevTaskConflict, got %v", err)
+	}
+
+	dTask := sampleTask("dt_hb_done")
+	dTask.ClaimedBy = DevTaskRunning
+	dTask.Status = DevTaskDone
+	_ = s.CreateDevTask(dTask)
+	if err := s.HeartbeatDevTask("dt_hb_done", DevTaskRunning, 60); !errors.Is(err, ErrDevTaskConflict) {
+		t.Fatalf("heartbeat on done task expected ErrDevTaskConflict, got %v", err)
+	}
+}

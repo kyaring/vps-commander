@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -119,7 +120,9 @@ func (s *Server) devtaskDispatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "create task failed", http.StatusInternalServerError)
 		return
 	}
-	_ = s.audit(r, id, "devtask_dispatch", proj.Name, 0, 0, fmt.Sprintf("model=%s title=%s", model, in.Title))
+	if err := s.audit(r, id, "devtask_dispatch", proj.Name, 0, 0, fmt.Sprintf("model=%s title=%s", model, in.Title)); err != nil {
+		slog.Error("devtask_dispatch audit write failed", "error", err, "task_id", id, "project", proj.Name)
+	}
 	jsonOut(w, map[string]any{"task_id": id, "branch": t.Branch, "model": model})
 }
 
@@ -205,7 +208,9 @@ func (s *Server) devtaskRevise(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "revise failed", http.StatusInternalServerError)
 		return
 	}
-	_ = s.audit(r, id, "devtask_revise", t.Project, 0, 0, fmt.Sprintf("round=%d", t.Round))
+	if err := s.audit(r, id, "devtask_revise", t.Project, 0, 0, fmt.Sprintf("round=%d", t.Round)); err != nil {
+		slog.Error("devtask_revise audit write failed", "error", err, "task_id", id, "project", t.Project)
+	}
 	jsonOut(w, taskToJSON(t))
 }
 
@@ -228,7 +233,9 @@ func (s *Server) devtaskCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cancel failed", http.StatusInternalServerError)
 		return
 	}
-	_ = s.audit(r, id, "devtask_cancel", "", 0, 0, "")
+	if err := s.audit(r, id, "devtask_cancel", "", 0, 0, ""); err != nil {
+		slog.Error("devtask_cancel audit write failed", "error", err, "task_id", id)
+	}
 	jsonOut(w, map[string]any{"ok": true, "id": id, "status": storage.DevTaskCancelled})
 }
 
@@ -251,7 +258,9 @@ func (s *Server) devtaskDone(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "done failed", http.StatusInternalServerError)
 		return
 	}
-	_ = s.audit(r, id, "devtask_done", "", 0, 0, "")
+	if err := s.audit(r, id, "devtask_done", "", 0, 0, ""); err != nil {
+		slog.Error("devtask_done audit write failed", "error", err, "task_id", id)
+	}
 	jsonOut(w, map[string]any{"ok": true, "id": id, "status": storage.DevTaskDone})
 }
 

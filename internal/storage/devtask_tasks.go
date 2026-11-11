@@ -292,6 +292,20 @@ func (s *Store) HeartbeatDevTask(id, claimedBy string, leaseSec int) error {
 	return nil
 }
 
+// CloseAuditForTest marks audit closed so AuditEntry synchronously executes writeAuditEntry.
+func (s *Store) CloseAuditForTest() {
+	s.auditMu.Lock()
+	s.auditClosed = true
+	stop, done := s.auditStop, s.auditDone
+	if stop != nil {
+		close(stop)
+	}
+	s.auditMu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
 // CompleteDevTaskResult is the runner completion payload.
 type CompleteDevTaskResult struct {
 	Status      string
