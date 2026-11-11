@@ -2,14 +2,42 @@
 
 格式：按发布 tag 倒序。完整提交历史见 GitHub Releases。
 
-> **阅读说明（2026-10-28）**：生产 Hub 二进制以运维部署为准（约 2026-10-27，sha256 前缀 `bd409c230b44`）。本地 `main` 可能领先生产；下列「Unreleased」仅描述已合入本地 main、**尚未推送/部署** 的能力。
+> **阅读说明（2026-11-11）**：生产 Hub 二进制以运维部署为准（当前 `main @ 8a08ba0`，sha256 前缀 `c864ca0dd4ef`）。本地 `main` 与 `origin/main` 保持同步。
 
-## Unreleased（本地 main，未部署）
+## v1.1.36（2026-11-11）
 
-- MCP 返回层收敛、溢出文件与会话预算相关行为（T-20261016-01）。
-- 本机异步 exec（`exec_start` / `exec_status` / `exec_cancel`）（T-20261016-02）。
-- 远端节点异步 exec（经 agent 会话进程；最长约 28–30 分钟、每节点会话名额限制）（T-20261027-06）。
-- DevTask（v1.1.36-A/B）实现位于独立 feature 分支，**尚未合入 main**（见 `docs/roadmap.md`）。
+### 限流治理：可观测性与按令牌并发上限
+
+- **限流可观测性（P1，T-20261111-01/02）**：并发 exec 槽位拒绝写独立审计动作 `concurrency_limited`（与速率拒绝 `rate_limited` 区分），审计写入失败不再静默丢弃；两种 429 响应统一结构化，携带 `limiter`（`rate` / `concurrency`）、`limit`、`in_use`、`retry_after_ms` 并设置 `Retry-After` 响应头；新增只读接口 `GET /api/v1/tokens/{id}/exec-inflight` 查询令牌在途异步 exec。
+- **按令牌配置并发上限（P2，T-20261111-03/04）**：`api_tokens` 增量字段 `concurrent_exec_limit`（`INTEGER NOT NULL DEFAULT 0`，幂等迁移，旧二进制可直接忽略）；创建与修改接口接受并校验非负整数；面板令牌编辑页新增该字段（`0 = 使用全局默认 2`）；修改后内存即时生效，无需重启 Hub，其他令牌不受影响。
+- **异步 Job 独立配额设计（阶段 3，T-20261111-05）**：新增 `docs/design/async-job-quota.md`，设计每令牌独立 `concurrent_job_limit` 与交互 exec 槽位解耦，`exec_start` 全程不占用交互槽位；含兼容期开关、回滚方案、对 `exec_status` / `exec_cancel` 的影响与测试清单。仅设计，未实现。
+- **并发查证（T-20261111-06）**：新增 `docs/recovery/CONCURRENCY-PROBE-20261107.md`，以生产 SQLite 与 systemd journal 实查 2026-11-07 07:40–08:10 `claude-2` 的 20 条 exec 与 6 次 429，明确其中仅前 2 次与两条并行 exec 区间重叠，其余 4 次在现有证据下无法归因。
+
+### 审计与面板
+
+- **审计结果 `timeout` 可视化（T-20261111-07）**：命令执行超时（`context.DeadlineExceeded`）写入的 `result=timeout` 记录，面板补齐彩色标签框样式（与 `exit_nonzero` 同款灰蓝），并在「结果」筛选下拉框新增 `timeout（命令执行超时）` 选项。
+
+### 构建与发布
+
+- **`release-build.sh` 覆盖 GitHub Release 全部产物（T-20261111-07）**：在原有 `vps-commander-hub` 之外，可复现构建 `vps-commander-agent-linux-{amd64,arm64,armv7}` 三个架构，生成各自 `.sha256`、`checksums.txt`（文件名不含目录前缀，与 Release 一致）与 `build-info.txt` 中的 `agent_linux_*_sha256` 字段。
+- **多架构 Release**：`.github/workflows/release.yml` 持续产出 Hub / Agent × amd64 / arm64 / armv7、`vps-commander-mcp-stdio-linux-amd64`、`install.sh`、`upgrade-agent.sh`、`upgrade-hub.sh` 与 `checksums.txt`。
+
+### 自 v1.1.35 以来合入 main 的其他能力（2026-10-11 之后）
+
+- **MCP 返回层收敛（T-20261016-01）**：溢出文件（`spill_path`）、exec 字段统一、按令牌会话预算与超限降级提示。
+- **异步 exec（T-20261016-02）**：`exec_start` / `exec_status` / `exec_cancel`，job 归属令牌、输出 spill、重启后可查状态。
+- **远端异步 exec（T-20261027-06）**：经 Agent 会话进程执行（`start_process` / `read_process_output` / `force_terminate`），每节点会话名额限制，取消失败写审计。
+- **executor 与文件操作加固（T-20261027-01/02/04/05）**：exec 等待上限、符号链接与硬链接拒绝、限长读取、原子写入、Search 单文件上限并跳过二进制。
+- **会话能力（T-20261014-28/29/31）**：会话预算统计 `GET /api/v1/session/stats` 与 `budget_warning`；会话级便签 `memo_set` / `memo_get`（仅内存，value 不入审计与日志）；HTTP 会话身份不包含源端口。
+- **exec 输出整形与去重（T-20261014-21）**、**健康断言接口（T-20261014-22/24）**、**公开探针页移除（T-20261016-06）**。
+- **MCP 工具元数据（T-20261101-01/02/04/11）**：按令牌 scope 裁剪的 `instructions`、工具 `annotations`、参数校验失败返回 `-32602`、工具描述补全。
+- **OAuth**：授权端点兼容缺省 `resource` / `scope`；刷新令牌滑动有效期（闲置 30 天失效、绝对上限 360 天）。
+- **DevTask 存储与鉴权层（T-20261028-04）**：`devtask_*` 存储表与幂等迁移、状态机、模型白名单、admin 不隐含 `devtask:run`。DevTask 的完整功能（v1.1.36-A/B）仍在独立分支，**未合入 main**（见 `docs/roadmap.md`）。
+
+### 升级说明
+
+- 本版为增量 schema（`concurrent_exec_limit` 默认 0），回滚到旧二进制无需恢复数据库。
+- Agent 需各节点升级到本版后，异步 exec 与远端会话能力才全量生效。
 
 ## 已部署（无独立 tag 说明，按日期）
 

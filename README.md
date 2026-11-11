@@ -10,7 +10,7 @@
 
 </div>
 
-> 当前版本：**v1.1.30**（2026-10-10）。发布 tag 采用 `v1.1.x`；文档中出现的 “v2.0 / v2.1 / v2.2” 是内部设计阶段名称，不是发布版本号。
+> 当前版本：**v1.1.36**（2026-11-11）。发布 tag 采用 `v1.1.x`；文档中出现的 “v2.0 / v2.1 / v2.2” 是内部设计阶段名称，不是发布版本号。
 
 ---
 
@@ -19,10 +19,11 @@
 - **轻量单体部署**：Go 原生编译，Hub、Agent、MCP stdio 均为单个二进制；Web 面板通过 Go embed 内嵌，无需 Node.js。
 - **三种客户端接入**：REST（`/api/v1/*`）、MCP Streamable HTTP（`POST /mcp`）、旧版 MCP SSE（`/mcp/sse`），以及本地 stdio。三者共用同一套令牌、scope、设备白名单、限流和审计。
 - **Hub & Agent 双通道**：Agent 通过 WSS 主动回连 Hub，远端节点不需要开放入站管理端口。
-- **命名令牌与 OAuth**：每个客户端一个独立命名令牌，可配置 scope、设备白名单、限速（rps）和最大会话数；支持静态 OAuth 客户端、Authorization Code + PKCE S256、刷新令牌轮换和授权撤销；命名令牌与客户端 Secret 均只存储哈希，完整凭据只显示一次。OAuth 需显式配置 `VPS_COMMANDER_PUBLIC_URL` 才启用。
+- **命名令牌与 OAuth**：每个客户端一个独立命名令牌，可配置 scope、设备白名单、限速（rps）、最大会话数和**并发 exec 上限**（`concurrent_exec_limit`，`0` 表示使用全局默认 2，修改即时生效无需重启）；支持静态 OAuth 客户端、Authorization Code + PKCE S256、刷新令牌轮换和授权撤销；命名令牌与客户端 Secret 均只存储哈希，完整凭据只显示一次。OAuth 需显式配置 `VPS_COMMANDER_PUBLIC_URL` 才启用。
 - **双层授权**：令牌 scope + 设备白名单决定“谁能调用什么”，Low / Medium / High 安全等级决定“这台节点允许什么风险”。未注册或离线的远程节点一律拒绝。
-- **完整审计**：记录操作人、传输方式（rest / mcp-http / mcp-sse / panel / stdio）、目标设备、命令或路径（脱敏、截断）与结果；面板支持筛选、游标分页与 CSV 导出。
-- **可观测与限流**：管理员可读 `/metrics`（Prometheus）；按令牌限速与 exec 并发限制，Agent 握手令牌桶限流。
+- **完整审计**：记录操作人、传输方式（rest / mcp-http / mcp-sse / panel / stdio）、目标设备、命令或路径（脱敏、截断）与结果（`ok` / `error` / `exit_nonzero` / `denied` / `timeout` / `concurrency_limited`）；面板支持按结果筛选、游标分页与 CSV 导出。
+- **可观测与限流**：管理员可读 `/metrics`（Prometheus）；按令牌限速与并发 exec 上限，Agent 握手令牌桶限流。并发与速率两类 429 返回结构化 JSON（`limiter` / `limit` / `in_use` / `retry_after_ms`）并带 `Retry-After` 头；可用 `GET /api/v1/tokens/{id}/exec-inflight` 查询令牌在途异步 exec。
+- **长任务与交互解耦**：`exec_start` 异步执行最长本机 60 分钟、远端 30 分钟；输出落 spill 文件，`exec_status` / `exec_cancel` 可跨重启查询与控制。
 - **内嵌管理面板**：设备、控制台、接入与令牌（含 AI 接入向导、OAuth 客户端与授权列表）、安全与通知、日志五个分区，适配手机屏幕。
 
 ---
@@ -65,6 +66,8 @@ curl -fsSL https://github.com/kyaring/vps-commander/releases/latest/download/ins
 
 选择 Hub。脚本自动识别 `amd64 / arm64 / armv7`，从 GitHub Release 下载并做 SHA256 校验，生成 `/etc/vps-commander/hub.env`（权限 0600）并注册 systemd 服务。Hub 默认只监听 `127.0.0.1:9521`。
 
+Release 同时提供 `vps-commander-agent-linux-{amd64,arm64,armv7}`、`vps-commander-mcp-stdio-linux-amd64` 与 `checksums.txt`；已有节点可用 `upgrade-agent.sh` / `upgrade-hub.sh` 就地升级（自带 SHA256 校验与失败回滚）。
+
 ### 2. 配置反向代理
 
 把 `https://hub.example.com` 反代到 `127.0.0.1:9521`，需支持 WebSocket Upgrade，并对 `/mcp/sse` 关闭响应缓冲。若使用反代，在 `hub.env` 中设置 `VPS_COMMANDER_TRUST_PROXY=on`（见 [docs/deploy/hub.md](docs/deploy/hub.md)）。
@@ -102,7 +105,7 @@ curl -s https://hub.example.com/api/v1/devices \
 
 常见坑：Streamable HTTP 客户端的地址必须是 `/mcp`，不要填成 `/mcp/sse`（会返回 405），结尾也不要加 `/`（会返回 404）。完整说明见 [docs/mcp-clients.md](docs/mcp-clients.md)。
 
-### MCP 工具（12 个）
+### MCP 工具（17 个）
 
 | 工具 | 所需 scope | 风险等级 |
 | :--- | :--- | :--- |
@@ -111,11 +114,13 @@ curl -s https://hub.example.com/api/v1/devices \
 | `diagnostic_command`（白名单只读诊断） | `files:read` | Low |
 | `list_agent_mcp` | `files:read` | Low |
 | `list_processes` | `process` | Low |
+| `memo_set` / `memo_get`（会话级便签，仅内存） | 无（任何已鉴权令牌） | Low |
 | `create_directory` / `move_file` / `edit_block` / `write_file` | `files:write` | Medium |
 | `call_agent_mcp` | `mcp:call` | Medium |
 | `exec_command` | `exec` | High |
+| `exec_start` / `exec_status` / `exec_cancel`（异步 exec） | `exec` | High |
 
-`tools/list` 只返回当前令牌 scope 允许的工具。
+`tools/list` 只返回当前令牌 scope 允许的工具；工具带 `annotations`（只读 / 破坏性 / 幂等提示），服务端 `instructions` 也按令牌 scope 裁剪。
 
 ---
 
@@ -134,6 +139,8 @@ curl -s https://hub.example.com/api/v1/devices \
 | [docs/development.md](docs/development.md) | 构建、测试、发布与验收门禁 |
 | [docs/loadtest.md](docs/loadtest.md) | 500 Agent / 50 MCP 压测工具 |
 | [docs/roadmap.md](docs/roadmap.md) | 当前进度与后续计划 |
+| [docs/design/async-job-quota.md](docs/design/async-job-quota.md) | 异步 Job 独立配额与交互槽位解耦设计（阶段 3，仅设计） |
+| [docs/recovery/CONCURRENCY-PROBE-20261107.md](docs/recovery/CONCURRENCY-PROBE-20261107.md) | 2026-11-07 claude-2 并发与限流实查报告 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本变更记录 |
 
 历史评审、事故与交接记录已移入 [docs/archive/](docs/archive/)，仅供追溯，不代表当前状态。
