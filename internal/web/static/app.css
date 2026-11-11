@@ -749,6 +749,7 @@ tr:hover td {
 .audit-result.error { color:#b45309; background:rgba(245,158,11,.14); }
 .audit-result.denied { color:#fff; background:#c62828; }
 .audit-result.exit_nonzero { color:#475569; background:rgba(100,116,139,.14); }
+.audit-result.timeout { color:#7c3aed; background:rgba(124,58,237,.14); }
 .audit-footer { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-top:10px; color:var(--text-muted); font-size:12px; }
 @media (max-width: 450px) { .audit-filters { grid-template-columns:repeat(2,minmax(0,1fr)); } .audit-actions { width:100%; } .audit-actions button { flex:1; } .audit-footer { align-items:flex-start; flex-wrap:wrap; } }
 

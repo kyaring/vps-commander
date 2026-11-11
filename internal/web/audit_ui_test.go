@@ -100,3 +100,39 @@ func TestAuditUINodeRegression(t *testing.T) {
 		t.Fatalf("node testdata/audit-ui.test.js failed: %v\n%s", err, output)
 	}
 }
+
+func TestAuditUITimeoutBadgeAndFilterOption(t *testing.T) {
+	cssBytes, err := staticFS.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(cssBytes)
+	if !strings.Contains(css, ".audit-result.timeout") {
+		t.Error("app.css missing .audit-result.timeout class")
+	}
+	timeoutCSSRule := regexp.MustCompile(`\.audit-result\.timeout\s*\{[^}]*\}`)
+	match := timeoutCSSRule.FindString(css)
+	if match == "" {
+		t.Fatal(".audit-result.timeout CSS rule not found")
+	}
+	if !strings.Contains(match, "color:") {
+		t.Errorf(".audit-result.timeout rule missing color: %s", match)
+	}
+	if !strings.Contains(match, "background:") {
+		t.Errorf(".audit-result.timeout rule missing background: %s", match)
+	}
+
+	indexBytes, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := string(indexBytes)
+	selectRE := regexp.MustCompile(`(?s)<select[^>]*id="auditResult"[^>]*>(.*?)</select>`)
+	selectMatch := selectRE.FindStringSubmatch(index)
+	if len(selectMatch) < 2 {
+		t.Fatal(`index.html does not contain <select id="auditResult">`)
+	}
+	if !strings.Contains(selectMatch[1], `<option value="timeout">`) {
+		t.Errorf(`<select id="auditResult"> does not contain <option value="timeout">: %s`, selectMatch[1])
+	}
+}
