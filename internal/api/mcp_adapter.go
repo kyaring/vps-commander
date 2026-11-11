@@ -85,7 +85,7 @@ func (b *MCPBackend) ExecCommandWithOptions(ctx context.Context, clientIP, devic
 		if transport == "" {
 			transport = "mcp"
 		}
-		b.server.auditRateLimitedEntry(clientIP, device, "exec_command: "+command, transport, "", p)
+		b.server.auditConcurrencyLimitedEntry(clientIP, device, "exec_command: "+command, transport, "", p)
 		mcp.MarkAuditRecorded(ctx)
 		return nil, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}

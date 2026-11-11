@@ -56,6 +56,7 @@ func (m *execJobs) startRemote(s *Server, rp remoteProcessAPI, p auth.Principal,
 	}
 	release, ok := s.acquireTokenExec(p)
 	if !ok {
+		s.auditConcurrencyLimitedEntry(clientIP, device, "exec_start: "+command, "rest", "", p)
 		return execJob{}, fmt.Errorf("%w: token concurrent exec limit reached", mcp.ErrRateLimited)
 	}
 	m.startMu.Lock()
