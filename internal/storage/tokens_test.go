@@ -62,3 +62,50 @@ func TestAPITokenRevoke(t *testing.T) {
 		t.Fatal("revoked token accepted")
 	}
 }
+
+func TestMigrationIsIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "migration.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DB.Close()
+
+	// Initial ensure
+	if err := s.EnsureAPITokens("legacy-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a token with concurrent_exec_limit = 5
+	token := APIToken{
+		ID:                  "mig-token",
+		Name:                "mig-token",
+		Prefix:              "migpref",
+		TokenHash:           HashAPIToken("vpc_migpref_secret"),
+		ScopesJSON:          `["exec"]`,
+		DevicesJSON:         "[]",
+		RateRPS:             10,
+		MaxSessions:         10,
+		ConcurrentExecLimit: 5,
+		CreatedAt:           1,
+		CreatedBy:           "test",
+	}
+	if err := s.CreateAPIToken(token); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-run EnsureAPITokens multiple times (idempotency check)
+	for i := 0; i < 3; i++ {
+		if err := s.EnsureAPITokens("legacy-key"); err != nil {
+			t.Fatalf("subsequent EnsureAPITokens #%d failed: %v", i+1, err)
+		}
+	}
+
+	got, err := s.GetAPITokenByID("mig-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ConcurrentExecLimit != 5 {
+		t.Fatalf("ConcurrentExecLimit = %d, want 5", got.ConcurrentExecLimit)
+	}
+}

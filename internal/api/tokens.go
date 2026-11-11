@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -337,7 +338,7 @@ func (s *Server) TokenListJSON(w http.ResponseWriter, r *http.Request) {
 		if t.DevicesJSON != "" {
 			_ = json.Unmarshal([]byte(t.DevicesJSON), &devices)
 		}
-		out = append(out, map[string]any{"id": t.ID, "name": t.Name, "prefix": t.Prefix, "scopes": scopes, "devices": devices, "rate_rps": t.RateRPS, "max_sessions": t.MaxSessions, "note": t.Note, "created_at": t.CreatedAt, "created_by": t.CreatedBy, "expires_at": t.ExpiresAt, "last_used_at": t.LastUsedAt, "last_used_ip": t.LastUsedIP, "revoked_at": t.RevokedAt, "is_legacy": t.IsLegacy})
+		out = append(out, map[string]any{"id": t.ID, "name": t.Name, "prefix": t.Prefix, "scopes": scopes, "devices": devices, "rate_rps": t.RateRPS, "max_sessions": t.MaxSessions, "concurrent_exec_limit": t.ConcurrentExecLimit, "note": t.Note, "created_at": t.CreatedAt, "created_by": t.CreatedBy, "expires_at": t.ExpiresAt, "last_used_at": t.LastUsedAt, "last_used_ip": t.LastUsedIP, "revoked_at": t.RevokedAt, "is_legacy": t.IsLegacy})
 	}
 	jsonOut(w, out)
 }
@@ -426,19 +427,31 @@ func (s *Server) TokenCreateJSON(w http.ResponseWriter, r *http.Request) {
 	if x, ok := q["max_sessions"].(float64); ok && int(x) > 0 {
 		sessions = int(x)
 	}
+	concurrentExecLimit := 0
+	if v, exists := q["concurrent_exec_limit"]; exists && v != nil {
+		x, ok := v.(float64)
+		if !ok || x < 0 || x != math.Floor(x) {
+			http.Error(w, "invalid concurrent_exec_limit: must be a non-negative integer", 400)
+			return
+		}
+		concurrentExecLimit = int(x)
+	}
 	note, _ := q["note"].(string)
 	id := randomTokenPart(16)
 	prefix := randomTokenPart(8)
 	token := "vpc_" + prefix + "_" + randomTokenPart(32)
 	scopesJSON, _ := json.Marshal(scopes)
 	devicesJSON, _ := json.Marshal(devices)
-	t := storage.APIToken{ID: id, Name: name, Prefix: prefix, TokenHash: storage.HashAPIToken(token), ScopesJSON: string(scopesJSON), DevicesJSON: string(devicesJSON), RateRPS: rate, MaxSessions: sessions, Note: note, CreatedAt: time.Now().Unix(), CreatedBy: "api:admin"}
+	t := storage.APIToken{ID: id, Name: name, Prefix: prefix, TokenHash: storage.HashAPIToken(token), ScopesJSON: string(scopesJSON), DevicesJSON: string(devicesJSON), RateRPS: rate, MaxSessions: sessions, ConcurrentExecLimit: concurrentExecLimit, Note: note, CreatedAt: time.Now().Unix(), CreatedBy: "api:admin"}
 	if err := s.Store.CreateAPIToken(t); err != nil {
 		http.Error(w, "token create failed", 409)
 		return
 	}
+	if s.TokenLimiter != nil {
+		s.TokenLimiter.SetTokenLimit(id, concurrentExecLimit)
+	}
 	_ = s.audit(r, "", "token_create", name, 0, 0, "")
-	jsonOut(w, map[string]any{"id": id, "name": name, "token": token, "prefix": prefix, "scopes": scopes})
+	jsonOut(w, map[string]any{"id": id, "name": name, "token": token, "prefix": prefix, "scopes": scopes, "concurrent_exec_limit": concurrentExecLimit})
 }
 
 func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
@@ -515,9 +528,21 @@ func (s *Server) TokenPatchJSON(w http.ResponseWriter, r *http.Request) {
 	if x, ok := q["note"].(string); ok {
 		note = x
 	}
-	if err := s.Store.UpdateAPIToken(id, name, scopesJSON, devicesJSON, rate, maxSessions, note, old.ExpiresAt); err != nil {
+	concurrentExecLimit := old.ConcurrentExecLimit
+	if v, exists := q["concurrent_exec_limit"]; exists && v != nil {
+		x, ok := v.(float64)
+		if !ok || x < 0 || x != math.Floor(x) {
+			http.Error(w, "invalid concurrent_exec_limit: must be a non-negative integer", 400)
+			return
+		}
+		concurrentExecLimit = int(x)
+	}
+	if err := s.Store.UpdateAPIToken(id, name, scopesJSON, devicesJSON, rate, maxSessions, note, old.ExpiresAt, concurrentExecLimit); err != nil {
 		http.Error(w, "token update failed", 500)
 		return
+	}
+	if s.TokenLimiter != nil {
+		s.TokenLimiter.SetTokenLimit(id, concurrentExecLimit)
 	}
 	_ = s.audit(r, "", "token_update", name, 0, 0, "")
 	jsonOut(w, map[string]any{"ok": true})

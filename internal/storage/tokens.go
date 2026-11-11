@@ -13,22 +13,23 @@ import (
 )
 
 type APIToken struct {
-	ID          string
-	Name        string
-	Prefix      string
-	TokenHash   string
-	ScopesJSON  string
-	DevicesJSON string
-	RateRPS     int
-	MaxSessions int
-	Note        string
-	CreatedAt   int64
-	CreatedBy   string
-	ExpiresAt   *int64
-	LastUsedAt  *int64
-	LastUsedIP  string
-	RevokedAt   *int64
-	IsLegacy    bool
+	ID                  string
+	Name                string
+	Prefix              string
+	TokenHash           string
+	ScopesJSON          string
+	DevicesJSON         string
+	RateRPS             int
+	MaxSessions         int
+	ConcurrentExecLimit int
+	Note                string
+	CreatedAt           int64
+	CreatedBy           string
+	ExpiresAt           *int64
+	LastUsedAt          *int64
+	LastUsedIP          string
+	RevokedAt           *int64
+	IsLegacy            bool
 }
 
 func HashAPIToken(token string) string {
@@ -37,7 +38,7 @@ func HashAPIToken(token string) string {
 }
 
 func (s *Store) EnsureAPITokens(legacyKey string) error {
-	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL UNIQUE, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL, devices_json TEXT, rate_rps INTEGER NOT NULL DEFAULT 10, max_sessions INTEGER NOT NULL DEFAULT 10, note TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER, last_used_at INTEGER, last_used_ip TEXT, revoked_at INTEGER, is_legacy INTEGER NOT NULL DEFAULT 0, oauth_version INTEGER NOT NULL DEFAULT 1)")
+	_, err := s.DB.Exec("CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL UNIQUE, token_hash TEXT NOT NULL, scopes_json TEXT NOT NULL, devices_json TEXT, rate_rps INTEGER NOT NULL DEFAULT 10, max_sessions INTEGER NOT NULL DEFAULT 10, concurrent_exec_limit INTEGER NOT NULL DEFAULT 0, note TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, expires_at INTEGER, last_used_at INTEGER, last_used_ip TEXT, revoked_at INTEGER, is_legacy INTEGER NOT NULL DEFAULT 0, oauth_version INTEGER NOT NULL DEFAULT 1)")
 	if err != nil {
 		return err
 	}
@@ -61,6 +62,11 @@ func (s *Store) EnsureAPITokens(legacyKey string) error {
 	}
 	if !cols["oauth_version"] {
 		if _, err := s.DB.Exec("ALTER TABLE api_tokens ADD COLUMN oauth_version INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return err
+		}
+	}
+	if !cols["concurrent_exec_limit"] {
+		if _, err := s.DB.Exec("ALTER TABLE api_tokens ADD COLUMN concurrent_exec_limit INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
 	}
@@ -106,22 +112,25 @@ func (s *Store) CreateAPIToken(t APIToken) error {
 	if t.MaxSessions <= 0 {
 		t.MaxSessions = 10
 	}
-	_, err := s.DB.Exec("INSERT INTO api_tokens(id,name,prefix,token_hash,scopes_json,devices_json,rate_rps,max_sessions,note,created_at,created_by,expires_at,last_used_at,last_used_ip,revoked_at,is_legacy) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		t.ID, t.Name, t.Prefix, t.TokenHash, t.ScopesJSON, t.DevicesJSON, t.RateRPS, t.MaxSessions, t.Note, t.CreatedAt, t.CreatedBy, t.ExpiresAt, t.LastUsedAt, t.LastUsedIP, t.RevokedAt, boolInt(t.IsLegacy))
+	if t.ConcurrentExecLimit < 0 {
+		t.ConcurrentExecLimit = 0
+	}
+	_, err := s.DB.Exec("INSERT INTO api_tokens(id,name,prefix,token_hash,scopes_json,devices_json,rate_rps,max_sessions,concurrent_exec_limit,note,created_at,created_by,expires_at,last_used_at,last_used_ip,revoked_at,is_legacy) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		t.ID, t.Name, t.Prefix, t.TokenHash, t.ScopesJSON, t.DevicesJSON, t.RateRPS, t.MaxSessions, t.ConcurrentExecLimit, t.Note, t.CreatedAt, t.CreatedBy, t.ExpiresAt, t.LastUsedAt, t.LastUsedIP, t.RevokedAt, boolInt(t.IsLegacy))
 	return err
 }
 
 func (s *Store) GetAPITokenByPrefix(prefix string) (APIToken, error) {
 	var t APIToken
 	var legacy int
-	row := s.DB.QueryRow("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens WHERE prefix=?", prefix)
-	err := row.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy)
+	row := s.DB.QueryRow("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(concurrent_exec_limit,0),COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens WHERE prefix=?", prefix)
+	err := row.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.ConcurrentExecLimit, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy)
 	t.IsLegacy = legacy != 0
 	return t, err
 }
 
 func (s *Store) ListAPITokens() ([]APIToken, error) {
-	rows, err := s.DB.Query("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens ORDER BY created_at DESC")
+	rows, err := s.DB.Query("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(concurrent_exec_limit,0),COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens ORDER BY created_at DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +139,7 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 	for rows.Next() {
 		var t APIToken
 		var legacy int
-		if err := rows.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.ConcurrentExecLimit, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy); err != nil {
 			return nil, err
 		}
 		t.IsLegacy = legacy != 0
@@ -139,7 +148,7 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS, maxSessions int, note string, expiresAt *int64) error {
+func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS, maxSessions int, note string, expiresAt *int64, concurrentExecLimit ...int) error {
 	if rateRPS <= 0 {
 		rateRPS = 10
 	}
@@ -151,7 +160,16 @@ func (s *Store) UpdateAPIToken(id, name, scopesJSON, devicesJSON string, rateRPS
 		return err
 	}
 	defer tx.Rollback()
-	r, err := tx.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,note=?,expires_at=?,oauth_version=oauth_version+1 WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, note, expiresAt, id)
+	var r sql.Result
+	if len(concurrentExecLimit) > 0 {
+		limit := concurrentExecLimit[0]
+		if limit < 0 {
+			limit = 0
+		}
+		r, err = tx.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,concurrent_exec_limit=?,note=?,expires_at=?,oauth_version=oauth_version+1 WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, limit, note, expiresAt, id)
+	} else {
+		r, err = tx.Exec("UPDATE api_tokens SET name=?,scopes_json=?,devices_json=?,rate_rps=?,max_sessions=?,note=?,expires_at=?,oauth_version=oauth_version+1 WHERE id=?", name, scopesJSON, devicesJSON, rateRPS, maxSessions, note, expiresAt, id)
+	}
 	if err != nil {
 		return err
 	}
@@ -232,8 +250,8 @@ func (s *Store) DeleteAPIToken(id string) error {
 func (s *Store) GetAPITokenByID(id string) (APIToken, error) {
 	var t APIToken
 	var legacy int
-	row := s.DB.QueryRow("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens WHERE id=?", id)
-	err := row.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy)
+	row := s.DB.QueryRow("SELECT id,name,prefix,token_hash,scopes_json,COALESCE(devices_json,''),rate_rps,max_sessions,COALESCE(concurrent_exec_limit,0),COALESCE(note,''),created_at,created_by,expires_at,last_used_at,COALESCE(last_used_ip,''),revoked_at,is_legacy FROM api_tokens WHERE id=?", id)
+	err := row.Scan(&t.ID, &t.Name, &t.Prefix, &t.TokenHash, &t.ScopesJSON, &t.DevicesJSON, &t.RateRPS, &t.MaxSessions, &t.ConcurrentExecLimit, &t.Note, &t.CreatedAt, &t.CreatedBy, &t.ExpiresAt, &t.LastUsedAt, &t.LastUsedIP, &t.RevokedAt, &legacy)
 	t.IsLegacy = legacy != 0
 	return t, err
 }
