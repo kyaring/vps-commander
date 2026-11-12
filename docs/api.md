@@ -367,3 +367,15 @@ MCP `tools/list` 变更：`exec_start` 的描述更新为覆盖远端节点；to
 | `dev_task_diff` | devtask:read | 返回 runner 上报的 diff_stat，按字节 offset/limit 分页 |
 | `dev_task_logs` | devtask:read | 事件分页，不进 audit_logs |
 | `dev_task_cancel` | devtask:cancel | 取消未结束任务；审计 `devtask_cancel` |
+
+### POST /api/v1/devtasks/{id}/credentials
+
+Runner-only endpoint for retrieving the provider credentials associated with a claimed task. Requires the `devtask:run` scope, an `api_token` principal backed by a named runner token, and an HTTPS request (TLS, trusted reverse-proxy `X-Forwarded-Proto: https`, or loopback).
+
+The Hub verifies that the task is running, its lease is unexpired, and `claimed_by` exactly matches the caller's `Principal.TokenID`; it then checks that the exact task model is in `devtask.allowed_models` and that the provider parsed from `<provider_id>:<model>` is registered and enabled. The request body is ignored; callers cannot override lease ownership.
+
+Success returns only `base_url` and `api_key`, decrypted from the provider's sealed secret. The response sets `Cache-Control: no-store`. Each attempt is audited as `devtask_credentials`, with the provider ID as target and only `task=<id> model=<model>` as the command. Audit error messages contain only an error code and never credential material.
+
+Errors: `403 not_lease_owner` (caller does not own the active lease), `409 lease_expired` (task is not running or its lease expired), `409 model_not_allowed` (task model is not in the whitelist), and `409 provider_unavailable` (provider is missing or disabled). Invalid/legacy runner identities are rejected with `403 runner_token_required`.
+
+The whitelist update endpoint `PUT /api/v1/devtask-settings` accepts only `<provider_id>:<model>` entries whose provider is registered and enabled. A failed validation returns `400 provider_not_registered` and leaves the existing whitelist unchanged.
