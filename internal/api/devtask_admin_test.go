@@ -53,6 +53,9 @@ func TestDevTaskProjectUpsertAndModelOK(t *testing.T) {
 	t.Setenv("DEVTASK_ENABLED", "on")
 	s, _ := newSpillTestServer(t)
 	admin := devtaskCtx(map[string]bool{"admin": true})
+	if rec := putProvider(t, s, `{"display_name":"Global","enabled":true}`); rec.Code != http.StatusOK {
+		t.Fatal("provider metadata setup failed")
+	}
 	if rec := devtaskDo(t, s, admin, http.MethodPost, "/api/v1/devtask-projects", validProject); rec.Code != http.StatusOK {
 		t.Fatalf("valid project: status %d body %s", rec.Code, rec.Body.String())
 	}
@@ -93,6 +96,9 @@ func TestDevTaskSettingsReplaceAndAudit(t *testing.T) {
 	t.Setenv("DEVTASK_ENABLED", "on")
 	s, _ := newSpillTestServer(t)
 	admin := devtaskCtx(map[string]bool{"admin": true})
+	if rec := putProvider(t, s, `{"display_name":"Global","enabled":true}`); rec.Code != http.StatusOK {
+		t.Fatal("provider metadata setup failed")
+	}
 	body := `{"allowed_models":["global:deepseek-v4.1-flash","global:other-model"]}`
 	if rec := devtaskDo(t, s, admin, http.MethodPut, "/api/v1/devtask-settings", body); rec.Code != http.StatusOK {
 		t.Fatalf("PUT settings: status %d body %s", rec.Code, rec.Body.String())
@@ -181,6 +187,9 @@ func TestDevTaskSettingsWriteDBErrorReturns500(t *testing.T) {
 	t.Setenv("DEVTASK_ENABLED", "on")
 	s, _ := newSpillTestServer(t)
 	admin := devtaskCtx(map[string]bool{"admin": true})
+	if rec := putProvider(t, s, `{"display_name":"Global","enabled":true}`); rec.Code != http.StatusOK {
+		t.Fatal("provider metadata setup failed")
+	}
 	// Keep reads working, force writes to fail (SQLite query_only).
 	if _, err := s.Store.DB.Exec(`PRAGMA query_only = ON`); err != nil {
 		t.Fatal(err)

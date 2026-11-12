@@ -176,6 +176,17 @@ func (s *Server) devtaskSettings(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return
 		}
+		// Validate every provider binding before the whitelist is written. This keeps a
+		// rejected update atomic: no earlier valid entries are persisted partially.
+		for _, model := range in.AllowedModels {
+			providerID := providerIDFromModel(model)
+			provider, providerErr := s.Store.GetDevProvider(providerID)
+			if providerID == "" || providerErr != nil || !provider.Enabled {
+				w.WriteHeader(http.StatusBadRequest)
+				jsonOut(w, map[string]string{"error": "provider_not_registered", "provider": providerID})
+				return
+			}
+		}
 		old, err := s.Store.GetDevTaskAllowedModels()
 		if err != nil {
 			http.Error(w, "read model whitelist failed", http.StatusInternalServerError)
