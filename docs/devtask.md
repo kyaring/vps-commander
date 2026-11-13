@@ -100,3 +100,9 @@ Restart=on-failure
 ### 面板
 
 「开发任务」分区：任务列表与详情；admin 可登记项目与编辑模型白名单。未开启 `DEVTASK_ENABLED` 时显示提示。
+
+## Runner 如何取模型凭据
+
+Runner 领取任务后，使用同一个命名 runner token 调用 `POST /api/v1/devtasks/{id}/credentials`。Hub 会核对当前租约持有者、租约有效期、任务模型白名单以及 provider 启用状态；Runner 不得在请求体中指定或伪造 `claimed_by`。请求必须通过 HTTPS（或回环连接）。
+
+成功后仅在进程内存中使用返回的 `base_url` 和 `api_key`，不得写入 runner 配置、日志、任务事件、临时文件或其他磁盘介质。凭据获取失败时，任务应进入 `blocked_model` 状态并报告错误，不得自动切换到其他模型或 provider。

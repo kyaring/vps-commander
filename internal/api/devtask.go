@@ -495,6 +495,9 @@ func (s *Server) devtaskSubroutes(w http.ResponseWriter, r *http.Request) {
 	case "complete":
 		s.requireScope("devtask:run", http.HandlerFunc(s.devtaskComplete)).ServeHTTP(w, r)
 		return
+	case "credentials":
+		s.requireScope("devtask:run", http.HandlerFunc(s.devtaskCredentials)).ServeHTTP(w, r)
+		return
 	}
 	http.NotFound(w, r)
 }

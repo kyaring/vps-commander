@@ -973,6 +973,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/api/v1/devtask-projects", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskProjects))))
 	mux.Handle("/api/v1/devtask-settings", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskSettings))))
 	s.registerDevTaskRoutes(mux)
+	mux.Handle("/api/v1/devtask-providers", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskProviders))))
+	mux.Handle("/api/v1/devtask-providers/", devtaskGate(s.requireScope("admin", http.HandlerFunc(s.devtaskProviders))))
 	mux.Handle("/api/v1/process/session", s.requireScope("process", http.HandlerFunc(s.processSession)))
 	mux.Handle("/api/v1/file/write", s.requireScope("files:write", http.HandlerFunc(s.fileWrite)))
 	mux.Handle("/api/v1/devices/file/edit_block", s.requireScope("files:write", http.HandlerFunc(s.editBlock)))
