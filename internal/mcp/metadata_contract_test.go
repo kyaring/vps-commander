@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
@@ -24,6 +25,7 @@ type contractTool struct {
 // listedTools returns tools/list as a panel principal sees it, so every registered tool is included.
 func listedTools(t *testing.T) []contractTool {
 	t.Helper()
+	t.Setenv("DEVTASK_ENABLED", "on")
 	srv := NewServer(&mockBackend{}, nil)
 	r := httptest.NewRequest("POST", "/mcp", nil)
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "panel"})
@@ -145,5 +147,77 @@ func TestDevTaskToolsHaveAnnotations(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("%s: dev_task tool missing from tools/list", name)
 		}
+	}
+}
+
+// The task's annotation matrix is intentionally asserted per tool, not inferred from naming.
+func TestToolAnnotationsMatchTaskMatrix(t *testing.T) {
+	wantReadOnly := map[string]bool{
+		"memo_set": false, "memo_get": true, "list_devices": true, "exec_command": false,
+		"read_file": true, "write_file": false, "edit_block": false, "read_multiple_files": true,
+		"create_directory": false, "move_file": false, "list_processes": true, "diagnostic_command": true,
+		"list_agent_mcp": true, "call_agent_mcp": false, "exec_start": false, "exec_status": true,
+		"exec_cancel": false, "dev_task_dispatch": false, "dev_task_status": true, "dev_task_list": true,
+		"dev_task_diff": true, "dev_task_logs": true, "dev_task_revise": false, "dev_task_cancel": false,
+	}
+	for _, tool := range listedTools(t) {
+		want, ok := wantReadOnly[tool.Name]
+		if !ok {
+			t.Errorf("%s missing from annotation matrix", tool.Name)
+			continue
+		}
+		var got bool
+		if err := json.Unmarshal(tool.Annotations["readOnlyHint"], &got); err != nil {
+			t.Errorf("%s readOnlyHint: %v", tool.Name, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s readOnlyHint=%v want=%v", tool.Name, got, want)
+		}
+		var destructive bool
+		if err := json.Unmarshal(tool.Annotations["destructiveHint"], &destructive); err != nil {
+			t.Errorf("%s destructiveHint: %v", tool.Name, err)
+			continue
+		}
+		wantDestructive := !want && tool.Name != "memo_set"
+		if destructive != wantDestructive {
+			t.Errorf("%s destructiveHint=%v want=%v", tool.Name, destructive, wantDestructive)
+		}
+		var idempotent bool
+		if err := json.Unmarshal(tool.Annotations["idempotentHint"], &idempotent); err != nil {
+			t.Errorf("%s idempotentHint: %v", tool.Name, err)
+			continue
+		}
+		if idempotent != want {
+			t.Errorf("%s idempotentHint=%v want=%v", tool.Name, idempotent, want)
+		}
+		var openWorld bool
+		if err := json.Unmarshal(tool.Annotations["openWorldHint"], &openWorld); err != nil {
+			t.Errorf("%s openWorldHint: %v", tool.Name, err)
+			continue
+		}
+		wantOpenWorld := tool.Name != "memo_set" && tool.Name != "memo_get"
+		if openWorld != wantOpenWorld {
+			t.Errorf("%s openWorldHint=%v want=%v", tool.Name, openWorld, wantOpenWorld)
+		}
+	}
+	if len(wantReadOnly) != len(listedTools(t)) {
+		t.Fatalf("annotation matrix has %d tools but tools/list has %d", len(wantReadOnly), len(listedTools(t)))
+	}
+}
+
+func TestMemoToolsRemainAvailableButDeprecated(t *testing.T) {
+	tools := listedTools(t)
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		if tool.Name == "memo_set" || tool.Name == "memo_get" {
+			seen[tool.Name] = true
+			if !strings.HasPrefix(tool.Description, "已废弃，改用 scratch 文件 + read_file") {
+				t.Errorf("%s description does not start with deprecation notice: %q", tool.Name, tool.Description)
+			}
+		}
+	}
+	if !seen["memo_set"] || !seen["memo_get"] {
+		t.Fatalf("memo tools were removed: seen=%v", seen)
 	}
 }
