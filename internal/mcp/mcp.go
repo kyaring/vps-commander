@@ -1250,11 +1250,11 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			}
 			tools = filtered
 		}
+		tools = appendDevTaskTools(ctx, tools)
 		for i := range tools {
 			a := annotationsFor(tools[i].Name)
 			tools[i].Annotations = &a
 		}
-		tools = appendDevTaskTools(ctx, tools)
 		return JSONRPCResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
