@@ -1,26 +1,32 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/wjyhk/vps-commander/internal/auth"
-	"net/url"
-	"os"
-	"regexp"
-
 	"github.com/wjyhk/vps-commander/internal/storage"
 )
 
 const providerKeyEnv = "VPS_COMMANDER_PROVIDER_KEY"
 
 var providerIDRE = regexp.MustCompile(`^[a-z0-9_-]{1,32}$`)
+
+// providerProbeClientFactory is replaceable by package tests to trust their local TLS server.
+var providerProbeClientFactory = func() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
+}
 
 // providerKey reads the master key for sealing provider secrets. It must decode to 32 bytes.
 // It is never logged and never stored.
@@ -82,6 +88,15 @@ func (s *Server) devtaskProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimPrefix(path, "/api/v1/devtask-providers/")
+	if strings.HasSuffix(id, "/test") {
+		providerID := strings.TrimSuffix(id, "/test")
+		if r.Method != http.MethodPost || !providerIDRE.MatchString(providerID) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		s.devtaskProviderTest(w, r, providerID)
+		return
+	}
 	if r.Method != http.MethodPut || !providerIDRE.MatchString(id) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -179,6 +194,115 @@ func (s *Server) devtaskProviders(w http.ResponseWriter, r *http.Request) {
 		id, enabled, existing.KeySet, keySetAfter, in.BaseURL != "", in.APIKey != "", in.ClearKey)
 	_ = s.audit(r, id, "devtask_provider_update", "", 0, 0, msg)
 	jsonOut(w, providerView{ID: id, DisplayName: in.DisplayName, Enabled: enabled, KeySet: keySetAfter})
+}
+
+// devtaskProviderTest performs a bounded OpenAI-compatible GET /models probe.
+// Only status metadata is returned; upstream response bodies are never read or relayed.
+func (s *Server) devtaskProviderTest(w http.ResponseWriter, r *http.Request, id string) {
+	started := time.Now()
+	finish := func(status int, errCode string, host string) {
+		latency := time.Since(started).Milliseconds()
+		result := "ok"
+		if errCode != "" {
+			result = "error"
+		}
+		p, _ := auth.PrincipalFromContext(r.Context())
+		auditErr := s.Store.AuditEntry(storage.AuditEntry{
+			CallerIP: auth.ClientIP(r), Action: "devtask_provider_test", Command: "base_url=" + host,
+			ExitCode: status, DurationMS: latency, ErrorMsg: errCode,
+			ActorType: p.Type, ActorID: p.ID, ActorName: p.AuditName(), OAuthClientID: p.OAuthClient,
+			Transport: "rest", TargetType: "provider", Target: id, Result: result,
+		})
+		if auditErr != nil {
+			http.Error(w, "provider test audit unavailable", http.StatusInternalServerError)
+			return
+		}
+		out := map[string]any{"ok": errCode == ""}
+		if status > 0 {
+			out["status_code"] = status
+		}
+		if errCode != "" {
+			out["error"] = errCode
+		}
+		if errCode == "" {
+			out["latency_ms"] = latency
+		}
+		jsonOut(w, out)
+	}
+
+	provider, err := s.Store.GetDevProvider(id)
+	if err != nil || !provider.KeySet {
+		finish(http.StatusConflict, "provider_unavailable", "")
+		return
+	}
+	masterKey, err := providerKey()
+	if err != nil {
+		finish(http.StatusInternalServerError, "provider_secret_unavailable", "")
+		return
+	}
+	plain, err := storage.OpenProviderSecret(masterKey, id, provider.Sealed())
+	if err != nil {
+		finish(http.StatusInternalServerError, "provider_secret_unavailable", "")
+		return
+	}
+	var secret providerSecret
+	if err := json.Unmarshal(plain, &secret); err != nil || secret.BaseURL == "" || secret.APIKey == "" {
+		finish(http.StatusInternalServerError, "provider_secret_unavailable", "")
+		return
+	}
+	u, err := url.Parse(secret.BaseURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+		finish(http.StatusBadRequest, "invalid_base_url", "")
+		return
+	}
+	host := u.Host
+	u.Path = strings.TrimRight(u.Path, "/") + "/models"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		finish(0, "network_error", host)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+secret.APIKey)
+	client := providerProbeClientFactory()
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		clientCopy := *client
+		client = &clientCopy
+	}
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			finish(0, "timeout", host)
+			return
+		}
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			finish(0, "timeout", host)
+			return
+		}
+		finish(0, "network_error", host)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		finish(resp.StatusCode, "", host)
+		return
+	}
+	errCode := fmt.Sprintf("http_%d", resp.StatusCode)
+	if resp.StatusCode == http.StatusUnauthorized {
+		errCode = "unauthorized"
+	} else if resp.StatusCode == http.StatusForbidden {
+		errCode = "forbidden"
+	}
+	finish(resp.StatusCode, errCode, host)
 }
 
 // devtaskCredentials returns the provider URL and API key only to the named runner

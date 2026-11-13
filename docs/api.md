@@ -379,3 +379,11 @@ Success returns only `base_url` and `api_key`, decrypted from the provider's sea
 Errors: `403 not_lease_owner` (caller does not own the active lease), `409 lease_expired` (task is not running or its lease expired), `409 model_not_allowed` (task model is not in the whitelist), and `409 provider_unavailable` (provider is missing or disabled). Invalid/legacy runner identities are rejected with `403 runner_token_required`.
 
 The whitelist update endpoint `PUT /api/v1/devtask-settings` accepts only `<provider_id>:<model>` entries whose provider is registered and enabled. A failed validation returns `400 provider_not_registered` and leaves the existing whitelist unchanged.
+
+### POST /api/v1/devtask-providers/{id}/test
+
+Admin-only endpoint protected by `devtaskGate`. It decrypts the configured provider secret and performs a bounded OpenAI-compatible probe: `GET {base_url}/models` with `Authorization: Bearer <api_key>`. The request timeout is 10 seconds. The upstream response body is never read or returned.
+
+A 2xx upstream response returns `{ "ok": true, "status_code": 200, "latency_ms": 123 }`. Upstream 401/403 return `ok=false` with `error=unauthorized` / `forbidden`; other statuses return `error=http_<status>`. Network failures return `network_error`; the 10-second deadline returns `timeout`. The endpoint itself returns structured JSON and does not expose upstream response text.
+
+Every attempt is audited as `devtask_provider_test`, with `target=<provider_id>` and `command=base_url=<host>` (host only; no URL path, query, fragment, or credential). The audit error field contains only the result category. Provider API views continue to expose metadata only and never return the configured key.
