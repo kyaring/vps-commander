@@ -21,7 +21,11 @@ func newAtomicTestServer(t *testing.T) (*Server, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { store.DB.Close() })
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close atomic test store: %v", err)
+		}
+	})
 	if err := store.SetGlobalSecurityMode("high"); err != nil {
 		t.Fatal(err)
 	}

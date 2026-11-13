@@ -19,12 +19,13 @@ import (
 // Before T-20261027-06 (remote exec_start refused): see T-20261016-02.
 // Previous value (T-20261016-01, base 30e0abc): sha256 e667502eb7e516d4c3454ced16daae5b386531cefccabbb7597a50fd94f86951, 5426 bytes.
 const (
-	toolsListBaselineSHA256 = "b51d6862e84680746df7ac989d35487edf2066780df1ff4e871a4e5efc630166"
-	toolsListBaselineBytes  = 12273
+	toolsListBaselineSHA256 = "8cc6ba4550d85df66f456c3adb269a6a8419ab75dcf1094fc299b725ac361cf9"
+	toolsListBaselineBytes  = 16346
 	toolsListMaxBytes       = 16384
 )
 
 func TestToolsListMatchesRecordedHash(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
 	srv := NewServer(&mockBackend{}, nil)
 	r := httptest.NewRequest("POST", "/mcp", nil)
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "panel"})

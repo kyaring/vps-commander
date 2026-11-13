@@ -81,10 +81,11 @@ type JSONRPCError struct {
 
 // Tool Definition Structures
 type Tool struct {
-	Name        string           `json:"name"`
-	Description string           `json:"description"`
-	InputSchema InputSchema      `json:"inputSchema"`
-	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description"`
+	InputSchema  InputSchema      `json:"inputSchema"`
+	Annotations  *ToolAnnotations `json:"annotations,omitempty"`
+	OutputSchema map[string]any   `json:"outputSchema,omitempty"`
 }
 
 type InputSchema struct {
@@ -115,10 +116,10 @@ type CallToolResult struct {
 	StructuredContent any           `json:"structuredContent,omitempty"`
 }
 
-// structuredContentFor returns the structured form of a successful exec result. The same
-// object is also rendered as text, so older clients keep working.
+// structuredContentFor returns structuredContent only for successful tools with a declared
+// outputSchema. The same result is also rendered as text for older clients.
 func structuredContentFor(tool string, res any, isErr bool) any {
-	if tool == "exec_command" && !isErr {
+	if hasStructuredOutput(tool) && !isErr {
 		return res
 	}
 	return nil
@@ -1156,8 +1157,8 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 
 	case "tools/list":
 		tools := []Tool{
-			{Name: "memo_set", Description: "将一条便签写入当前会话（仅内存，value 不进入审计或日志）", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键"}, "value": {Type: "string", Description: "便签内容，最多 4096 字节"}, "ttl_seconds": {Type: "integer", Description: "可选过期秒数"}}, Required: []string{"key", "value"}}},
-			{Name: "memo_get", Description: "读取当前会话便签；不传 key 时只返回元数据列表，不返回 value", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键；省略时列出元数据"}}}},
+			{Name: "memo_set", Description: "已废弃，改用 scratch 文件 + read_file。将一条便签写入当前会话（仅内存，value 不进入审计或日志）", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键"}, "value": {Type: "string", Description: "便签内容，最多 4096 字节"}, "ttl_seconds": {Type: "integer", Description: "可选过期秒数"}}, Required: []string{"key", "value"}}},
+			{Name: "memo_get", Description: "已废弃，改用 scratch 文件 + read_file。读取当前会话便签；不传 key 时只返回元数据列表，不返回 value", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{"key": {Type: "string", Description: "便签键；省略时列出元数据"}}}},
 			{
 				Name:        "list_devices",
 				Description: "列出当前所有已注册的 VPS 节点及其在线状态与系统架构",
@@ -1251,6 +1252,7 @@ func (s *Server) handleRequest(ctx context.Context, r *http.Request, req JSONRPC
 			tools = filtered
 		}
 		tools = appendDevTaskTools(ctx, tools)
+		applyOutputSchemas(tools)
 		for i := range tools {
 			a := annotationsFor(tools[i].Name)
 			tools[i].Annotations = &a

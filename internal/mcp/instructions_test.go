@@ -36,6 +36,55 @@ func TestInstructionsMatchVisibleTools(t *testing.T) {
 	}
 }
 
+// Server instructions and tools/list must consistently deprecate memo in favor of scratch files.
+func TestInstructionsAgreeWithDeprecatedMemoDescriptions(t *testing.T) {
+	instructions := serverInstructions(allScopes(), true)
+	for _, want := range []string{"memo_set / memo_get 已废弃", "write_file", "read_file", "/tmp/vps-commander-mcp-scratch-", "exec_command", "rm -f"} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("instructions missing memo migration guidance %q", want)
+		}
+	}
+	for _, stale := range []string{"只保存当前会话的结论", "【便签】"} {
+		if strings.Contains(instructions, stale) {
+			t.Fatalf("instructions contain stale memo guidance %q", stale)
+		}
+	}
+
+	srv := NewServer(&mockBackend{}, nil)
+	req := httptest.NewRequest("POST", "/mcp", nil)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Type: "panel"})
+	resp := srv.handleRequest(ctx, req, JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(encoded, &listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"memo_set", "memo_get"} {
+		found := false
+		for _, tool := range listed.Result.Tools {
+			if tool.Name == name {
+				found = true
+				if !strings.HasPrefix(tool.Description, "已废弃，改用 scratch 文件 + read_file") {
+					t.Errorf("%s description does not lead with the deprecation and replacement: %q", name, tool.Description)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s missing from tools/list", name)
+		}
+	}
+}
+
 func TestInstructionsLength(t *testing.T) {
 	for _, p := range []auth.Principal{devicesOnly(), allScopes()} {
 		if n := len([]rune(serverInstructions(p, true))); n > maxInstructionsLen {
