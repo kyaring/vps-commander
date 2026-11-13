@@ -105,32 +105,12 @@ END{ printf "== 合计 %d（A=%d B=%d C=%d）\n", n["A"]+n["B"]+n["C"], n["A"], 
 | C 其他 | 90 | **106** |
 | 合计 | 257 | 257（不变，口径未动） |
 
-被移出 A 的 22 条（审核逐条点名，全部核实）及新归属：
+被移出 A 的 22 条按新归属分组（22 条，审核逐条点名，全部核实；原文见附录 A/B/C）：
 
-| 位置 | 所在函数 | 被丢弃的调用（截断） | 上一版 | 本版 | 理由 |
-|---|---|---|---|---|---|
-| `internal/notify/notify.go:781` | deliverEvent | `_ = json.Unmarshal([]byte(t.Config), &c)` | A | C/P2 | 解析 webhook 配置，与审计写入无关 |
-| `internal/notify/notify.go:782` | deliverEvent | `body, _ = json.Marshal(...chat_id/text...)` | A | C/P3 | 序列化 map[string]any，实际不会失败 |
-| `internal/notify/notify.go:785` | deliverEvent | `body, _ = json.Marshal(...msgtype/text...)` | A | C/P3 | 同上 |
-| `internal/notify/notify.go:803` | deliverEvent | `_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))` | A | **B** | 读完响应体以便连接复用，是清理动作 |
-| `internal/notify/outbox.go:142` | sendNotificationDelivery | `_ = json.Unmarshal([]byte(job.Event.DataJSON), &legacyData)` | A | C/P2 | 解析事件数据，非审计写入 |
-| `internal/notify/outbox.go:163` | sendNotificationDelivery | `_ = json.Unmarshal([]byte(job.Channel.ConfigJSON), &cfg)` | A | C/P2 | 解析通道配置，非审计写入 |
-| `internal/notify/outbox.go:281` | postJSON | `_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))` | A | **B** | 同 803，清理动作 |
-| `internal/notify/notify.go:210` | importOpenClawWebhook | `_ = m.Store.SaveWebhookTarget(...)` | A | C/P2 | 是「写业务配置」不是「写审计」；失败则一次性导入静默不生效 |
-| `internal/storage/notification_store.go:256` | SaveNotificationChannel | `_ = json.Unmarshal(secrets["webhook_url"], &webhookURL)` | A | C/P2 | 解析凭据字段，非审计写入 |
-| `internal/mcp/mcp.go:224` | AuditIntent | `_ = json.Unmarshal(raw, &a)` | A | C/P2 | 函数名叫 AuditIntent，但动作是**解析参数**生成意图字符串，不写任何审计记录 |
-| `internal/mcp/mcp.go:257` | AuditIntent | `_ = oldText // Never retain either file body...` | A | C/P3 | **不是忽略错误**，是消除未用变量（与 `var _ = fmt.Sprintf` 同类） |
-| `internal/api/tokens.go:166` | requestAuditIntent | `body, _ = io.ReadAll(io.LimitReader(r.Body, 1024*1024))` | A | C/P2 | 读请求体（函数名含 Audit 但动作是读 body） |
-| `internal/api/tokens.go:170` | requestAuditIntent | `_ = json.Unmarshal(body, &fields)` | A | C/P2 | 解析请求体字段 |
-| `internal/api/tokens.go:296` | AuditExportCSV | `_ = c.Write([]string{"# error: export incomplete"})` | A | C/P3 | 写 CSV 响应体 |
-| `internal/api/tokens.go:301` | AuditExportCSV | `_ = c.Write([]string{fmt.Sprintf("# truncated at %d rows", ...)})` | A | C/P3 | 写 CSV 响应体 |
-| `internal/api/tokens.go:312` | AuditExportCSV | `_ = c.Write([]string{"# error: export incomplete"})` | A | C/P3 | 写 CSV 响应体 |
-| `internal/api/api.go:306` | legacyWebhookGone | `_ = json.NewEncoder(w).Encode(map[string]string{"error": ...})` | A | C/P3 | 写 HTTP 响应体 |
-| `internal/api/notification_deliveries.go:84` | NotificationDeliveryRetryV1JSON | `_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, ...})` | A | C/P3 | 写 HTTP 响应体 |
-| `cmd/loadtest/main.go:663` | deleteStreamableSession | `_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))` | A | **B** | 清理动作 |
-| `cmd/loadtest/main.go:698` | streamableRPC | `_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))` | A | **B** | 清理动作 |
-| `cmd/loadtest/main.go:817` | openSSE | `_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))` | A | **B** | 清理动作 |
-| `cmd/loadtest/main.go:911` | call | `_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))` | A | **B** | 清理动作 |
+- **移入 B（6 条，`io.Copy(io.Discard, ...)` 读完响应体的清理动作）**：`internal/notify/notify.go:803`、`internal/notify/outbox.go:281`、`cmd/loadtest/main.go:663`、`:698`、`:817`、`:911`。
+- **移入 C/P2（7 条，解析类，与写审计无关）**：`internal/notify/notify.go:781`（解析 webhook 配置）、`internal/notify/outbox.go:142`（事件数据）、`:163`（通道配置）、`internal/storage/notification_store.go:256`（凭据字段）、`internal/mcp/mcp.go:224`（函数名 AuditIntent，但动作是解析参数生成意图串，不写审计）、`internal/api/tokens.go:166`、`:170`（函数名 requestAuditIntent，但动作是读 body / 解析字段）。
+- **移入 C/P2（1 条，写业务配置不是写审计）**：`internal/notify/notify.go:210` `_ = m.Store.SaveWebhookTarget(...)`，失败则一次性导入静默不生效。
+- **移入 C/P3（8 条，写响应体 / 序列化 / 消未用变量）**：`internal/notify/notify.go:782`、`:785`（`json.Marshal` map）、`internal/api/tokens.go:296`、`:301`、`:312`（CSV `c.Write`）、`internal/api/api.go:306`、`internal/api/notification_deliveries.go:84`（`json.NewEncoder(w).Encode`）、`internal/mcp/mcp.go:257`（`_ = oldText` **不是忽略错误**，是消除未用变量，与 `var _ = fmt.Sprintf` 同类 —— 上一版把它算 A 类而把 `var _ =` 算 C 类，属区别对待）。
 
 另外，B 类由 54 → 60 是因为 `io.Copy(io.Discard, ...)` 一类（6 条）统一并入「清理」，与 `Close` 同族。
 
@@ -176,34 +156,11 @@ sh classify.sh | awk -F'\t' '{split($3,p,":"); n=p[1]; sub(/\/[^\/]*$/,"",n); c[
 
 ### 3.1 抽样（14 处，覆盖 3 条互不相同的调用链）
 
-上一版抽样 12 处**全部取自 `internal/api/api.go` 的 `s.audit` 同一条调用链**，不具代表性，正好漏掉投递记录这条反例。本版抽样覆盖三条链：
+上一版抽样 12 处**全部取自 `internal/api/api.go` 的 `s.audit` 同一条调用链**，不具代表性，正好漏掉投递记录这条反例。本版覆盖三条链（原文见附录 A #1–#91）：
 
-**链 1：`s.audit` / `s.auditMCPContext` → `auditContextTarget` → `Store.AuditEntry`（A1，87 处）**
-
-- `internal/api/api.go:173` [requireDeviceAccess] `_ = s.audit(r, device, "auth_denied", "", http.StatusUnauthorized, 0, "missing principal")`
-- `internal/api/api.go:179` [requireDeviceAccess] `_ = s.audit(r, device, "device_denied", "", 0, 0, "token device whitelist denied")`
-- `internal/api/api.go:201` [requireSecurity] `_ = s.audit(r, device, "security_denied", action, http.StatusForbidden, 0, reason)`
-- `internal/api/api.go:276` [UpdateNotificationSettingsJSON] `_ = s.Store.AuditEntry(storage.AuditEntry{Action: "notification_setting", ...})`
-- `internal/api/api.go:303` [legacyWebhookGone] `_ = s.audit(r, "", "notification_setting_legacy_gone", r.URL.Path, http.StatusGone, 0, "legacy ...")`
-- `internal/api/api.go:369` [UpdateLegacyKeyStatusJSON] `_ = s.Store.AuditEntry(storage.AuditEntry{Action: "legacy_key_setting", ...})`
-- `internal/api/api.go:410` [RecordLegacyRejected] `_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Action: "legacy_rejected", ...})`
-- `internal/api/api.go:493` [ProvisionDeviceCredentialJSON] `_ = s.audit(r, q.Device, "device_credential_provision", "device="+q.Device, 0, 0, "credential ...")`
-- `internal/api/api.go:538` [UpdateSecuritySettingsJSON] `_ = s.audit(r, "", "security_setting", "global="+q.Global, 0, 0, fmt.Sprintf("old=%s new=%s", ...))`
-- `internal/api/api.go:541` [UpdateSecuritySettingsJSON] `_ = s.audit(r, q.Node, "security_setting", "mode="+q.Mode, 0, 0, fmt.Sprintf("old=%s new=%s", ...))`
-- `internal/api/api.go:601` [RecordLegacyAuth] `_ = s.Store.AuditEntry(storage.AuditEntry{CallerIP: ip, Action: "legacy_auth", ...})`
-- `internal/api/mcp_adapter.go:127` [ExecCommandWithOptions] `_ = b.server.auditMCPContext(auditCtx, clientIP, device, "exec", command, res.ExitCode, ...)`
-- `internal/api/exec_jobs.go:236` [finish] `_ = s.auditMCPContext(endCtx, j.ClientIP, j.Device, "exec", j.Summary, code, ...)`
-- `internal/api/tokens.go:115` [AuditMCP] `_ = s.auditMCPContext(ctx, ip, device, "mcp_denied", command, 0, 0, result+": "+detail)`
-
-**链 2：`deliverEvent` → `Store.RecordWebhookDelivery`（A2，1 处）**
-
-- `internal/notify/notify.go:831` [deliverEvent] `_ = m.Store.RecordWebhookDelivery(t.ID, statusCode, failure)`
-
-**链 3：`TestNotificationChannel` → `Store.RecordWebhookDelivery` / `Store.RecordNotificationChannelTestResult`（A2，3 处）**
-
-- `internal/notify/outbox.go:390` [TestNotificationChannel] `_ = m.Store.RecordNotificationChannelTestResult(channel.ID, "unsupported", 0, failure)`
-- `internal/notify/outbox.go:415` [TestNotificationChannel] `_ = m.Store.RecordWebhookDelivery(channel.LegacyWebhookID, status, failure)`
-- `internal/notify/outbox.go:417` [TestNotificationChannel] `_ = m.Store.RecordNotificationChannelTestResult(channel.ID, "failed", status, failure)`
+- **链 1**（`s.audit` / `s.auditMCPContext` → `auditContextTarget` → `Store.AuditEntry`，A1）抽 10 处：`internal/api/api.go:173`[requireDeviceAccess]、`:179`[requireDeviceAccess]、`:201`[requireSecurity]、`:276`[UpdateNotificationSettingsJSON]、`:303`[legacyWebhookGone]、`:369`[UpdateLegacyKeyStatusJSON]、`:410`[RecordLegacyRejected]、`:493`[ProvisionDeviceCredentialJSON]、`:538`/`:541`[UpdateSecuritySettingsJSON]、`internal/api/tokens.go:115`[AuditMCP]、`internal/api/exec_jobs.go:236`[finish]。
+- **链 2**（`deliverEvent` → `Store.RecordWebhookDelivery`，A2，1 处）：`internal/notify/notify.go:831`。
+- **链 3**（`TestNotificationChannel` → `Store.RecordWebhookDelivery` / `Store.RecordNotificationChannelTestResult`，A2，3 处）：`internal/notify/outbox.go:390`、`:415`、`:417`。
 
 ### 3.2 A1 结论：失败不无痕（与上一版一致）
 
@@ -272,24 +229,17 @@ PKCE 校验失败后 `_, _ = s.OAuthStore.ConsumeOAuthCode(hash, client.ID, redi
 
 #### 5.4.1 `internal/cluster/manager.go` 的 3 处下行指令丢弃（审核意见阻塞 4，本版新增）
 
-| 位置 | 所在函数 | 原文 | 失败场景 | 影响用户可见结果？ | 掩盖真实故障？ |
-|---|---|---|---|---|---|
-| `internal/cluster/manager.go:206` | ServeWS | `_ = n.write(Message{Event: "registered", Device: name, TS: ...})` | 新连接建立后立即回写「已注册」通知，写失败（写队列已停、连接刚断、10s 写超时） | 否。`cmd/agent/main.go:251` 收到 `registered` 只是 `continue`，无副作用 | **是**。Hub 侧不留任何痕迹；agent 侧也不会有异常，双方都认为「注册流程正常结束」。若随后 `syncMCP` 也失败（见下），agent 会带着旧 MCP 配置长期在线 |
-| `internal/cluster/manager.go:510` | RevokeDevice | `_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})` | 吊销时向节点下发撤销指令失败 | **是**。`cmd/agent/main.go:264` 收到 `revoked` 会 `log.Printf` 并 `return errors.New("revoked by admin")` 退出进程；写失败则 agent **继续在线跑**，直到下一次 `IsRevoked` 检查（`manager.go:170`，仅在**重连握手**时执行）才被 403 拦下 | **是**。管理面板显示「已吊销」（`internal/api/api.go:1112` 返回 `{"ok":true,"revoked":name}`），DB 里也写了 `revoked_devices`，但节点实际未断；`RevokeDevice` 本身返回 `nil`（`m.Store.RevokeDevice` 成功即返回 nil），上层看到的是完全成功 |
-| `internal/cluster/manager.go:789` | syncMCP | `_ = n.write(Message{Event: "mcp_sync", Payload: services, TS: ...})` | 保存/删除 MCP 服务后向节点同步配置失败 | **是**。`internal/api/api.go:858`、`:881` 保存成功后调 `SyncMCPServices()`，然后返回 200；agent 未收到 `mcp_sync` 则继续用旧配置，`call_agent_mcp` 会打到已删除的 server 或漏掉新 server | **是**。`syncMCP` 在 `ListMCPServicesForNode` 出错时也是 `return`（无日志），写失败再 `_ =` 吞掉，整条链 0 条日志；用户看到「保存成功」 |
+- **`internal/cluster/manager.go:206`** [ServeWS] `_ = n.write(Message{Event: "registered", Device: name, TS: ...})`。失败场景：新连接建立后回写「已注册」，写失败（写队列已停、连接刚断、10s 写超时）。影响用户可见结果：否 —— `cmd/agent/main.go:251` 收到 `registered` 只是 `continue`，无副作用。**掩盖真实故障：是** —— Hub 侧零痕迹，agent 侧也无异常，双方都认为注册流程正常结束；若随后 `syncMCP` 也失败，agent 会带旧 MCP 配置长期在线。
+- **`internal/cluster/manager.go:510`** [RevokeDevice] `_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})`。失败场景：吊销时向节点下发撤销指令失败。影响用户可见结果：**是** —— `cmd/agent/main.go:264` 收到 `revoked` 会 `log.Printf` 并 `return errors.New("revoked by admin")` 退出进程；写失败则 agent **继续在线跑**，直到下一次 `IsRevoked` 检查（`manager.go:170`，仅在**重连握手**时执行）才被 403 拦下。**掩盖真实故障：是** —— 面板显示「已吊销」（`internal/api/api.go:1112` 返回 `{"ok":true,"revoked":name}`），DB 也写了 `revoked_devices`，但节点实际未断；`RevokeDevice` 返回 `nil`（`m.Store.RevokeDevice` 成功即 nil），上层看到完全成功。
+- **`internal/cluster/manager.go:789`** [syncMCP] `_ = n.write(Message{Event: "mcp_sync", Payload: services, TS: ...})`。失败场景：保存/删除 MCP 服务后同步配置失败。影响用户可见结果：**是** —— `internal/api/api.go:858`、`:881` 保存成功后调 `SyncMCPServices()` 再返回 200；agent 未收到 `mcp_sync` 则继续用旧配置，`call_agent_mcp` 打到已删 server 或漏掉新 server。**掩盖真实故障：是** —— `syncMCP` 在 `ListMCPServicesForNode` 出错时也是裸 `return`，写失败再被 `_ =` 吞掉，整条链 0 条日志；用户看到「保存成功」。
 
-**建议（阶段二）**：
-- 三处至少 `log.Printf("cluster: %s -> device %s: %v", event, n.Name, err)`；
-- `:510` 建议进一步：写失败时 `RevokeDevice` 返回 error（DB 已吊销但节点未断，属于部分成功，应让上层 500 或返回带警告的 200）。需要 OPC 决定（改变 API 返回）。
-- `:789` 建议：`SyncMCPServices` 收集失败节点，API 在响应里带 `unsynced_devices` 字段。
+**建议（阶段二）**：三处至少 `log.Printf("cluster: %s -> device %s: %v", event, n.Name, err)`；`:510` 进一步建议写失败时 `RevokeDevice` 返回 error（DB 已吊销但节点未断属部分成功，应让上层 500 或返回带警告的 200，需 OPC 决定）；`:789` 建议 `SyncMCPServices` 收集失败节点，API 响应带 `unsynced_devices`。
 
 #### 5.4.2 `cmd/agent/main.go` 同族 3 处（审核意见阻塞 4，本版新增）
 
-| 位置 | 所在函数 | 原文 | 失败场景 | 影响 | 掩盖真实故障？ |
-|---|---|---|---|---|---|
-| `cmd/agent/main.go:203` | run（心跳 goroutine） | `_ = writeJSON(cluster.Message{Event: "ping", ...})` | 15s 心跳写失败 | 否（Hub 靠 75s 读超时判离线） | **是**。心跳写失败后 goroutine 继续每 15s 试一次，不退出、不记日志；若连接已半死，agent 会静默持续到 Hub 侧超时。写失败本应让 `run` 返回以触发重连（`main` 的 backoff 循环） |
-| `cmd/agent/main.go:281` | run（请求分发） | `_ = sendError(writeJSON, msg.ID, err)` | `handle` 返回错误后回送错误帧失败 | 否（Hub 侧有 `Pending` 超时兜底） | **部分**。上一行 `log.Printf("request %s failed: %v")` 已记下原始错误，但「错误帧没送达」这件事无痕 |
-| `cmd/agent/main.go:381` | handle（call_agent_mcp 失败分支） | `_ = writeJSON(cluster.Message{ID: msg.ID, Status: "error", ...})` | MCP 调用失败后回送错误结果失败 | 是（调用方拿不到错误，只能等超时） | **是**。这个分支**没有任何日志**（与 `:281` 不同），MCP 调用失败 + 回送失败 = Hub 侧只看到超时，不知道根因 |
+- **`cmd/agent/main.go:203`** [run，心跳 goroutine] `_ = writeJSON(cluster.Message{Event: "ping", ...})`。失败场景：15s 心跳写失败。影响：否（Hub 靠 75s 读超时判离线）。**掩盖真实故障：是** —— goroutine 继续每 15s 试一次，不退出、不记日志；连接半死时 agent 静默持续到 Hub 超时。写失败本应让 `run` 返回以触发 `main` 的 backoff 重连。
+- **`cmd/agent/main.go:281`** [run，请求分发] `_ = sendError(writeJSON, msg.ID, err)`。失败场景：`handle` 返回错误后回送错误帧失败。影响：否（Hub 侧 `Pending` 超时兜底）。**掩盖真实故障：部分** —— 上一行 `log.Printf("request %s failed: %v")` 已记原始错误，但「错误帧没送达」无痕。
+- **`cmd/agent/main.go:381`** [handle，call_agent_mcp 失败分支] `_ = writeJSON(cluster.Message{ID: msg.ID, Status: "error", ...})`。失败场景：MCP 调用失败后回送错误结果失败。影响：**是**（调用方拿不到错误，只能等超时）。**掩盖真实故障：是** —— 该分支**没有任何日志**（与 `:281` 不同），MCP 失败 + 回送失败 = Hub 只看到超时，不知根因。
 
 **建议**：`:203` 写失败应 `log.Printf` 并 `return err`（让外层重连）；`:281`、`:381` 至少 `log.Printf`。均不改协议行为。
 
@@ -324,9 +274,9 @@ PKCE 校验失败后 `_, _ = s.OAuthStore.ConsumeOAuthCode(hash, client.ID, redi
 - **占位写法**（2 处）：`internal/executor/fs.go:294` `var _ = fmt.Sprintf`、`:295` `var _ = exec.Command`，只为避免未使用导入的编译错误，不是忽略错误。建议阶段二删除这两行与对应导入。同类：`internal/mcp/mcp.go:257` `_ = oldText`（消除未用变量），本版归 P3，与上一版把它算作 A 类审计写入的做法不同。
 - **`internal/executor/executor.go:36`** `_, _ = b.buf.Write(p[:n])`：写 `bytes.Buffer` 永不失败。
 - **`cmd/hub/main.go:220-223`**（4 处，审核指出上一版正文写 222-223 而附录是 220-223，**本版统一为 220-223**）：`PRAGMA journal_mode`/`synchronous`/`busy_timeout`/`wal_autocheckpoint` 诊断读取，失败仅影响启动日志。
-- 其余 11 处：`SetReadDeadline`（`cmd/agent/main.go:250`、`internal/cluster/manager.go:335/343`）、`json.Marshal` map/结构体（`notify.go:782/785`）、`json.Unmarshal` 到本地 map 的序列化回环（`internal/api/api.go:1066`、`health_assertions.go:92`）、令牌列表展示解析（`internal/api/tokens.go:335/338`）、`internal/api/session_stats.go:127` `_, _ = dst.Write(body)`（写 `bytes.Buffer`）、`internal/executor/atomic_write.go:52` `owner, _ = ti.Sys().(*syscall.Stat_t)`（类型断言，失败时 `owner` 为 nil，仅用于「属主是否需要 chown」判断，不影响写入结果）。
+- 其余 11 处：`SetReadDeadline`（`cmd/agent/main.go:250`、`internal/cluster/manager.go:335/343`）、`json.Marshal` map/结构体（`notify.go:782/785`）、`json.Unmarshal` 到本地 map 的序列化回环（`internal/api/api.go:1066`、`health_assertions.go:92`）、令牌列表展示解析（`internal/api/tokens.go:335/338`）、`internal/api/session_stats.go:127`（写 `bytes.Buffer`）、`internal/executor/atomic_write.go:52`（类型断言，失败时 `owner` 为 nil，仅用于「属主是否需要 chown」判断）。
 
-计数核对：33（写响应体）+ 2（loadtest）+ 2（`fs.go` 占位）+ 1（`mcp.go:257` 消未用变量）+ 1（`executor.go:36`）+ 4（`cmd/hub` 诊断）+ 11（其余）= 54，与 2 节 P3=54 一致。逐条复现：`sh classify.sh | awk -F'\t' '$2=="P3"' | wc -l` → 54。
+计数核对：33+2+2+1+1+4+11 = 54，与 2 节 P3=54 一致（`sh classify.sh | awk -F'\t' '$2=="P3"' | wc -l` → 54）。
 
 ## 6. 阶段二建议（需要 OPC 决定，不在本卡内执行）
 
@@ -640,14 +590,9 @@ git grep -n ", _ := " -- '*.go' | grep -v '_test\.go:' | wc -l   # → 98
 
 ## 10. 与上一版的差异汇总（返工记录）
 
-| 审核意见 | 处理 | 位置 |
-|---|---|---|
-| 阻塞 1：A/B/C 归类不可复现，A 混入 22 条非审计调用 | 重做归类：A=91（A1 87 / A2 4）、B=60、C=106；给出脚本化规则（1.3）+ 22 条逐条去向表（1.4） | 1.1、1.3、1.4、2 |
-| 阻塞 2：A 类结论对投递记录不成立 | 拆 A1/A2；重写 A 类结论；抽样覆盖三条调用链；4 条 A2 判为「失败完全无痕」，列入阶段二 | 3.1、3.2、3.3、6.1 |
-| 阻塞 3：引用不存在的 `/tmp/classified.txt`；A/B 无全量清单 | 删除该引用；新增附录 A（A 类 91 条）与附录 B（B 类 60 条）全量清单，格式与 C 类一致 | 7、8 |
-| 阻塞 4：C 类漏 cluster/agent 热点；`cmd/hub` 行号错 | 新增 5.4.1（cluster 3 处）、5.4.2（agent 3 处）逐条分析并全部列 P2；`cmd/hub/main.go` 统一为 220-223 | 5.4.1、5.4.2、5.6 |
-| 阻塞 5：P1-4 `crypto/rand` 风险不可达 | 降级为 P4「本工具链下不可达」，从 P1 与 OPC 清单移除，引 `go.mod` go 1.24.0 与 `crypto/rand` 文档 | 5.5、6.1、6.3 |
-| 非阻塞：基线差异 / 319 无法复现 | 新增 1.2 基线差异表 | 1.2 |
-| 非阻塞：P1-2 拆开 fail-open 与展示用 | P1-2 只留 `storage/tokens.go:282`，`api/tokens.go:338` 移 P3 并注明无权限影响 | 5.2、附录 C #81 |
-| 非阻塞：`_ = d.Sync()` 单列 | 第 4 节单列，说明目录 fsync 失败的持久化影响 | 4、附录 B #43/#48 |
-| 非阻塞：`, _ :=` 不在口径内 | 6.4 给出 98 行的实测命令与分布，建议阶段二扩口径 | 6.4 |
+- **阻塞 1**（归类不可复现、A 混入 22 条非审计调用）→ 重做归类 A=91（A1 87/A2 4）、B=60、C=106，给出脚本化规则与 22 条去向（1.1、1.3、1.4、2）。
+- **阻塞 2**（A 类结论对投递记录不成立）→ 拆 A1/A2，重写 A 类结论，抽样跨 3 条调用链，4 条 A2 判为「失败完全无痕」并列入阶段二（3.1–3.3、6.1）。
+- **阻塞 3**（引用不存在的 `/tmp/classified.txt`、A/B 无全量清单）→ 删除该引用，新增附录 A（91 条）、附录 B（60 条），格式与 C 类一致（7、8）。
+- **阻塞 4**（漏 cluster/agent 热点、`cmd/hub` 行号错）→ 新增 5.4.1（cluster 3 处）、5.4.2（agent 3 处）逐条分析并全部列 P2，`cmd/hub/main.go` 统一为 220-223（5.4.1、5.4.2、5.6）。
+- **阻塞 5**（`crypto/rand` 风险不可达）→ 降级为 P4，从 P1 与 OPC 清单移除，引 `go.mod` go 1.24.0 与 `crypto/rand` 文档（5.5、6.1、6.3）。
+- **非阻塞**：新增 1.2 基线差异与「319 无法复现」；P1-2 拆开 fail-open（`storage/tokens.go:282`）与展示用（`api/tokens.go:338`→P3）；`_ = d.Sync()` 单列（第 4 节、附录 B #43/#48）；`, _ :=` 口径外实测 98 行（6.4）。
