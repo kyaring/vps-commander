@@ -815,11 +815,108 @@ $("#notifyChannelType")?.addEventListener("change",()=>{const type=$("#notifyCha
   else {label.firstChild.textContent="Webhook URL";endpoint.type=type==="webhook"?"url":"text";endpoint.placeholder=type==="webhook"?"https://…（编辑时留空保留原地址）":"该类型不使用 Webhook URL";secrets.placeholder=type==="telegram_bot"?'{"bot_token":"…"}':type==="webhook"?'{"headers":{"Authorization":"Bearer …"}}':'{"app_secret":"…"}';$("#notifyChannelConfig").placeholder="{}";}
 });
 
+let devProviderEditingID = "";
+
+function resetDevProviderForm(){
+  devProviderEditingID="";
+  const id=document.getElementById("devProvId");
+  id.value="";id.readOnly=false;
+  document.getElementById("devProvName").value="";
+  document.getElementById("devProvURL").value="";
+  document.getElementById("devProvKey").value="";
+  document.getElementById("devProvEnabled").checked=true;
+  document.getElementById("devProvStatus").textContent="";
+}
+
+async function loadDevProviders(){
+  const list=document.getElementById("devProviderList");
+  const status=document.getElementById("devProvStatus");
+  if(!list||!status)return;
+  try{
+    const response=await fetch("/api/v1/devtask-providers",{credentials:"same-origin"});
+    if(!response.ok){status.textContent="Provider 列表加载失败（HTTP "+response.status+")";return;}
+    const data=await response.json();
+    list.replaceChildren();
+    for(const provider of (data.providers||[])){
+      const tr=document.createElement("tr");
+      for(const value of [provider.id,provider.display_name,provider.enabled?"是":"否",provider.key_set?"已设置":"未设置"]){
+        const td=document.createElement("td");td.textContent=String(value??"");tr.appendChild(td);
+      }
+      const actions=document.createElement("td");
+      const edit=document.createElement("button");edit.type="button";edit.textContent="编辑";
+      edit.addEventListener("click",()=>{
+        devProviderEditingID=provider.id;
+        const id=document.getElementById("devProvId");id.value=provider.id;id.readOnly=true;
+        document.getElementById("devProvName").value=provider.display_name||"";
+        document.getElementById("devProvURL").value="";
+        document.getElementById("devProvKey").value="";
+        document.getElementById("devProvEnabled").checked=!!provider.enabled;
+        status.textContent="编辑 "+provider.id+"；base_url 留空表示不修改，密钥不会回显。";
+      });
+      const clear=document.createElement("button");clear.type="button";clear.textContent="清除密钥";
+      clear.addEventListener("click",async()=>{
+        if(!window.confirm("确定清除 Provider "+provider.id+" 的密钥？此操作不可撤销。"))return;
+        clear.disabled=true;
+        try{
+          const response=await fetch("/api/v1/devtask-providers/"+encodeURIComponent(provider.id),{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:provider.display_name,enabled:provider.enabled,clear_key:true})});
+          status.textContent=response.ok?"密钥已清除":"清除失败（HTTP "+response.status+")";
+          if(response.ok)await loadDevProviders();
+        }catch(_){status.textContent="清除失败（网络错误）";}
+        finally{clear.disabled=false;}
+      });
+      const test=document.createElement("button");test.type="button";test.textContent="测试";test.dataset.action="devProvTest";
+      const result=document.createElement("span");result.className="provider-test-result";result.setAttribute("role","status");
+      test.addEventListener("click",async()=>{
+        test.disabled=true;test.textContent="测试中…";result.textContent="";
+        try{
+          const response=await fetch("/api/v1/devtask-providers/"+encodeURIComponent(provider.id)+"/test",{method:"POST",credentials:"same-origin"});
+          const data=await response.json();
+          if(!response.ok){result.textContent="✗ HTTP "+response.status;}
+          else if(data.ok){result.textContent="✓ "+data.status_code+" ("+data.latency_ms+"ms)";}
+          else{result.textContent="✗ "+(data.error||"network_error");}
+        }catch(_){result.textContent="✗ network_error";}
+        finally{test.disabled=false;test.textContent="测试";}
+      });
+      actions.append(edit,clear,test,result);tr.appendChild(actions);list.appendChild(tr);
+    }
+    if(!list.children.length){const tr=document.createElement("tr");const td=document.createElement("td");td.colSpan=5;td.textContent="暂无 Provider";tr.appendChild(td);list.appendChild(tr);}
+  }catch(_){status.textContent="Provider 列表加载失败（网络错误）";}
+}
+
+document.getElementById("devProvRefresh")?.addEventListener("click",()=>loadDevProviders());
+document.getElementById("devProvCancel")?.addEventListener("click",resetDevProviderForm);
+document.getElementById("devProvSave")?.addEventListener("click",async()=>{
+  const idInput=document.getElementById("devProvId");
+  const id=idInput.value.trim();
+  const name=document.getElementById("devProvName").value.trim();
+  const baseURL=document.getElementById("devProvURL").value.trim();
+  const apiKey=document.getElementById("devProvKey").value;
+  const enabled=document.getElementById("devProvEnabled").checked;
+  const status=document.getElementById("devProvStatus");
+  if(!/^[a-z0-9_-]{1,32}$/.test(id)){status.textContent="Provider ID 格式无效";return;}
+  if(!name){status.textContent="显示名不能为空";return;}
+  if(baseURL){try{if(new URL(baseURL).protocol!=="https:")throw new Error("https required");}catch(_){status.textContent="base_url 必须是有效的 HTTPS URL";return;}}
+  if(!devProviderEditingID&&(!baseURL||!apiKey)){status.textContent="新建 Provider 必须填写 base_url 和密钥";return;}
+  const body={display_name:name,enabled};
+  if(baseURL)body.base_url=baseURL;
+  if(apiKey)body.api_key=apiKey;
+  try{
+    const response=await fetch("/api/v1/devtask-providers/"+encodeURIComponent(id),{method:"PUT",credentials:"same-origin",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!response.ok){status.textContent="保存失败（HTTP "+response.status+")";return;}
+    document.getElementById("devProvKey").value="";
+    const saved=await response.json().catch(()=>({}));
+    resetDevProviderForm();
+    status.textContent=saved.key_set?"已保存（密钥已设置）":"已保存（未设置密钥）";
+    await loadDevProviders();
+  }catch(_){status.textContent="保存失败（网络错误）";}
+});
+
 async function loadDevTaskPanel(){
   const status=document.getElementById("devtaskStatus");
   const list=document.getElementById("devtaskList");
   const detail=document.getElementById("devtaskDetail");
   if(!status||!list)return;
+  await loadDevProviders();
   status.textContent="加载中…";
   try{
     const r=await fetch("/api/v1/devtasks?limit=50",{credentials:"same-origin"});

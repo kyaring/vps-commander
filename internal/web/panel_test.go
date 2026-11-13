@@ -383,3 +383,62 @@ func TestPanelTokenEditIncludesConcurrentExecLimit(t *testing.T) {
 		t.Fatalf("body did not preserve concurrent_exec_limit: %s", runner.body)
 	}
 }
+
+func TestPanelProviderFormFields(t *testing.T) {
+	html, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal("read embedded panel index failed")
+	}
+	page := string(html)
+	for _, id := range []string{"devProvId", "devProvName", "devProvURL", "devProvKey", "devProvEnabled", "devProvSave"} {
+		if !strings.Contains(page, `id="`+id+`"`) {
+			t.Fatalf("provider form field %s is missing", id)
+		}
+	}
+	keyAt := strings.Index(page, `id="devProvKey"`)
+	if keyAt < 0 || !strings.Contains(page[keyAt:min(keyAt+120, len(page))], `type="password"`) {
+		t.Fatal("provider key input must use password type")
+	}
+	providerCardAt := strings.Index(page, `id="devProviderCard"`)
+	projectCardAt := strings.Index(page, "项目与模型白名单（admin）")
+	if providerCardAt < 0 || projectCardAt < 0 || providerCardAt > projectCardAt {
+		t.Fatal("provider card must precede project and model whitelist card")
+	}
+}
+
+func TestPanelProviderKeyNeverPrefilled(t *testing.T) {
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal("read embedded panel app failed")
+	}
+	source := string(js)
+	for _, forbidden := range []string{`devProvKey").value=provider.api_key`, `devProvKey").value=data.api_key`, `devProvKey").value=provider[`} {
+		if strings.Contains(source, forbidden) {
+			t.Fatal("provider key input must never be populated from API data")
+		}
+	}
+	if !strings.Contains(source, `document.getElementById("devProvKey").value=""`) {
+		t.Fatal("provider key input is not cleared after a successful save")
+	}
+}
+
+func TestPanelProviderTestButton(t *testing.T) {
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal("read embedded panel app failed")
+	}
+	source := string(js)
+	if !strings.Contains(source, `dataset.action="devProvTest"`) || !strings.Contains(source, `+"/test"`) || !strings.Contains(source, `credentials:"same-origin"`) {
+		t.Fatal("provider test button must call the same-origin test endpoint")
+	}
+}
+
+func TestPanelProviderIDPattern(t *testing.T) {
+	js, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal("read embedded panel app failed")
+	}
+	if !strings.Contains(string(js), `/^[a-z0-9_-]{1,32}$/`) {
+		t.Fatal("provider ID validation pattern is missing")
+	}
+}

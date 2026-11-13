@@ -106,3 +106,9 @@ Restart=on-failure
 Runner 领取任务后，使用同一个命名 runner token 调用 `POST /api/v1/devtasks/{id}/credentials`。Hub 会核对当前租约持有者、租约有效期、任务模型白名单以及 provider 启用状态；Runner 不得在请求体中指定或伪造 `claimed_by`。请求必须通过 HTTPS（或回环连接）。
 
 成功后仅在进程内存中使用返回的 `base_url` 和 `api_key`，不得写入 runner 配置、日志、任务事件、临时文件或其他磁盘介质。凭据获取失败时，任务应进入 `blocked_model` 状态并报告错误，不得自动切换到其他模型或 provider。
+
+### 面板配置 Provider
+
+在「开发任务」页签的「模型 Provider（admin）」卡片中登记或编辑模型网关：Provider ID 使用 `^[a-z0-9_-]{1,32}$`，显示名用于识别，`base_url` 必须为 HTTPS，密钥通过密码输入框提交。编辑时密钥留空表示不修改；保存后输入框立即清空。已有密钥只显示「已设置/未设置」，不会回显；清除密钥需要二次确认。每个 Provider 可发起连通性测试，面板只显示 HTTP 状态、耗时或错误类别，不显示上游响应内容。
+
+模型白名单格式为 `<provider_id>:<model>`；Provider 必须先登记并启用。面板的 DevTask 管理请求直接使用同源 `/api/v1/*`，携带 `credentials: "same-origin"`，不经过 `/panel/api` 代理。
