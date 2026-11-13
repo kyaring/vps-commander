@@ -15,12 +15,14 @@ func boolPtr(v bool) *bool { return &v }
 var readOnlyTools = map[string]bool{
 	"list_devices": true, "read_file": true, "read_multiple_files": true, "list_processes": true,
 	"diagnostic_command": true, "list_agent_mcp": true, "exec_status": true, "memo_get": true,
+	"dev_task_status": true, "dev_task_list": true, "dev_task_diff": true, "dev_task_logs": true,
 }
 
 // destructiveTools change state on a node (or cancel work running there).
 var destructiveTools = map[string]bool{
 	"exec_command": true, "exec_start": true, "exec_cancel": true, "write_file": true, "edit_block": true,
 	"create_directory": true, "move_file": true, "call_agent_mcp": true,
+	"dev_task_dispatch": true, "dev_task_revise": true, "dev_task_cancel": true,
 }
 
 // localTools only touch the Hub's own session state and never reach a node.

@@ -95,3 +95,55 @@ func TestToolNamesMatchScopeMap(t *testing.T) {
 		}
 	}
 }
+
+// DevTask tools are classified by their effects and must remain open-world operations.
+func TestDevTaskToolsHaveAnnotations(t *testing.T) {
+	wantReadOnly := map[string]bool{
+		"dev_task_list": true, "dev_task_status": true, "dev_task_diff": true, "dev_task_logs": true,
+	}
+	wantDestructive := map[string]bool{
+		"dev_task_dispatch": true, "dev_task_revise": true, "dev_task_cancel": true,
+	}
+	seen := make(map[string]bool, len(wantReadOnly)+len(wantDestructive))
+	for _, tool := range listedTools(t) {
+		readOnly, isReadOnly := wantReadOnly[tool.Name]
+		destructive, isDestructive := wantDestructive[tool.Name]
+		if !isReadOnly && !isDestructive {
+			continue
+		}
+		seen[tool.Name] = true
+		if len(tool.Annotations) == 0 {
+			t.Errorf("%s: annotations missing", tool.Name)
+			continue
+		}
+		var gotReadOnly, gotDestructive, gotOpenWorld bool
+		if err := json.Unmarshal(tool.Annotations["readOnlyHint"], &gotReadOnly); err != nil {
+			t.Errorf("%s: invalid readOnlyHint: %v", tool.Name, err)
+		}
+		if err := json.Unmarshal(tool.Annotations["destructiveHint"], &gotDestructive); err != nil {
+			t.Errorf("%s: invalid destructiveHint: %v", tool.Name, err)
+		}
+		if err := json.Unmarshal(tool.Annotations["openWorldHint"], &gotOpenWorld); err != nil {
+			t.Errorf("%s: invalid openWorldHint: %v", tool.Name, err)
+		}
+		if gotReadOnly != readOnly {
+			t.Errorf("%s: readOnlyHint=%t, want %t", tool.Name, gotReadOnly, readOnly)
+		}
+		if gotDestructive != destructive {
+			t.Errorf("%s: destructiveHint=%t, want %t", tool.Name, gotDestructive, destructive)
+		}
+		if !gotOpenWorld {
+			t.Errorf("%s: openWorldHint must be true", tool.Name)
+		}
+	}
+	for name := range wantReadOnly {
+		if !seen[name] {
+			t.Errorf("%s: dev_task tool missing from tools/list", name)
+		}
+	}
+	for name := range wantDestructive {
+		if !seen[name] {
+			t.Errorf("%s: dev_task tool missing from tools/list", name)
+		}
+	}
+}

@@ -17,6 +17,10 @@ var toolArgKinds = map[string]string{
 	"offset": "integer", "old_text": "string", "output_mode": "string", "path": "string", "paths": "array",
 	"server": "string", "source": "string", "target": "string", "timeout": "integer", "tool": "string",
 	"ttl_seconds": "integer", "value": "string", "workdir": "string",
+	"task_id": "string", "project": "string", "title": "string", "spec_md": "string",
+	"model": "string", "status": "string", "note": "string",
+	"allowed_paths": "array", "forbidden_paths": "array", "accept_cmds": "array",
+	"after_seq": "integer",
 }
 
 // validateToolArgs checks the arguments of a tools/call request against the declared argument types.
