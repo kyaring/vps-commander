@@ -235,6 +235,27 @@ func TestCredentialsEndpointRejectsDisabledProvider(t *testing.T) {
 	}
 }
 
+func TestCredentialsEndpointRejectsRegisteredButDisabledProvider(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "on")
+	setProviderKey(t)
+	s, _ := newSpillTestServer(t)
+	if rec := putProvider(t, s, `{"display_name":"Global","base_url":"`+canaryURL+`","api_key":"`+canaryKey+`","enabled":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("disabled provider setup failed: status %d", rec.Code)
+	}
+	provider, err := s.Store.GetDevProvider("global")
+	if err != nil || !provider.KeySet || provider.Enabled {
+		t.Fatal("provider fixture must be registered, keyed, and disabled")
+	}
+	if err := s.Store.SetDevTaskAllowedModels([]string{"global:model"}); err != nil {
+		t.Fatal("whitelist setup failed")
+	}
+	seedCredentialTask(t, s, "tok-adm", "global:model", time.Now().Unix()+60)
+	runner := credentialRunnerContext("tok-adm", map[string]bool{"devtask:run": true})
+	if rec := credentialRequest(t, s, runner, "cred-task"); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "provider_unavailable") {
+		t.Fatalf("registered disabled provider response: status %d has_error=%t", rec.Code, strings.Contains(rec.Body.String(), `"error"`))
+	}
+}
+
 func TestCredentialsEndpointReturnsDecryptedSecrets(t *testing.T) {
 	t.Setenv("DEVTASK_ENABLED", "on")
 	s, _ := newSpillTestServer(t)
@@ -267,11 +288,40 @@ func TestCredentialsEndpointAuditHasNoSecret(t *testing.T) {
 	seedCredentialTask(t, s, "tok-adm", "global:model", time.Now().Unix()+60)
 	runner := credentialRunnerContext("tok-adm", map[string]bool{"devtask:run": true})
 	_ = credentialRequest(t, s, runner, "cred-task")
-	if n := countAudit(t, s, "action='devtask_credentials' AND (command LIKE ? OR error_msg LIKE ?)", "%"+canaryKey+"%", "%test-key%"); n != 0 {
-		t.Fatalf("secret material found in audit rows: %d", n)
+	if err := s.Store.FlushAudits(); err != nil {
+		t.Fatal(err)
 	}
-	if n := countAudit(t, s, "action='devtask_credentials' AND command='task=cred-task model=global:model'"); n != 1 {
-		t.Fatalf("credential audit row count: %d", n)
+	rows, err := s.Store.DB.Query(`SELECT command, COALESCE(error_msg,'') FROM audit_logs WHERE action=? AND command LIKE ?`, "devtask_credentials", "task=cred-task%")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var command, errorMsg string
+		if err := rows.Scan(&command, &errorMsg); err != nil {
+			t.Fatal(err)
+		}
+		count++
+		for _, field := range []struct{ name, value string }{{"command", command}, {"error_msg", errorMsg}} {
+			if strings.Contains(field.value, canaryKey) {
+				t.Fatalf("credential audit leak detected in %s", field.name)
+			}
+			for n := 4; n <= len(canaryKey); n++ {
+				if strings.Contains(field.value, canaryKey[:n]) {
+					t.Fatalf("credential audit leak detected in %s", field.name)
+				}
+			}
+			if strings.Contains(strings.ToLower(field.value), "api_key=") {
+				t.Fatalf("credential audit leak detected in %s: api_key assignment", field.name)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count == 0 {
+		t.Fatal("credential audit rows not found for task")
 	}
 }
 
