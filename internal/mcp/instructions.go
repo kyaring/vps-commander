@@ -33,7 +33,14 @@ func serverInstructions(p auth.Principal, authed bool) string {
 		b.WriteString("【MCP 服务】call_agent_mcp 调用节点上的 MCP 服务，先用 list_agent_mcp 确认服务与工具名。\n")
 	}
 	b.WriteString("【安全】破坏性操作（删除、覆盖、停止服务）执行前先确认目标；不得把令牌、密钥或 webhook 写入命令、便签或日志。\n")
-	b.WriteString("【便签】memo_set / memo_get 只保存当前会话的结论，不保存秘密。\n")
+	if has("files:write") && has("files:read") {
+		b.WriteString("【临时记录】memo_set / memo_get 已废弃；需要跨轮次保留结论时，用 write_file 写入 /tmp/vps-commander-mcp-scratch-<session-id>.md，再用 read_file 读取；勿写入秘密。\n")
+		if has("exec") {
+			b.WriteString("【临时记录清理】不再需要时，用 exec_command 执行 rm -f <scratch-path> 删除文件。\n")
+		}
+	} else {
+		b.WriteString("【临时记录】memo_set / memo_get 已废弃；请使用独立 scratch 文件替代，勿写入秘密。\n")
+	}
 	r := []rune(b.String())
 	if len(r) > maxInstructionsLen {
 		r = r[:maxInstructionsLen]
