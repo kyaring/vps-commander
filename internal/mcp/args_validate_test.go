@@ -103,3 +103,19 @@ func TestArgKindsMatchSchemas(t *testing.T) {
 		}
 	}
 }
+
+// Every argument published by a dev_task_* tool must have an identical validator kind.
+func TestDevTaskToolArgKindsCovered(t *testing.T) {
+	for _, tool := range devtaskToolDefs() {
+		for name, def := range tool.InputSchema.Properties {
+			kind, ok := toolArgKinds[name]
+			if !ok {
+				t.Errorf("%s.%s: missing from toolArgKinds", tool.Name, name)
+				continue
+			}
+			if kind != def.Type {
+				t.Errorf("%s.%s: schema says %s, toolArgKinds says %s", tool.Name, name, def.Type, kind)
+			}
+		}
+	}
+}
