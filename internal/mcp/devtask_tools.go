@@ -49,7 +49,7 @@ func devtaskToolDefs() []Tool {
 		{Name: "dev_task_status", Description: "查询任务状态、轮次、模型、结果摘要和错误信息", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
 			"task_id": {Type: "string", Description: "任务 id"},
 		}, Required: []string{"task_id"}}},
-		{Name: "dev_task_list", Description: "按项目和状态分页列出任务", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
+		{Name: "dev_task_list", Description: "按项目和状态筛选，并分页列出开发任务及其执行状态", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
 			"project": {Type: "string", Description: "项目名，可省略"},
 			"status":  {Type: "string", Description: "状态，可省略"},
 			"limit":   {Type: "integer", Description: "每页条数，默认 50，最大 200"},
@@ -60,7 +60,7 @@ func devtaskToolDefs() []Tool {
 			"offset":  {Type: "integer", Description: "起始字节，默认 0"},
 			"limit":   {Type: "integer", Description: "最大字节，默认 8192，最大 65536"},
 		}, Required: []string{"task_id"}}},
-		{Name: "dev_task_logs", Description: "分页读取任务事件（不进审计日志）", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
+		{Name: "dev_task_logs", Description: "按任务分页读取执行事件记录，且不会写入审计日志", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
 			"task_id":   {Type: "string", Description: "任务 id"},
 			"after_seq": {Type: "integer", Description: "只返回 seq 大于该值的事件"},
 			"limit":     {Type: "integer", Description: "条数，默认 100，最大 500"},
@@ -69,7 +69,7 @@ func devtaskToolDefs() []Tool {
 			"task_id": {Type: "string", Description: "任务 id"},
 			"note":    {Type: "string", Description: "审核意见，写入事件而不写入审计"},
 		}, Required: []string{"task_id"}}},
-		{Name: "dev_task_cancel", Description: "取消未结束的任务", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
+		{Name: "dev_task_cancel", Description: "取消尚未结束的开发任务，并返回最新任务状态信息", InputSchema: InputSchema{Type: "object", Properties: map[string]PropertyDef{
 			"task_id": {Type: "string", Description: "任务 id"},
 		}, Required: []string{"task_id"}}},
 	}
