@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -401,5 +403,177 @@ func TestCredentialsEndpointRequiresNamedRunnerToken(t *testing.T) {
 	emptyID := auth.WithPrincipal(context.Background(), auth.Principal{Type: "api_token", ID: "runner", Name: "runner", Scopes: map[string]bool{"devtask:run": true}})
 	if rec := credentialRequest(t, s, emptyID, "cred-task"); rec.Code != http.StatusForbidden {
 		t.Fatalf("empty token ID status: %d", rec.Code)
+	}
+}
+
+func providerProbeFixture(t *testing.T, handler http.Handler) (*Server, *httptest.Server) {
+	t.Helper()
+	t.Setenv("DEVTASK_ENABLED", "on")
+	setProviderKey(t)
+	upstream := httptest.NewTLSServer(handler)
+	oldFactory := providerProbeClientFactory
+	providerProbeClientFactory = func() *http.Client {
+		client := upstream.Client()
+		client.Timeout = 10 * time.Second
+		return client
+	}
+	t.Cleanup(func() { providerProbeClientFactory = oldFactory })
+	s, _ := newSpillTestServer(t)
+	body := `{"display_name":"Probe Test","base_url":"` + upstream.URL + `/v1?discard=1","api_key":"` + canaryKey + `","enabled":true}`
+	if rec := putProvider(t, s, body); rec.Code != http.StatusOK {
+		t.Fatalf("provider fixture setup failed: status %d", rec.Code)
+	}
+	return s, upstream
+}
+
+func providerProbeRequest(t *testing.T, s *Server, scopes map[string]bool) *httptest.ResponseRecorder {
+	t.Helper()
+	return devtaskDo(t, s, devtaskCtx(scopes), http.MethodPost, "/api/v1/devtask-providers/global/test", "")
+}
+
+func TestProviderTestEndpointOK(t *testing.T) {
+	var gotPath, gotAuth string
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	var out struct {
+		OK         bool  `json:"ok"`
+		StatusCode int   `json:"status_code"`
+		LatencyMS  int64 `json:"latency_ms"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || rec.Code != http.StatusOK || !out.OK || out.StatusCode != http.StatusOK || out.LatencyMS < 0 {
+		t.Fatalf("provider probe success response invalid: status=%d", rec.Code)
+	}
+	if gotPath != "/v1/models" || gotAuth != "Bearer "+canaryKey {
+		t.Fatal("probe method/path/auth header mismatch")
+	}
+}
+
+func TestProviderTestEndpointUnauthorized(t *testing.T) {
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"error":"unauthorized"`) || !strings.Contains(rec.Body.String(), `"status_code":401`) {
+		t.Fatalf("unauthorized probe response invalid: status=%d", rec.Code)
+	}
+}
+
+func TestProviderTestEndpointForbiddenAndOtherHTTPStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   string
+	}{{http.StatusForbidden, "forbidden"}, {http.StatusServiceUnavailable, "http_503"}} {
+		t.Run(tc.want, func(t *testing.T) {
+			s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(tc.status) }))
+			rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"error":"`+tc.want+`"`) || !strings.Contains(rec.Body.String(), `"status_code":`+fmt.Sprint(tc.status)) {
+				t.Fatalf("upstream status mapping invalid: endpoint status=%d", rec.Code)
+			}
+		})
+	}
+}
+
+type providerProbeRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f providerProbeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestProviderTestEndpointNetworkError(t *testing.T) {
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	oldFactory := providerProbeClientFactory
+	providerProbeClientFactory = func() *http.Client {
+		return &http.Client{Timeout: 10 * time.Second, Transport: providerProbeRoundTripper(func(*http.Request) (*http.Response, error) { return nil, errors.New("offline") })}
+	}
+	t.Cleanup(func() { providerProbeClientFactory = oldFactory })
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"error":"network_error"`) || strings.Contains(rec.Body.String(), "offline") {
+		t.Fatalf("network error mapping invalid: endpoint status=%d", rec.Code)
+	}
+}
+
+func TestProviderTestEndpointTimeout(t *testing.T) {
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(11 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	started := time.Now()
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"error":"timeout"`) || time.Since(started) > 11*time.Second {
+		t.Fatalf("timeout probe response invalid: status=%d", rec.Code)
+	}
+}
+
+func TestProviderTestEndpointRequiresAdmin(t *testing.T) {
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	rec := providerProbeRequest(t, s, map[string]bool{"devtask:submit": true})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin provider probe status=%d, want 403", rec.Code)
+	}
+}
+
+func TestProviderTestEndpointAuditHasNoSecret(t *testing.T) {
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	if rec := providerProbeRequest(t, s, map[string]bool{"admin": true}); rec.Code != http.StatusOK {
+		t.Fatalf("provider probe status=%d", rec.Code)
+	}
+	if err := s.Store.FlushAudits(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Store.DB.Query(`SELECT command, COALESCE(error_msg,''), target FROM audit_logs WHERE action=?`, "devtask_provider_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var command, errorMsg, target string
+		if err := rows.Scan(&command, &errorMsg, &target); err != nil {
+			t.Fatal(err)
+		}
+		count++
+		if target != "global" || !strings.HasPrefix(command, "base_url=") || strings.Contains(command, "/") || strings.Contains(command, "?") {
+			t.Fatal("provider test audit target/command is not host-only")
+		}
+		for _, field := range []string{command, errorMsg} {
+			if strings.Contains(field, canaryKey) || strings.Contains(strings.ToLower(field), "api_key=") {
+				t.Fatal("provider test audit leak detected")
+			}
+			for n := 4; n <= len(canaryKey); n++ {
+				if strings.Contains(field, canaryKey[:n]) {
+					t.Fatal("provider test audit leak detected")
+				}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("provider test audit row count=%d, want 1", count)
+	}
+}
+
+func TestProviderTestEndpointDoesNotLeakBody(t *testing.T) {
+	upstreamBody := "sensitive-upstream-marker-" + canaryKey
+	s, _ := providerProbeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(upstreamBody))
+	}))
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), upstreamBody) || strings.Contains(rec.Body.String(), canaryKey) || strings.Contains(rec.Body.String(), "sensitive-upstream-marker") {
+		t.Fatal("provider probe response leaked upstream body")
+	}
+	if n := countAudit(t, s, "action=? AND error_msg LIKE ?", "devtask_provider_test", "%sensitive-upstream-marker%"); n != 0 {
+		t.Fatal("provider probe audit leaked upstream body")
+	}
+}
+
+func TestProviderTestEndpointRespectsDevTaskGate(t *testing.T) {
+	t.Setenv("DEVTASK_ENABLED", "off")
+	s, _ := newSpillTestServer(t)
+	rec := providerProbeRequest(t, s, map[string]bool{"admin": true})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("provider test with DevTask gate off: status=%d, want 404", rec.Code)
 	}
 }
