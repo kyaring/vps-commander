@@ -564,6 +564,16 @@ func TestProviderTestEndpointDoesNotLeakBody(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), upstreamBody) || strings.Contains(rec.Body.String(), canaryKey) || strings.Contains(rec.Body.String(), "sensitive-upstream-marker") {
 		t.Fatal("provider probe response leaked upstream body")
 	}
+	for name, values := range rec.Header() {
+		if strings.Contains(name, upstreamBody) || strings.Contains(name, canaryKey) || strings.Contains(name, "sensitive-upstream-marker") {
+			t.Fatal("响应头泄露：检测到上游敏感标记")
+		}
+		for _, value := range values {
+			if strings.Contains(value, upstreamBody) || strings.Contains(value, canaryKey) || strings.Contains(value, "sensitive-upstream-marker") {
+				t.Fatal("响应头泄露：检测到上游敏感标记")
+			}
+		}
+	}
 	if n := countAudit(t, s, "action=? AND error_msg LIKE ?", "devtask_provider_test", "%sensitive-upstream-marker%"); n != 0 {
 		t.Fatal("provider probe audit leaked upstream body")
 	}
