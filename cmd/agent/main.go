@@ -194,18 +194,7 @@ func run(hub, name, token string, insecure bool) error {
 	defer close(stopPing)
 	// Keep liveness heartbeats lightweight. Full profiles are sampled separately
 	// and sent only when resource metrics change materially.
-	go func() {
-		t := time.NewTicker(15 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				_ = writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, TS: time.Now().Unix()})
-			case <-stopPing:
-				return
-			}
-		}
-	}()
+	go heartbeatLoop(name, 15*time.Second, writeJSON, stopPing)
 	go func() {
 		t := time.NewTicker(60 * time.Second)
 		defer t.Stop()
@@ -278,9 +267,33 @@ func run(hub, name, token string, insecure bool) error {
 		go func(msg cluster.Message) {
 			if err := handle(writeJSON, exec, mcpRuntime, sessions, msg); err != nil {
 				log.Printf("request %s failed: %v", msg.ID, err)
-				_ = sendError(writeJSON, msg.ID, err)
+				if sendErr := sendError(writeJSON, msg.ID, err); sendErr != nil {
+					log.Printf("request %s: sending error response failed: %v", msg.ID, sendErr)
+				}
 			}
 		}(msg)
+	}
+}
+
+// heartbeatLoop sends a liveness ping every interval. A failing write means the
+// connection is already broken, so it is logged with a consecutive-failure
+// counter to make a persistent outage visible instead of silently swallowed.
+func heartbeatLoop(name string, interval time.Duration, writeJSON func(cluster.Message) error, stop <-chan struct{}) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	pingFailures := 0
+	for {
+		select {
+		case <-t.C:
+			if err := writeJSON(cluster.Message{Event: "ping", Device: name, Arch: runtime.GOARCH, OS: runtime.GOOS, TS: time.Now().Unix()}); err != nil {
+				pingFailures++
+				log.Printf("heartbeat ping write failed for device %s (consecutive failures: %d): %v", name, pingFailures, err)
+			} else {
+				pingFailures = 0
+			}
+		case <-stop:
+			return
+		}
 	}
 }
 
@@ -378,7 +391,9 @@ func handle(writeJSON func(cluster.Message) error, exec executor.Local, mcpRunti
 		result, err := mcpRuntime.Call(ctx, p.Server, p.Tool, p.Args)
 		duration := time.Since(start).Milliseconds()
 		if err != nil {
-			_ = writeJSON(cluster.Message{ID: msg.ID, Status: "error", Error: err.Error(), Payload: map[string]any{"server": p.Server, "tool": p.Tool, "duration_ms": duration}})
+			if writeErr := writeJSON(cluster.Message{ID: msg.ID, Status: "error", Error: err.Error(), Payload: map[string]any{"server": p.Server, "tool": p.Tool, "duration_ms": duration}}); writeErr != nil {
+				log.Printf("request %s: writing mcp_call failure for %s/%s failed: %v", msg.ID, p.Server, p.Tool, writeErr)
+			}
 			return nil
 		}
 		return writeJSON(cluster.Message{ID: msg.ID, Status: "success", Payload: map[string]any{"server": p.Server, "tool": p.Tool, "result": result, "duration_ms": duration}})

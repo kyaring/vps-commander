@@ -831,7 +831,9 @@ func (m *Manager) deliverEvent(parent context.Context, e Event) {
 		if !delivered && failure == "" {
 			failure = "webhook delivery failed"
 		}
-		_ = m.Store.RecordWebhookDelivery(t.ID, statusCode, failure)
+		if err := m.Store.RecordWebhookDelivery(t.ID, statusCode, failure); err != nil {
+			log.Printf("notify: record webhook delivery for target %s failed: %v", t.ID, err)
+		}
 		result, exitCode := "ok", 0
 		if !delivered {
 			result, exitCode = "error", statusCode

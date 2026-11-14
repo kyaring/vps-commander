@@ -3,10 +3,16 @@ package executor
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"syscall"
 )
+
+// dirSyncFile fsyncs a directory after a rename so that the rename survives a
+// crash. It is a variable only so that tests can exercise the failure path;
+// production always calls (*os.File).Sync.
+var dirSyncFile = func(f *os.File) error { return f.Sync() }
 
 // WriteFileAtomic replaces the content of path through a temporary file in the
 // same directory followed by rename, so a failure never leaves a truncated or
@@ -94,7 +100,9 @@ func WriteFileAtomic(path string, data []byte, newFileMode os.FileMode) error {
 	}
 	committed = true
 	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
+		if syncErr := dirSyncFile(d); syncErr != nil {
+			log.Printf("executor: fsync directory %s after rename failed (crash may lose the rename): %v", dir, syncErr)
+		}
 		_ = d.Close()
 	}
 	return nil

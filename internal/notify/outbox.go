@@ -387,7 +387,9 @@ func (m *Manager) TestNotificationChannel(channelID string) error {
 	if channel.Type == "qq_official_bot" {
 		failure := "QQ official bot proactive push is not supported by the platform"
 		if channel.LegacyWebhookID == "" {
-			_ = m.Store.RecordNotificationChannelTestResult(channel.ID, "unsupported", 0, failure)
+			if err := m.Store.RecordNotificationChannelTestResult(channel.ID, "unsupported", 0, failure); err != nil {
+				log.Printf("notify: record test result (unsupported) for channel %s failed: %v", channel.ID, err)
+			}
 		}
 		return fmt.Errorf("%s", failure)
 	}
@@ -412,9 +414,13 @@ func (m *Manager) TestNotificationChannel(channelID string) error {
 		return nil
 	}
 	if channel.LegacyWebhookID != "" {
-		_ = m.Store.RecordWebhookDelivery(channel.LegacyWebhookID, status, failure)
+		if err := m.Store.RecordWebhookDelivery(channel.LegacyWebhookID, status, failure); err != nil {
+			log.Printf("notify: record webhook delivery for target %s failed: %v", channel.LegacyWebhookID, err)
+		}
 	} else {
-		_ = m.Store.RecordNotificationChannelTestResult(channel.ID, "failed", status, failure)
+		if err := m.Store.RecordNotificationChannelTestResult(channel.ID, "failed", status, failure); err != nil {
+			log.Printf("notify: record test result (failed) for channel %s failed: %v", channel.ID, err)
+		}
 	}
 	if failure == "" {
 		failure = "notification test failed"

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"sync"
@@ -203,7 +204,9 @@ func (m *Manager) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if old != nil && old.Conn != nil {
 		_ = old.Conn.Close()
 	}
-	_ = n.write(Message{Event: "registered", Device: name, TS: time.Now().Unix()})
+	if err := n.write(Message{Event: "registered", Device: name, TS: time.Now().Unix()}); err != nil {
+		log.Printf("cluster: registered -> device %s: %v", name, err)
+	}
 	m.syncMCP(n)
 	go m.heartbeat(n)
 	go m.readLoop(n)
@@ -507,7 +510,9 @@ func (m *Manager) RevokeDevice(name, reason string) error {
 	if n != nil {
 		n.Connected.Store(false)
 		if n.Conn != nil {
-			_ = n.write(Message{Event: "revoked", Error: "revoked by admin"})
+			if err := n.write(Message{Event: "revoked", Error: "revoked by admin"}); err != nil {
+				log.Printf("cluster: revoked -> device %s: %v", name, err)
+			}
 			_ = n.Conn.Close()
 		}
 	}
@@ -786,7 +791,9 @@ func (m *Manager) syncMCP(n *Node) {
 	for _, v := range stored {
 		services = append(services, decodeStoredMCPService(v))
 	}
-	_ = n.write(Message{Event: "mcp_sync", Payload: services, TS: time.Now().Unix()})
+	if err := n.write(Message{Event: "mcp_sync", Payload: services, TS: time.Now().Unix()}); err != nil {
+		log.Printf("cluster: mcp_sync -> device %s: %v", n.Name, err)
+	}
 }
 
 func decodeStoredMCPService(v storage.MCPService) MCPService {
