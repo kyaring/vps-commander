@@ -65,6 +65,35 @@ chmod 0600 /var/backups/commander-*.db
 - Hub 请求日志使用结构化 `slog` 输出到 journald，级别由 `VPS_COMMANDER_LOG_LEVEL` 控制；`/healthz`、`/static/` 和 `304` 不记录。
 - 操作审计在面板“日志”或 `/api/v1/audits` 查看，不在 journald 中。
 
+### 6.1 审计失败排查
+
+审计写入走异步批量队列，正常情况下失败会重试并把条目落回 stderr；用以下标记确认是否发生过降级：
+
+| 标记 | 含义 |
+| :--- | :--- |
+| `vps_commander_audit_fallback` | 审计条目重试仍失败，已改为写入 stderr 的 JSON 行（含原始 `entry` 与 `persistence_error`） |
+| `ERROR audit batch write attempt` | 批量写库失败，行内含 `attempt/attempts` 与条目数，连续出现说明数据库持续不可写 |
+| `CRITICAL audit fallback` | fallback 自身也失败（JSON 编码或 stderr 写失败），属最高优先级 |
+
+这些日志都进 journald，检索方式：
+
+```bash
+journalctl -u vps-commander-hub --since "24 hours ago" | grep vps_commander_audit_fallback
+journalctl -u vps-commander-hub --since "24 hours ago" | grep "ERROR audit batch write attempt"
+journalctl -u vps-commander-hub --since "24 hours ago" | grep "CRITICAL audit fallback"
+```
+
+`vps_commander_audit_queue_depth` 持续增长 + 上述标记同时出现，基本可判定为数据库写入受阻（磁盘满、`SQLITE_BUSY`、文件锁）。此时不要重启 Hub（内存队列里的审计会丢），先解决磁盘/锁问题；必要时用 fallback 的 stderr JSON 行补录审计。
+
+投递与下行的失败记录（`internal/notify`、`internal/cluster`、`internal/executor`）同样是 `log.Printf` 一行一条，可直接按前缀检索：
+
+```bash
+journalctl -u vps-commander-hub | grep "notify: record"
+journalctl -u vps-commander-hub | grep "cluster: "
+journalctl -u vps-commander-agent | grep "heartbeat ping write failed"
+journalctl -u vps-commander-hub | grep "executor: fsync directory"
+```
+
 ## 7. 指标
 
 用带 `admin` scope 的令牌抓取 `/metrics`（Prometheus 文本格式），关注：

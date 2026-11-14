@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +108,9 @@ func EditBlock(path, oldText, newText string, expectedHash ...string) (EditBlock
 		return EditBlockResult{}, err
 	}
 	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
+		if syncErr := dirSyncFile(d); syncErr != nil {
+			log.Printf("executor: fsync directory %s after edit_block rename failed (crash may lose the rename): %v", dir, syncErr)
+		}
 		_ = d.Close()
 	}
 	return EditBlockResult{BytesWritten: int64(len(updated))}, nil
